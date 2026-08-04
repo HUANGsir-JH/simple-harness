@@ -21,9 +21,12 @@ func NewClient(cfg Config) (Client, error) {
 	if envKey == "" {
 		envKey = DefaultEnvKey(wire)
 	}
-	apiKey := os.Getenv(envKey)
+	apiKey := cfg.APIKey
 	if apiKey == "" {
-		return nil, fmt.Errorf("provider: %s is not set (set it in the environment or configure env_key)", envKey)
+		apiKey = os.Getenv(envKey)
+	}
+	if apiKey == "" {
+		return nil, fmt.Errorf("provider: no API key (set %s, configure env_key, or put api_key in the config file)", envKey)
 	}
 
 	switch wire {

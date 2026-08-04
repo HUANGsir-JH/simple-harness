@@ -54,7 +54,7 @@ func TestRunMissingPrompt(t *testing.T) {
 func TestLoadConfigFromFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
-	content := "provider: anthropic\nmodel: claude-sonnet-5\nbase_url: https://example.com\n"
+	content := "provider: anthropic\nmodel: claude-sonnet-5\nbase_url: https://example.com\napi_key: sk-test\n"
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
@@ -63,7 +63,36 @@ func TestLoadConfigFromFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
-	if cfg.Provider != "anthropic" || cfg.Model != "claude-sonnet-5" || cfg.BaseURL != "https://example.com" {
+	if cfg.Provider != "anthropic" || cfg.Model != "claude-sonnet-5" ||
+		cfg.BaseURL != "https://example.com" || cfg.APIKey != "sk-test" {
+		t.Errorf("cfg mismatch: %+v", cfg)
+	}
+}
+
+// TestLoadConfigProjectLocal verifies the project-local config.local.yaml is
+// picked up before the user-level config.
+func TestLoadConfigProjectLocal(t *testing.T) {
+	// Run in a temp cwd containing config.local.yaml.
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(cwd)
+
+	dir := t.TempDir()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.local.yaml"),
+		[]byte("provider: openai\nmodel: gpt-4o\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := loadConfig("")
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.Provider != "openai" || cfg.Model != "gpt-4o" {
 		t.Errorf("cfg mismatch: %+v", cfg)
 	}
 }

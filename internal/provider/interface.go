@@ -36,12 +36,14 @@ type Provider interface {
 }
 
 // Config is the user-facing provider configuration (YAML, env-overridable).
-// API keys are never stored here; they come from the environment via EnvKey.
+// The API key may come from the config file (api_key) or the environment
+// (EnvKey / the conventional env var for the wire API).
 type Config struct {
 	Provider string `yaml:"provider"` // "openai" | "anthropic"
 	Model    string `yaml:"model"`
 	BaseURL  string `yaml:"base_url,omitempty"` // optional endpoint override
 	EnvKey   string `yaml:"env_key,omitempty"`  // env var holding the API key; inferred per provider if empty
+	APIKey   string `yaml:"api_key,omitempty"`  // API key directly in config (e.g. from .env conversion)
 }
 
 // DefaultEnvKey returns the conventional API key env var for a wire API.

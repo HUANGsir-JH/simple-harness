@@ -117,35 +117,53 @@ func runCmd(args []string, jsonOut bool) error {
 
 // --- config loading (temporary simplified version; full YAML in phase 4) ----
 
-// loadConfig reads the provider configuration. It accepts an explicit path;
-// otherwise it falls back to ~/.harness/config.yaml and finally to pure
-// environment variables (HARNESS_PROVIDER / HARNESS_MODEL / HARNESS_BASE_URL).
-func loadConfig(path string) (provider.Config, error) {
-	cfg := provider.Config{}
-
-	if path == "" {
-		home, err := os.UserHomeDir()
-		if err == nil {
-			path = filepath.Join(home, ".harness", "config.yaml")
+// configCandidates returns the config file search order: explicit path (if
+// given), then the project-local config.local.yaml, then ~/.harness/config.yaml.
+// API keys may live in the config file (api_key) or the environment.
+func configCandidates(path string) []string {
+	if path != "" {
+		return []string{path}
+	}
+	var out []string
+	if cwd, err := os.Getwd(); err == nil {
+		local := filepath.Join(cwd, "config.local.yaml")
+		if _, err := os.Stat(local); err == nil {
+			out = append(out, local)
 		}
 	}
-	if data, err := os.ReadFile(path); err == nil {
+	if home, err := os.UserHomeDir(); err == nil {
+		out = append(out, filepath.Join(home, ".harness", "config.yaml"))
+	}
+	return out
+}
+
+// loadConfig reads the provider configuration from the first existing config
+// file, falling back to environment variables (HARNESS_PROVIDER / HARNESS_MODEL
+// / HARNESS_BASE_URL) when none exists.
+func loadConfig(path string) (provider.Config, error) {
+	for _, p := range configCandidates(path) {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return provider.Config{}, fmt.Errorf("read config %s: %w", p, err)
+		}
+		var cfg provider.Config
 		if err := yaml.Unmarshal(data, &cfg); err != nil {
-			return cfg, fmt.Errorf("config %s: %w", path, err)
+			return provider.Config{}, fmt.Errorf("config %s: %w", p, err)
 		}
 		return cfg, nil
-	} else if !os.IsNotExist(err) {
-		return cfg, fmt.Errorf("read config: %w", err)
 	}
 
 	// Fallback: environment variables.
-	cfg = provider.Config{
+	cfg := provider.Config{
 		Provider: os.Getenv("HARNESS_PROVIDER"),
 		Model:    os.Getenv("HARNESS_MODEL"),
 		BaseURL:  os.Getenv("HARNESS_BASE_URL"),
 	}
 	if cfg.Provider == "" || cfg.Model == "" {
-		return cfg, fmt.Errorf("no config found: create %s (see `harness help`) or set HARNESS_PROVIDER/HARNESS_MODEL", path)
+		return cfg, fmt.Errorf("no config found: create config.local.yaml in this project or ~/.harness/config.yaml (see `harness help`), or set HARNESS_PROVIDER/HARNESS_MODEL")
 	}
 	return cfg, nil
 }
