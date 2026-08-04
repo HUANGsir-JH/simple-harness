@@ -2,6 +2,20 @@
 
 > 按日期追加，最新在上。记录：进展、阻塞、问题、经验。
 
+## 2026-08-04（深夜）
+
+### 配置系统改造：项目级 config.local.yaml ✅
+
+- 用户提供了 `.env`（DeepSeek 兼容端点：apikey + openai_base_url + openai_model + anthropic 备用）
+- **决策**：`.env` 直接转成项目级 `config.local.yaml`（不入 git），作为本项目后续调用的配置来源；不再需要手动 export 环境变量
+- 改动：
+  - `provider.Config` 增加 `APIKey` 字段（`api_key` in YAML）；key 解析顺序：配置文件 api_key → env（env_key / 默认变量名）
+  - `loadConfig` 查找顺序：显式路径 → **项目级 `config.local.yaml`** → `~/.harness/config.yaml` → 环境变量 fallback
+  - `config.example.yaml` 模板更新（说明三种 key 提供方式）
+- 验证：`harness run "你好..."` 无任何 export 直接调用成功，模型身份确认是 DeepSeek
+- 测试：新增 TestLoadConfigProjectLocal（chdir 到临时目录验证项目级优先）；TestLoadConfigFromFile 增加 api_key 断言
+- 安全：`.env` 和 `config.local.yaml` 均在 .gitignore（`git status --ignored` 确认 `!!` 忽略）
+
 ## 2026-08-04（晚）
 
 ### 阶段一 完成 ✅（1.4 ~ 1.8）
