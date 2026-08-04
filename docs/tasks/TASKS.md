@@ -7,7 +7,7 @@
 - **目标**：项目初始化、`messages` 包（统一 Message 模型 + JSONL 序列化）、`provider` 包（Provider/LLMClient 接口 + OpenAI/Anthropic 适配 + 重试）、最小 agent loop（单次采样，无工具）
 - **成功标准**：`harness run "你好"` 能从真实 API 拿到流式回复
 - **测试**：provider 单测（mock HTTP）；loop 单测（mock LLMClient）
-- **状态**：进行中（2026-08-04 项目骨架已初始化）
+- **状态**：✅ 已完成（2026-08-04）
 
 ### 任务单元
 
@@ -16,10 +16,11 @@
 | 1.1 | 项目初始化（go.mod + cmd/harness + git） | ✅ 已完成 2026-08-04 |
 | 1.2 | 文档跟踪目录（docs/tasks） | ✅ 已完成 2026-08-04 |
 | 1.3 | `messages` 包：统一 Message 模型 + JSONL 序列化 | ✅ 已完成 2026-08-04 |
-| 1.4 | `provider` 包：Provider/LLMClient 接口 + OpenAI 适配 | 未开始 |
-| 1.5 | `provider` 包：Anthropic 适配 | 未开始 |
-| 1.6 | 错误分类 + 重试（指数退避 + 抖动） | 未开始 |
-| 1.7 | 最小 agent loop（单次采样）+ CLI run 子命令 | 未开始 |
+| 1.4 | `provider` 包：Provider/LLMClient 接口 + OpenAI 适配 | ✅ 已完成 2026-08-04 |
+| 1.5 | `provider` 包：Anthropic 适配 | ✅ 已完成 2026-08-04 |
+| 1.6 | 错误分类 + 重试（指数退避 + 抖动） | ✅ 已完成 2026-08-04（SDK 内置，无需自定义） |
+| 1.7 | 最小 agent loop（单次采样）+ CLI run 子命令 | ✅ 已完成 2026-08-04 |
+| 1.8 | 真实 API 端到端验证（DeepSeek 兼容端点） | ✅ 已完成 2026-08-04 |
 
 ## 阶段 2：工具系统 + 并发执行
 

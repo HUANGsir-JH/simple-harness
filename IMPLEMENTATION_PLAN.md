@@ -208,10 +208,12 @@ type Renderer interface {
 
 ## 实施阶段
 
-### 阶段 1：骨架 + 统一消息模型 + Provider + 最小 loop
+### 阶段 1：骨架 + 统一消息模型 + Provider + 最小 loop ✅ 已完成（2026-08-04）
 **目标**：项目初始化（go.mod + 目录结构）、`messages` 包（统一 Message 模型 + JSONL 序列化）、`provider` 包（Provider/LLMClient 接口 + OpenAI Responses/chat 适配 + Anthropic 适配 + 重试）、最小 agent loop（单次采样，无工具）
-**成功标准**：`harness run "你好"` 能从真实 API 拿到流式回复
-**测试**：provider 单测（mock HTTP）；loop 单测（mock LLMClient 返回固定事件流）
+**成功标准**：`harness run "你好"` 能从真实 API 拿到流式回复 ✅（DeepSeek 兼容端点验证通过）
+**测试**：provider 单测（mock HTTP）✅；loop 单测（mock LLMClient 返回固定事件流）✅
+
+> 阶段 1 详细设计见 `docs/tasks/TASKS.md`（单元 1.1~1.8 全部完成）。重试项：两 SDK 内置退避重试（ADR-012）。
 
 ### 阶段 2：工具系统 + 并发执行
 **目标**：`tools` 包（Tool 接口 + 注册表 + 错误二分类）、内置工具（read_file/list_dir/glob/shell_command/apply_patch）、并行执行 + call_id 回填

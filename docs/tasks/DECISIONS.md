@@ -67,3 +67,21 @@
 - **背景**：项目级指令注入是 agent 可用性的关键机制。
 - **选择**：从 cwd 向上找项目根（.git 等 marker）→ 从根到 cwd 收集拼接 → 注入 developer 消息；200KB 截断。
 - **理由**：codex 已验证的机制，~50 行实现，价值极高。
+
+## ADR-012：错误重试依赖 SDK 内置，不自研
+
+- **背景**：规划时计划自研指数退避重试（参照 codex `responses_retry.rs`）。
+- **选择**：openai-go / anthropic-sdk-go 均内置指数退避重试（429/5xx/网络错默认开启），阶段一不做自定义重试；只做 SDK 错误 → `Event{Type: EventError}` 映射。
+- **理由**：两 SDK 已实现该能力（探测确认），自研重复造轮子；真实验证时 DeepSeek 端点无重试问题。若后续发现 SDK 重试不够（如流中断恢复），再在 provider 层补。
+
+## ADR-013：FakeClient/FakeStream 放非测试文件（provider/mock.go）
+
+- **背景**：agent 包测试需要复用 provider 的 mock 客户端，但 `_test.go` 文件对其它包不可见。
+- **选择**：将 FakeClient/FakeStream 放在 `internal/provider/mock.go`（非 _test 文件，带导出注释，var _ 接口断言）。
+- **理由**：Go 测试辅助跨包复用的标准做法；文件小（~50 行）且明确标注测试用途，不影响生产代码体积。
+
+## ADR-014：Anthropic SSE 测试 mock 必须带 event: 字段
+
+- **背景**：Anthropic mock SSE 测试最初只发 `data:` 行，事件被 SDK 静默丢弃（3 个测试失败）。
+- **选择**：anthropic 的 mock 事件同时带 `event: <type>` 字段 + data 顶层 `type` 字段（`anthropicSSE` helper）；openai 版不需要。
+- **理由**：探测确认 anthropic-sdk-go 的 `Stream.Next()` 按 **SSE 的 event: 字段**路由（switch 匹配），openai-go 则按 data 内 type。这是两 SDK 的解析差异，写测试时必须区分。
