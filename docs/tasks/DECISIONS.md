@@ -1,0 +1,69 @@
+# 架构决策记录 (ADR)
+
+> 每条决策：背景 → 选择 → 理由。写下来即不再回头讨论，除非有新信息推翻。
+
+## ADR-001：多后端 Provider 用配置结构体 + 单一 HTTP 客户端
+
+- **背景**：需要支持 OpenAI / Anthropic / OpenAI-兼容后端，最初设想是每后端一个实现目录。
+- **选择**：不写多 provider 实现。`Provider` 接口只暴露 `BaseURL / APIKey / WireAPI / ContextWindow`，一个 HTTP 客户端根据 `WireAPI`（responses/chat）切换请求格式。
+- **理由**：codex 源码中 Anthropic/Ollama/LM Studio 全部走 `ConfiguredModelProvider`（base_url + env_key + wire_api 配置），没有独立实现。这是多后端最简且验证过的模式。
+
+## ADR-002：内部统一消息模型，provider 适配转换
+
+- **背景**：换后端时若用各 provider 原生消息格式，会话存储/回放逻辑全部要重写。
+- **选择**：核心层只操作统一 `Message`（role/content/tool_calls/tool_results），provider 适配层负责 ↔ 原生格式转换；JSONL 会话文件直接存统一模型。
+- **理由**：多后端切换零迁移；JSONL 可读可调试；测试可用统一模型 mock。
+
+## ADR-003：agent loop 错误二分类（RespondToModel / Fatal）
+
+- **背景**：工具执行失败的处理方式决定 agent 容错能力。
+- **选择**：`RespondToModel`（错误文本回填历史，循环继续）/ `Fatal`（终止 turn）。审批拒绝也是普通错误回填。
+- **理由**：codex 最重要的容错语义——模型看到失败后可自行换思路重试，而不是杀掉整个任务。
+
+## ADR-004：工具并发执行 + call_id 回填
+
+- **背景**：模型可能一次返回多个 tool_call。
+- **选择**：errgroup 并发执行全部，任一失败只影响自己；结果按 call_id 排序回填历史。
+- **理由**：codex 主路径语义（FuturesOrdered 按完成顺序合并）；多文件修改显著加速。
+
+## ADR-005：子 agent = 独立 session + fork 过滤 + 单向通信
+
+- **背景**：需要子任务委托能力，又不想引入 mailbox/队列复杂度。
+- **选择**：子 agent 是独立 session（goroutine 跑自己的 turn 循环）；fork 时只继承父的 user 消息 + assistant 最终答案（丢弃工具调用细节）；v1 只做 spawn_agent + 主→子单向 send_message。
+- **理由**：codex `keep_forked_rollout_item` 的语义——子 agent 只需要"结论"不需要"过程"；单向通信覆盖主要委托场景。
+
+## ADR-006：分层审批 + 黑白名单启发式 + 拒绝≠Fatal
+
+- **背景**：无 OS 沙箱（Windows 实现成本极高），安全只能靠策略层。
+- **选择**：三态策略（UnlessTrusted 默认/OnRequest/Never）；搬 codex `BANNED_PREFIX_SUGGESTIONS` 黑名单 + 只读安全命令白名单；TTY 弹 Y/n/remember，非 TTY 自动拒绝；拒绝结果回填模型。
+- **理由**：黑名单启发式已验证；拒绝回填让模型换思路，不中断任务。
+
+## ADR-007：会话存储 = 每会话一个 JSONL 追加写
+
+- **背景**：需要持久化 + resume + 可调试。
+- **选择**：`~/.harness/sessions/<timestamp>-<id>.jsonl`，存统一 Message 模型，`os.O_APPEND` 追加写。
+- **理由**：JSONL 可读、流式持久化、resume 零成本（读回重放）；不做 SQLite/zstd（v1 无此需求）。
+
+## ADR-008：UI 抽象为 Renderer 接口（simple 先行，TUI 后置）
+
+- **背景**：CLI 交互体验要求（流式渲染），但 TUI 复杂度高。
+- **选择**：`Renderer` 接口（Start/WriteText/WriteToolCall/WriteApprovalRequest/...），v1 实现 simple 渲染器（ANSI 彩色 + 文本流式），v2 实现 tui 渲染器插拔替换；`--json` 模式 = Renderer 的另一个实现。
+- **理由**：接口先行，UI 演进不影响核心循环；--json 排障复用同一接口。
+
+## ADR-009：压缩先 TokenBudget 式，后摘要式
+
+- **背景**：长会话必然超窗，压缩是刚需；但摘要式需要额外 LLM 调用。
+- **选择**：v1 TokenBudget 式（清空历史保留系统提示 + 最近 N 条 + 占位），v2 摘要式（单独 LLM 摘要 + 保留最近用户消息）。
+- **理由**：codex 两种都有；TokenBudget 式 10 行可跑通，摘要式质量更好但成本高，分阶段合理。
+
+## ADR-010：配置用 YAML + 环境变量覆盖
+
+- **背景**：多后端/多模型需要可读配置；敏感信息（API key）不能进文件。
+- **选择**：`~/.harness/config.yaml` + 项目级 `.harness.yaml`，YAML 定义 provider/model/approval 策略；API key 走环境变量（`OPENAI_API_KEY` 等）。
+- **理由**：YAML 可读性好（用户选择）；key 不入文件安全；双层级（用户/项目）符合 codex 分层配置思路。
+
+## ADR-011：AGENTS.md 向上搜索 + 注入 developer 消息
+
+- **背景**：项目级指令注入是 agent 可用性的关键机制。
+- **选择**：从 cwd 向上找项目根（.git 等 marker）→ 从根到 cwd 收集拼接 → 注入 developer 消息；200KB 截断。
+- **理由**：codex 已验证的机制，~50 行实现，价值极高。
