@@ -15,7 +15,7 @@
 |---|---|---|
 | 1.1 | 项目初始化（go.mod + cmd/harness + git） | ✅ 已完成 2026-08-04 |
 | 1.2 | 文档跟踪目录（docs/tasks） | ✅ 已完成 2026-08-04 |
-| 1.3 | `messages` 包：统一 Message 模型 + JSONL 序列化 | 未开始 |
+| 1.3 | `messages` 包：统一 Message 模型 + JSONL 序列化 | ✅ 已完成 2026-08-04 |
 | 1.4 | `provider` 包：Provider/LLMClient 接口 + OpenAI 适配 | 未开始 |
 | 1.5 | `provider` 包：Anthropic 适配 | 未开始 |
 | 1.6 | 错误分类 + 重试（指数退避 + 抖动） | 未开始 |

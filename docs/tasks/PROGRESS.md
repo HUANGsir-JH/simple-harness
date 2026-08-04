@@ -4,6 +4,15 @@
 
 ## 2026-08-04
 
+### 阶段一 1.3 messages 包 ✅
+
+- 完成 `internal/messages`：统一 Message/ToolCall/ToolResult/Thread 模型 + JSONL 序列化（SaveJSONL/LoadThreadJSONL/Read/Write）
+- 7 个单测全过：JSONL 往返、tool result 序列化、文件往返、缺 id 补全、坏行报错、AppendToolResult
+- 踩坑：测试初始断言 thread ID 往返相等——实际 thread ID 是会话元数据（来自文件名），不在 JSONL 消息行里持久化，改为验证消息序列；gofmt 对齐（json.RawMessage 字段注释缩进）
+- 另：gopls 因模块不在 workspace 报 undefined 误报，`go build`/`go test` 实际正常；后续 IDE 如需消除可建 go.work
+
+## 2026-08-04（早期记录）
+
 ### 项目初始化 ✅
 
 - 完成 Go 模块初始化：`github.com/agent-project/harness`（go 1.24.2）
