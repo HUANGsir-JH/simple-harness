@@ -1,0 +1,20 @@
+# harness 配置文件
+# 复制到 ~/.harness/config.yaml 并填写后，运行:
+#   harness run "你好"
+#
+# API key 不写在这里，通过环境变量提供:
+#   openai  ->  OPENAI_API_KEY
+#   anthropic -> ANTHROPIC_API_KEY
+# (也可用 env_key 指定其它环境变量名)
+
+# 后端: openai (Responses API, 兼容 Ollama/LM Studio 等端点) | anthropic
+provider: openai
+
+# 模型 ID
+model: gpt-4o
+
+# 可选: 自定义 API 端点 (兼容后端时使用, 留空用官方默认)
+# base_url: https://api.example.com/v1
+
+# 可选: API key 的环境变量名 (留空按 provider 推断)
+# env_key: OPENAI_API_KEY
