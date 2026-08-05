@@ -50,11 +50,20 @@ func TestRunMissingPrompt(t *testing.T) {
 	}
 }
 
-// TestLoadConfigFromFile 验证 YAML 配置加载。
+// TestLoadConfigFromFile 验证多 provider 多模型 YAML 配置加载。
 func TestLoadConfigFromFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
-	content := "provider: anthropic\nmodel: claude-sonnet-5\nbase_url: https://example.com\napi_key: sk-test\n"
+	content := `default_provider: deepseek
+providers:
+  deepseek:
+    wire_api: openai
+    base_url: https://api.deepseek.com/
+    api_key: sk-test
+    models:
+      deepseek-v4-flash:
+        context_window: 128000
+`
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
@@ -63,9 +72,18 @@ func TestLoadConfigFromFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
-	if cfg.Provider != "anthropic" || cfg.Model != "claude-sonnet-5" ||
-		cfg.BaseURL != "https://example.com" || cfg.APIKey != "sk-test" {
-		t.Errorf("cfg mismatch: %+v", cfg)
+	if cfg.DefaultProvider != "deepseek" {
+		t.Errorf("default provider: %q", cfg.DefaultProvider)
+	}
+	ds, ok := cfg.Providers["deepseek"]
+	if !ok {
+		t.Fatal("expected deepseek provider")
+	}
+	if ds.WireAPI != "openai" || ds.BaseURL != "https://api.deepseek.com/" || ds.APIKey != "sk-test" {
+		t.Errorf("deepseek: %+v", ds)
+	}
+	if ds.Models["deepseek-v4-flash"].ContextWindow != 128000 {
+		t.Errorf("context window: %+v", ds.Models["deepseek-v4-flash"])
 	}
 }
 
@@ -83,7 +101,7 @@ func TestLoadConfigProjectLocal(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "config.local.yaml"),
-		[]byte("provider: openai\nmodel: gpt-4o\n"), 0o644); err != nil {
+		[]byte("default_provider: p\nproviders:\n  p:\n    api_key: k\n    models:\n      m: {}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -91,7 +109,7 @@ func TestLoadConfigProjectLocal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
-	if cfg.Provider != "openai" || cfg.Model != "gpt-4o" {
+	if cfg.DefaultProvider != "p" || len(cfg.Providers) != 1 {
 		t.Errorf("cfg mismatch: %+v", cfg)
 	}
 }
@@ -100,22 +118,21 @@ func TestLoadConfigProjectLocal(t *testing.T) {
 func TestLoadConfigMissing(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "nope.yaml")
-	t.Setenv("HARNESS_PROVIDER", "")
-	t.Setenv("HARNESS_MODEL", "")
 	if _, err := loadConfig(path); err == nil {
 		t.Fatal("expected error for missing config")
 	}
 }
 
-// TestLoadConfigEnvFallback 验证环境变量回退。
-func TestLoadConfigEnvFallback(t *testing.T) {
-	t.Setenv("HARNESS_PROVIDER", "openai")
-	t.Setenv("HARNESS_MODEL", "gpt-4o")
-	cfg, err := loadConfig(filepath.Join(t.TempDir(), "missing.yaml"))
-	if err != nil {
-		t.Fatalf("loadConfig: %v", err)
+// TestRunModelFlag 验证 --model 被 runCmd 的 flag 解析接受。
+func TestRunModelFlag(t *testing.T) {
+	// 无配置时 runCmd 应报"配置缺失"而非"flag 未定义"——证明 --model 被接受。
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "missing.yaml")
+	err := runCmd([]string{"--config", cfgPath, "--model", "deepseek-v4-flash", "hi"}, false)
+	if err == nil {
+		t.Fatal("expected config error")
 	}
-	if cfg.Provider != "openai" || cfg.Model != "gpt-4o" {
-		t.Errorf("cfg mismatch: %+v", cfg)
+	if strings.Contains(err.Error(), "flag provided but not defined") {
+		t.Errorf("--model flag not recognized: %v", err)
 	}
 }

@@ -65,14 +65,17 @@ func usage() {
 	fmt.Println()
 	fmt.Println("flags:")
 	fmt.Println("  --json                       emit machine-readable events as JSONL")
+	fmt.Println("  --model <name>               model to use (default: first model of default provider)")
 	fmt.Println()
-	fmt.Println("config: ~/.harness/config.yaml (provider, model, base_url, env_key)")
+	fmt.Println("config: project config.local.yaml or ~/.harness/config.yaml")
+	fmt.Println("  default_provider + providers.<name>.{wire_api, base_url, api_key, models}")
 }
 
 func runCmd(args []string, jsonOut bool) error {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
-	var configPath string
+	var configPath, modelFlag string
 	fs.StringVar(&configPath, "config", "", "path to config file (default ~/.harness/config.yaml)")
+	fs.StringVar(&modelFlag, "model", "", "model to use (must be defined in the selected provider; default: first model)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -86,7 +89,12 @@ func runCmd(args []string, jsonOut bool) error {
 		return err
 	}
 
-	client, err := provider.NewClient(cfg)
+	res, err := provider.Resolve(cfg, modelFlag)
+	if err != nil {
+		return fmt.Errorf("resolve: %w", err)
+	}
+
+	client, err := provider.NewClient(res)
 	if err != nil {
 		return fmt.Errorf("provider: %w\nhint: see config in ~/.harness/config.yaml and set the API key env var", err)
 	}
@@ -97,7 +105,7 @@ func runCmd(args []string, jsonOut bool) error {
 	thread := messages.NewThread()
 	thread.Add(messages.NewUserMessage(prompt))
 
-	a := agent.New(client, cfg.Model)
+	a := agent.New(client, res.Model)
 
 	var renderer output
 	if jsonOut {
@@ -137,9 +145,8 @@ func configCandidates(path string) []string {
 	return out
 }
 
-// loadConfig 从第一个存在的配置文件中读取 provider 配置；
-// 若都不存在则回退到环境变量（HARNESS_PROVIDER / HARNESS_MODEL
-// / HARNESS_BASE_URL）。
+// loadConfig 从第一个存在的配置文件中读取配置；
+// 都不存在时报错（多 provider 结构必须由配置文件提供）。
 func loadConfig(path string) (provider.Config, error) {
 	for _, p := range configCandidates(path) {
 		data, err := os.ReadFile(p)
@@ -155,15 +162,5 @@ func loadConfig(path string) (provider.Config, error) {
 		}
 		return cfg, nil
 	}
-
-	// 回退：环境变量。
-	cfg := provider.Config{
-		Provider: os.Getenv("HARNESS_PROVIDER"),
-		Model:    os.Getenv("HARNESS_MODEL"),
-		BaseURL:  os.Getenv("HARNESS_BASE_URL"),
-	}
-	if cfg.Provider == "" || cfg.Model == "" {
-		return cfg, fmt.Errorf("no config found: create config.local.yaml in this project or ~/.harness/config.yaml (see `harness help`), or set HARNESS_PROVIDER/HARNESS_MODEL")
-	}
-	return cfg, nil
+	return provider.Config{}, fmt.Errorf("no config found: create config.local.yaml in this project or ~/.harness/config.yaml (see `harness help`)")
 }
