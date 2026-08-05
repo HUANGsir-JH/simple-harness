@@ -160,6 +160,9 @@ func loadConfig(path string) (provider.Config, error) {
 		if err := yaml.Unmarshal(data, &cfg); err != nil {
 			return provider.Config{}, fmt.Errorf("config %s: %w", p, err)
 		}
+		if err := cfg.Validate(); err != nil {
+			return provider.Config{}, fmt.Errorf("config %s: %w", p, err)
+		}
 		return cfg, nil
 	}
 	return provider.Config{}, fmt.Errorf("no config found: create config.local.yaml in this project or ~/.harness/config.yaml (see `harness help`)")
