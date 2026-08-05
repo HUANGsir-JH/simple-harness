@@ -85,3 +85,21 @@
 - **背景**：Anthropic mock SSE 测试最初只发 `data:` 行，事件被 SDK 静默丢弃（3 个测试失败）。
 - **选择**：anthropic 的 mock 事件同时带 `event: <type>` 字段 + data 顶层 `type` 字段（`anthropicSSE` helper）；openai 版不需要。
 - **理由**：探测确认 anthropic-sdk-go 的 `Stream.Next()` 按 **SSE 的 event: 字段**路由（switch 匹配），openai-go 则按 data 内 type。这是两 SDK 的解析差异，写测试时必须区分。
+
+## ADR-015：多 provider 多模型配置结构（default_provider + providers 分组）
+
+- **背景**：阶段一配置是单模型结构（一个 provider/model/base_url/api_key），无法支持多个模型切换。
+- **选择**：
+  - 配置结构：`default_provider`（默认供应商）+ `providers: map<名> -> {wire_api, base_url, api_key/env_key, models: map<模型> -> {context_window}}`
+  - **provider 名自定义**，API 类型由显式 `wire_api` 字段决定（openai/anthropic，默认 openai）
+  - **context_window 每模型一个**，进 YAML；未配置回退 `DefaultContextWindow`(128k)
+  - 模型选择优先级：`--model <名>` > default_provider 的 models 第一个
+  - provider 选择：default_provider > providers 排序第一个
+  - **删除 models.go 硬编码窗口表**，窗口完全来自配置
+- **理由**：用户明确要求按 provider 分组 + 自定义供应商名；参照 codex 的 `model`/`model_provider` 分层设计；硬编码表在配置化后失去意义。
+
+## ADR-016：默认模型语义修正——按 provider 排序取第一个而非字母序
+
+- **背景**：`--model` 未指定时取 models map 排序第一个。真实 API 验证暴露问题：DeepSeek 只支持 `deepseek-v4-flash`/`deepseek-v4-pro`，但排序第一个是 `deepseek-v4`（不存在的模型）导致 400 错误。
+- **选择**：默认取"配置里 models 的排序第一个"（实现不变），但**配置作者需确保第一个模型真实可用**（把可用的模型名放第一位，或用 --model 指定）。已把 config.local.yaml 中 `deepseek-v4` 改为真实可用的 `deepseek-v4-pro`。
+- **理由**：codex 同款行为（catalog 自动默认取第一个）；配置化后模型可用性由配置负责，代码无法校验远端模型名。真实使用中 `--model` 是最可靠的指定方式。

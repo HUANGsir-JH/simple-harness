@@ -2,6 +2,24 @@
 
 > 按日期追加，最新在上。记录：进展、阻塞、问题、经验。
 
+## 2026-08-04（深夜 2）
+
+### 多模型配置系统重构 ✅
+
+- **需求**：context_window 进 YAML + 支持多模型 + 按 provider 分组（用户明确结构）
+- **配置结构**（ADR-015）：`default_provider` + `providers.<名>{wire_api, base_url, api_key/env_key, models.<模型>{context_window}}`
+- **实现**：
+  - `interface.go`：Config/ProviderConfig/Model 新结构（ProviderConfig 避免与 Provider 接口重名）
+  - `resolve.go`（新）：Resolve(cfg, modelFlag) → Resolved{ProviderID, WireAPI, BaseURL, APIKey, Model, ContextWindow}；选择优先级 `--model > default_provider > 排序第一个`
+  - `factory.go`：NewClient(res *Resolved)；providerBase 增加 contextWindow 字段（替代 ContextWindowFor 查表）
+  - `models.go` **删除**（硬编码表移除，窗口完全来自配置）
+  - CLI：`--model` flag + loadConfig 适配新结构（移除环境变量 fallback——多 provider 结构无法用 env 表达）
+- **真实 API 验证**：
+  - 默认：`harness run "你好"` → deepseek-v4-pro 回复成功
+  - 切换：`harness run --model deepseek-v4-flash "..."` → 生效
+  - 错误：`--model nonexistent` → `models: "nonexistent" not found in this provider`
+- **踩坑（ADR-016）**：默认模型取排序第一个 → `deepseek-v4` 不存在（DeepSeek 只支持 v4-flash/v4-pro）→ 400。修复：config.local.yaml 改为真实可用的 `deepseek-v4-pro`。教训：配置作者需保证第一个模型可用，或用 --model 指定。
+
 ## 2026-08-04（深夜）
 
 ### 配置系统改造：项目级 config.local.yaml ✅
