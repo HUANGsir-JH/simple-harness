@@ -10,7 +10,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go/packages/ssestream"
 )
 
-// anthropicClient implements Client over the Anthropic Messages API.
+// anthropicClient 基于 Anthropic Messages API 实现 Client。
 type anthropicClient struct {
 	providerBase
 	client anthropic.MessageService
@@ -33,7 +33,7 @@ func (a *anthropicClient) WireAPI() WireAPI { return WireAnthropic }
 func (a *anthropicClient) Stream(ctx context.Context, req Request) (EventStream, error) {
 	params := anthropic.MessageNewParams{
 		Model:     a.model,
-		MaxTokens: 4096, // hard default; refine in phase 2 config
+		MaxTokens: 4096, // 硬默认值；阶段二配置中完善
 		Messages:  toAnthropicMessages(req.Messages),
 	}
 	if req.Instructions != "" {
@@ -50,7 +50,7 @@ func (a *anthropicClient) Stream(ctx context.Context, req Request) (EventStream,
 	return &anthropicStream{stream: stream}, nil
 }
 
-// --- conversion: unified messages → Messages API params ---------------------
+// --- 转换：统一消息 → Messages API 参数 ------------------------------
 
 func toAnthropicMessages(msgs []*messages.Message) []anthropic.MessageParam {
 	var out []anthropic.MessageParam
@@ -62,10 +62,9 @@ func toAnthropicMessages(msgs []*messages.Message) []anthropic.MessageParam {
 				Content: []anthropic.ContentBlockParamUnion{{OfText: &anthropic.TextBlockParam{Text: m.Content}}},
 			})
 		case messages.RoleDeveloper:
-			// Messages API has no developer role; a developer message becomes
-			// a system block. Multiple system blocks are not supported in
-			// history, so it is folded into the user message (system prompt
-			// itself is set via Instructions in Stream).
+			// Messages API 没有 developer 角色；developer 消息会成为 system 块。
+			// 历史中不支持多个 system 块，因此将其合并进 user 消息
+			//（系统提示本身通过 Stream 中的 Instructions 设置）。
 			out = append(out, anthropic.MessageParam{
 				Role:    anthropic.MessageParamRoleUser,
 				Content: []anthropic.ContentBlockParamUnion{{OfText: &anthropic.TextBlockParam{Text: m.Content}}},
@@ -134,8 +133,8 @@ func toAnthropicTools(tools []ToolSpec) []anthropic.ToolUnionParam {
 	return out
 }
 
-// toAnthropicInputSchema converts a generic JSON Schema map into the SDK's
-// ToolInputSchemaParam, carrying over unknown fields via ExtraFields.
+// toAnthropicInputSchema 将通用 JSON Schema map 转换为 SDK 的
+// ToolInputSchemaParam，未知字段通过 ExtraFields 保留。
 func toAnthropicInputSchema(m map[string]any) anthropic.ToolInputSchemaParam {
 	s := anthropic.ToolInputSchemaParam{
 		Properties: m["properties"],
@@ -160,7 +159,7 @@ func toAnthropicInputSchema(m map[string]any) anthropic.ToolInputSchemaParam {
 	return s
 }
 
-// --- stream adapter -----------------------------------------------------------
+// --- 流适配器 -------------------------------------------------------------
 
 type anthropicStream struct {
 	stream *ssestream.Stream[anthropic.MessageStreamEventUnion]

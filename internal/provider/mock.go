@@ -5,15 +5,15 @@ import (
 	"errors"
 )
 
-// FakeStream is a scripted EventStream used by tests (including the agent
-// package tests). It lives in a non-test file so other packages can reuse it.
+// FakeStream 是测试用的脚本化 EventStream（包括 agent 包测试）。
+// 放在非 _test 文件中，便于其它包复用。
 type FakeStream struct {
 	events []Event
 	idx    int
 	err    error
 }
 
-// NewFakeStream builds a FakeStream from a fixed event list.
+// NewFakeStream 用固定事件列表构造 FakeStream。
 func NewFakeStream(events []Event) *FakeStream { return &FakeStream{events: events} }
 
 func (f *FakeStream) Next() bool {
@@ -34,8 +34,8 @@ func (f *FakeStream) Current() Event {
 func (f *FakeStream) Err() error   { return f.err }
 func (f *FakeStream) Close() error { return nil }
 
-// FakeClient is a scripted Client used by tests. It records the last request
-// for assertion and returns the configured stream.
+// FakeClient 是测试用的脚本化 Client。它记录最后一次请求以供断言，
+// 并返回配置好的流。
 type FakeClient struct {
 	StreamFn func(ctx context.Context, req Request) (EventStream, error)
 	LastReq  *Request
@@ -49,7 +49,7 @@ func (f *FakeClient) Stream(ctx context.Context, req Request) (EventStream, erro
 	return f.StreamFn(ctx, req)
 }
 
-// Ensure test doubles satisfy the public interfaces.
+// 确保测试替身满足公开接口。
 var (
 	_ EventStream = (*FakeStream)(nil)
 	_ Client      = (*FakeClient)(nil)

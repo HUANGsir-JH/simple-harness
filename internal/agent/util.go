@@ -2,6 +2,6 @@ package agent
 
 import "time"
 
-// timeNowNanos is a tiny indirection so tests can inject deterministic IDs
-// if needed; production uses the wall clock.
+// timeNowNanos 是一个小间接层，便于测试注入确定性的 ID；
+// 生产环境使用墙钟。
 func timeNowNanos() int64 { return time.Now().UnixNano() }

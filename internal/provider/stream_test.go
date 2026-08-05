@@ -10,21 +10,20 @@ import (
 	"github.com/agent-project/harness/internal/messages"
 )
 
-// sseEvent formats a single SSE event payload.
+// sseEvent 格式化单个 SSE 事件载荷。
 func sseEvent(data string) string {
 	return "data: " + data + "\n\n"
 }
 
-// anthropicSSE formats an Anthropic-style SSE event: the SDK routes by the
-// `event:` field and populates ev.Type from the JSON `type` field, so both
-// must be present (mirrors the real API).
+// anthropicSSE 格式化 Anthropic 风格 SSE 事件：SDK 按 `event:` 字段路由，
+// 并从 JSON 的 `type` 字段填充 ev.Type，因此两者都必须存在
+// （与真实 API 一致）。
 func anthropicSSE(eventType, data string) string {
 	return "event: " + eventType + "\ndata: " + data + "\n\n"
 }
 
-// TestOpenAIStreamTextDelta verifies the OpenAI adapter translates
-// output_text.delta events into unified text events and completes on
-// response.completed.
+// TestOpenAIStreamTextDelta 验证 OpenAI 适配器将 output_text.delta 事件
+// 转换为统一文本事件，并在 response.completed 时结束。
 func TestOpenAIStreamTextDelta(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -68,8 +67,8 @@ func TestOpenAIStreamTextDelta(t *testing.T) {
 	}
 }
 
-// TestOpenAIStreamFunctionCall verifies the OpenAI adapter translates a
-// completed function_call item into an EventToolCall.
+// TestOpenAIStreamFunctionCall 验证 OpenAI 适配器将已完成的 function_call
+// 项转换为 EventToolCall。
 func TestOpenAIStreamFunctionCall(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -109,7 +108,7 @@ func TestOpenAIStreamFunctionCall(t *testing.T) {
 	}
 }
 
-// TestOpenAIStreamError verifies stream errors surface via Err().
+// TestOpenAIStreamError 验证流错误通过 Err() 暴露。
 func TestOpenAIStreamError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -131,8 +130,8 @@ func TestOpenAIStreamError(t *testing.T) {
 	}
 }
 
-// TestAnthropicStreamTextDelta verifies the Anthropic adapter translates
-// content_block_delta text events and completes on message_stop.
+// TestAnthropicStreamTextDelta 验证 Anthropic 适配器将 content_block_delta
+// 文本事件转换为统一文本事件，并在 message_stop 时结束。
 func TestAnthropicStreamTextDelta(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -179,7 +178,7 @@ func TestAnthropicStreamTextDelta(t *testing.T) {
 	}
 }
 
-// TestAnthropicStreamToolUse verifies tool_use block translation.
+// TestAnthropicStreamToolUse 验证 tool_use 块转换。
 func TestAnthropicStreamToolUse(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

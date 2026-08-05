@@ -81,11 +81,8 @@ func TestThreadJSONLFileRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	// Note: thread ID/CreatedAt are session metadata (from the filename), not
-	// persisted in the JSONL message lines; verify the message sequence.
-	if len(got.Messages) != 2 {
-		t.Fatalf("messages: got %d want 2", len(got.Messages))
-	}
+	// 注意：thread 的 ID/CreatedAt 是会话元数据（来自文件名），
+	// 不持久化在 JSONL 消息行中；只验证消息序列。
 	if len(got.Messages) != 2 {
 		t.Fatalf("messages: got %d want 2", len(got.Messages))
 	}
@@ -100,7 +97,7 @@ func TestThreadJSONLFileRoundTrip(t *testing.T) {
 func TestLoadThreadJSONLMissingID(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "session.jsonl")
-	// A file with no id fields must still load.
+	// 没有 id 字段的文件也必须能加载。
 	if err := os.WriteFile(path, []byte(`{"role":"user","content":"a"}
 {"role":"assistant","content":"b"}
 `), 0o644); err != nil {

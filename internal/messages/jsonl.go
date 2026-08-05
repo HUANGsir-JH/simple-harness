@@ -8,9 +8,9 @@ import (
 	"os"
 )
 
-// SaveJSONL writes the thread's messages to path, one JSON object per line
-// (append mode). Each message is self-contained; reading back the file fully
-// reconstructs the thread. Safe for concurrent appends via os.O_APPEND.
+// SaveJSONL 将 thread 的消息写入 path，每行一个 JSON 对象（追加模式）。
+// 每条消息自包含；读回文件即可完整重建 thread。
+// 通过 os.O_APPEND 支持并发追加。
 func (t *Thread) SaveJSONL(path string) error {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
@@ -27,8 +27,8 @@ func (t *Thread) SaveJSONL(path string) error {
 	return nil
 }
 
-// LoadThreadJSONL reads a session JSONL file into a thread. Messages missing
-// their ID are assigned generated ones so the file is always a valid thread.
+// LoadThreadJSONL 将会话 JSONL 文件读入 thread。缺少 ID 的消息
+// 会被赋予生成的 ID，保证文件始终是合法的 thread。
 func LoadThreadJSONL(path string) (*Thread, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -57,7 +57,7 @@ func LoadThreadJSONL(path string) (*Thread, error) {
 	return t, nil
 }
 
-// WriteThreadJSONL writes a thread to w, one JSON object per line.
+// WriteThreadJSONL 将 thread 写入 w，每行一个 JSON 对象。
 func WriteThreadJSONL(w io.Writer, t *Thread) error {
 	enc := json.NewEncoder(w)
 	for _, m := range t.Messages {
@@ -68,7 +68,7 @@ func WriteThreadJSONL(w io.Writer, t *Thread) error {
 	return nil
 }
 
-// ReadThreadJSONL reads a thread from r (one JSON object per line).
+// ReadThreadJSONL 从 r 读取 thread（每行一个 JSON 对象）。
 func ReadThreadJSONL(r io.Reader) (*Thread, error) {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)

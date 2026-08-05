@@ -1,7 +1,6 @@
-// Package messages defines the unified message model used throughout the
-// harness core. Provider adapters convert between this model and their native
-// wire formats; session JSONL files serialize this model directly (switching
-// backends requires no migration).
+// Package messages 定义贯穿 harness 核心层的统一消息模型。
+// provider 适配层负责将该模型与其原生 wire 格式互转；
+// 会话 JSONL 文件直接序列化该模型（切换后端无需迁移）。
 package messages
 
 import (
@@ -10,52 +9,52 @@ import (
 	"time"
 )
 
-// Role is the speaker of a message.
+// Role 表示一条消息的发言人。
 type Role string
 
 const (
-	// RoleUser is a user message.
+	// RoleUser 表示用户消息。
 	RoleUser Role = "user"
-	// RoleAssistant is a model-generated message. May carry ToolCalls.
+	// RoleAssistant 表示模型生成的消息，可携带 ToolCalls。
 	RoleAssistant Role = "assistant"
-	// RoleDeveloper is a system/developer instruction (system prompt, AGENTS.md).
+	// RoleDeveloper 表示系统/开发者指令（系统提示、AGENTS.md）。
 	RoleDeveloper Role = "developer"
-	// RoleTool is a tool result, associated with a ToolCall via ToolCallID.
+	// RoleTool 表示工具执行结果，通过 ToolCallID 关联到对应的 ToolCall。
 	RoleTool Role = "tool"
 )
 
-// Message is the unified message type. It is the only message type the core
-// layer operates on; provider adapters convert to/from native formats.
+// Message 是统一消息类型，也是核心层唯一操作的消息类型；
+// provider 适配层负责与各后端原生格式互转。
 type Message struct {
 	ID         string     `json:"id,omitempty"`
 	Role       Role       `json:"role"`
 	Content    string     `json:"content,omitempty"`
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`   // assistant messages carry these
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`   // 助手消息携带这些
 	ToolCallID string     `json:"tool_call_id,omitempty"` // tool results reference a call
 }
 
-// ToolCall is a model-requested function invocation.
+// ToolCall 是模型请求的一次函数调用。
 type ToolCall struct {
 	ID     string          `json:"id"`
 	Name   string          `json:"name"`
-	Args   json.RawMessage `json:"args"`             // JSON arguments from the model
+	Args   json.RawMessage `json:"args"`             // 来自模型的 JSON 参数
 	Result *ToolResult     `json:"result,omitempty"` // populated after execution
 }
 
-// ToolResult is the outcome of executing a ToolCall.
+// ToolResult 是一次 ToolCall 的执行结果。
 type ToolResult struct {
 	Success bool   `json:"success"`
 	Content string `json:"content"`
 }
 
-// Thread is a message sequence; the storage unit of session JSONL files.
+// Thread 是消息序列，也是会话 JSONL 文件的存储单元。
 type Thread struct {
 	ID        string     `json:"id"`
 	CreatedAt string     `json:"created_at"`
 	Messages  []*Message `json:"messages"`
 }
 
-// NewThread creates a thread with a fresh ID and the current UTC timestamp.
+// NewThread 创建一个带新 ID 与当前 UTC 时间戳的 Thread。
 func NewThread() *Thread {
 	return &Thread{
 		ID:        fmt.Sprintf("thr_%d", time.Now().UnixNano()),
@@ -64,13 +63,13 @@ func NewThread() *Thread {
 	}
 }
 
-// Add appends a message and returns it.
+// Add 追加一条消息并返回它。
 func (t *Thread) Add(m *Message) *Message {
 	t.Messages = append(t.Messages, m)
 	return m
 }
 
-// NewUserMessage builds a user message with a generated ID.
+// NewUserMessage 构造一条带生成 ID 的用户消息。
 func NewUserMessage(content string) *Message {
 	return &Message{
 		ID:      fmt.Sprintf("msg_%d", time.Now().UnixNano()),
@@ -79,7 +78,7 @@ func NewUserMessage(content string) *Message {
 	}
 }
 
-// NewAssistantMessage builds an assistant message.
+// NewAssistantMessage 构造一条助手消息。
 func NewAssistantMessage(content string) *Message {
 	return &Message{
 		ID:      fmt.Sprintf("msg_%d", time.Now().UnixNano()),
@@ -88,7 +87,7 @@ func NewAssistantMessage(content string) *Message {
 	}
 }
 
-// NewToolResultMessage builds a tool result message referencing a call.
+// NewToolResultMessage 构造一条引用指定调用的工具结果消息。
 func NewToolResultMessage(callID string, success bool, content string) *Message {
 	return &Message{
 		Role:       RoleTool,
@@ -98,8 +97,8 @@ func NewToolResultMessage(callID string, success bool, content string) *Message 
 	}
 }
 
-// AppendToolResult records the result on the matching ToolCall (by ID).
-// Returns false if no matching call exists.
+// AppendToolResult 将结果记录到匹配的 ToolCall（按 ID）上。
+// 若无匹配的调用则返回 false。
 func (m *Message) AppendToolResult(callID string, r *ToolResult) bool {
 	for i := range m.ToolCalls {
 		if m.ToolCalls[i].ID == callID {

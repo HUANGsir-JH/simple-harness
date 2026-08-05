@@ -5,9 +5,9 @@ import (
 	"os"
 )
 
-// NewClient builds a streaming LLM client for the given config. The API key
-// is read from the environment (Config.EnvKey, defaulted per wire API);
-// missing key is an error. BaseURL "" selects the SDK default endpoint.
+// NewClient 为给定配置构建流式 LLM 客户端。API key 从环境变量读取
+// （Config.EnvKey，未指定时按 wire API 推断）；缺少 key 时报错。
+// BaseURL 为空时使用 SDK 默认端点。
 func NewClient(cfg Config) (Client, error) {
 	wire, err := parseWireAPI(cfg.Provider)
 	if err != nil {
@@ -50,7 +50,7 @@ func parseWireAPI(name string) (WireAPI, error) {
 	}
 }
 
-// providerBase is the shared provider implementation for both wire APIs.
+// providerBase 是两个 wire API 共享的 provider 基础实现。
 type providerBase struct {
 	model   string
 	baseURL string

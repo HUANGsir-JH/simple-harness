@@ -26,8 +26,8 @@ func main() {
 }
 
 func run(args []string) error {
-	// Pre-scan for the global --json flag before subcommand dispatch so both
-	// `harness --json run` and `harness run --json` work.
+	// 在子命令分发前预先扫描全局 --json 参数，使
+	// `harness --json run` 与 `harness run --json` 都可用。
 	jsonOut := false
 	rest := args
 	for i, a := range args {
@@ -115,11 +115,11 @@ func runCmd(args []string, jsonOut bool) error {
 	return nil
 }
 
-// --- config loading (temporary simplified version; full YAML in phase 4) ----
+// --- 配置加载（临时简化版；阶段四做完整 YAML）-------------------------------
 
-// configCandidates returns the config file search order: explicit path (if
-// given), then the project-local config.local.yaml, then ~/.harness/config.yaml.
-// API keys may live in the config file (api_key) or the environment.
+// configCandidates 返回配置文件查找顺序：显式路径（若指定）→
+// 项目级 config.local.yaml → ~/.harness/config.yaml。
+// API key 可放在配置文件（api_key）或环境变量中。
 func configCandidates(path string) []string {
 	if path != "" {
 		return []string{path}
@@ -137,9 +137,9 @@ func configCandidates(path string) []string {
 	return out
 }
 
-// loadConfig reads the provider configuration from the first existing config
-// file, falling back to environment variables (HARNESS_PROVIDER / HARNESS_MODEL
-// / HARNESS_BASE_URL) when none exists.
+// loadConfig 从第一个存在的配置文件中读取 provider 配置；
+// 若都不存在则回退到环境变量（HARNESS_PROVIDER / HARNESS_MODEL
+// / HARNESS_BASE_URL）。
 func loadConfig(path string) (provider.Config, error) {
 	for _, p := range configCandidates(path) {
 		data, err := os.ReadFile(p)
@@ -156,7 +156,7 @@ func loadConfig(path string) (provider.Config, error) {
 		return cfg, nil
 	}
 
-	// Fallback: environment variables.
+	// 回退：环境变量。
 	cfg := provider.Config{
 		Provider: os.Getenv("HARNESS_PROVIDER"),
 		Model:    os.Getenv("HARNESS_MODEL"),

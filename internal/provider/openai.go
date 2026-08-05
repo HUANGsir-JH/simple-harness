@@ -12,9 +12,8 @@ import (
 	"github.com/openai/openai-go/responses"
 )
 
-// openAIClient implements Client over the OpenAI Responses API (and
-// OpenAI-compatible endpoints). Per ADR-001 there is no per-vendor
-// implementation; the base URL override covers compatible backends.
+// openAIClient 基于 OpenAI Responses API（及 OpenAI 兼容端点）实现 Client。
+// 依据 ADR-001 无逐厂商实现；base URL 覆盖即可支持兼容后端。
 type openAIClient struct {
 	providerBase
 	client responses.ResponseService
@@ -52,7 +51,7 @@ func (o *openAIClient) Stream(ctx context.Context, req Request) (EventStream, er
 	return &openAIStream{stream: stream}, nil
 }
 
-// --- conversion: unified messages → Responses input items -------------------
+// --- 转换：统一消息 → Responses 输入项 -------------------------------
 
 func toOpenAIInput(msgs []*messages.Message) responses.ResponseInputParam {
 	var out responses.ResponseInputParam
@@ -82,8 +81,8 @@ func toOpenAIInput(msgs []*messages.Message) responses.ResponseInputParam {
 }
 
 func toOpenAIAssistantItem(m *messages.Message) responses.ResponseInputItemUnionParam {
-	// Assistant history messages that made tool calls must be sent as
-	// output-message items so their function-call children can be referenced.
+	// 发出过工具调用的历史助手消息必须以 output-message 项发送，
+	// 以便其 function-call 子项可被引用。
 	if len(m.ToolCalls) > 0 {
 		content := make([]responses.ResponseOutputMessageContentUnionParam, 0, len(m.ToolCalls)+1)
 		if m.Content != "" {
@@ -93,7 +92,7 @@ func toOpenAIAssistantItem(m *messages.Message) responses.ResponseInputItemUnion
 		}
 		for _, tc := range m.ToolCalls {
 			content = append(content, responses.ResponseOutputMessageContentUnionParam{
-				OfOutputText: &responses.ResponseOutputTextParam{Text: ""}, // placeholder, refined in phase 2
+				OfOutputText: &responses.ResponseOutputTextParam{Text: ""}, // 占位，阶段二完善
 			})
 			_ = tc
 		}
@@ -121,7 +120,7 @@ func toOpenAIToolResult(m *messages.Message) responses.ResponseInputItemUnionPar
 	}
 }
 
-// toOpenAITools converts unified tool specs to Responses API tool params.
+// toOpenAITools 将统一工具 spec 转换为 Responses API 工具参数。
 func toOpenAITools(tools []ToolSpec) []responses.ToolUnionParam {
 	var out []responses.ToolUnionParam
 	for _, t := range tools {
@@ -140,7 +139,7 @@ func toOpenAITools(tools []ToolSpec) []responses.ToolUnionParam {
 	return out
 }
 
-// --- stream adapter ----------------------------------------------------------
+// --- 流适配器 ------------------------------------------------------------
 
 type openAIStream struct {
 	stream *ssestream.Stream[responses.ResponseStreamEventUnion]

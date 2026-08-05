@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// TestVersionCommand verifies the version subcommand output.
+// TestVersionCommand 验证 version 子命令的输出。
 func TestVersionCommand(t *testing.T) {
 	old := os.Stdout
 	r, w, _ := os.Pipe()
@@ -29,28 +29,28 @@ func TestVersionCommand(t *testing.T) {
 	}
 }
 
-// TestHelpCommand verifies help output mentions subcommands.
+// TestHelpCommand 验证 help 输出提及子命令。
 func TestHelpCommand(t *testing.T) {
 	if err := run([]string{"help"}); err != nil {
 		t.Fatalf("run help: %v", err)
 	}
 }
 
-// TestUnknownCommand verifies unknown commands error.
+// TestUnknownCommand 验证未知命令报错。
 func TestUnknownCommand(t *testing.T) {
 	if err := run([]string{"bogus"}); err == nil {
 		t.Fatal("expected error for unknown command")
 	}
 }
 
-// TestRunMissingPrompt verifies run requires a prompt.
+// TestRunMissingPrompt 验证 run 需要 prompt。
 func TestRunMissingPrompt(t *testing.T) {
 	if err := run([]string{"run"}); err == nil {
 		t.Fatal("expected error when prompt missing")
 	}
 }
 
-// TestLoadConfigFromFile verifies YAML config loading.
+// TestLoadConfigFromFile 验证 YAML 配置加载。
 func TestLoadConfigFromFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
@@ -69,10 +69,9 @@ func TestLoadConfigFromFile(t *testing.T) {
 	}
 }
 
-// TestLoadConfigProjectLocal verifies the project-local config.local.yaml is
-// picked up before the user-level config.
+// TestLoadConfigProjectLocal 验证项目级 config.local.yaml 优先于用户级配置。
 func TestLoadConfigProjectLocal(t *testing.T) {
-	// Run in a temp cwd containing config.local.yaml.
+	// 在包含 config.local.yaml 的临时 cwd 中运行。
 	cwd, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
@@ -97,7 +96,7 @@ func TestLoadConfigProjectLocal(t *testing.T) {
 	}
 }
 
-// TestLoadConfigMissing verifies missing config errors.
+// TestLoadConfigMissing 验证缺失配置时报错。
 func TestLoadConfigMissing(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "nope.yaml")
@@ -108,7 +107,7 @@ func TestLoadConfigMissing(t *testing.T) {
 	}
 }
 
-// TestLoadConfigEnvFallback verifies env var fallback.
+// TestLoadConfigEnvFallback 验证环境变量回退。
 func TestLoadConfigEnvFallback(t *testing.T) {
 	t.Setenv("HARNESS_PROVIDER", "openai")
 	t.Setenv("HARNESS_MODEL", "gpt-4o")

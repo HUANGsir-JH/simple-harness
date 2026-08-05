@@ -10,7 +10,7 @@ import (
 	"github.com/agent-project/harness/internal/provider"
 )
 
-// textStream builds an event stream emitting the given text deltas then done.
+// textStream 构造一个事件流：先发出给定文本增量，再 done。
 func textStream(parts ...string) provider.EventStream {
 	var evs []provider.Event
 	for _, p := range parts {
@@ -20,7 +20,7 @@ func textStream(parts ...string) provider.EventStream {
 	return provider.NewFakeStream(evs)
 }
 
-// TestRunOnceText verifies RunOnce assembles deltas into a single message.
+// TestRunOnceText 验证 RunOnce 将增量拼装为单条消息。
 func TestRunOnceText(t *testing.T) {
 	fc := &provider.FakeClient{
 		StreamFn: func(ctx context.Context, req provider.Request) (provider.EventStream, error) {
@@ -46,14 +46,13 @@ func TestRunOnceText(t *testing.T) {
 	if len(deltas) != 3 || strings.Join(deltas, "") != "Hello world" {
 		t.Errorf("deltas: got %v", deltas)
 	}
-	// The request must have carried the thread messages.
+	// 请求必须携带了 thread 消息。
 	if fc.LastReq == nil || len(fc.LastReq.Messages) != 1 {
 		t.Fatalf("request messages: %+v", fc.LastReq)
 	}
 }
 
-// TestRunOnceEmptyStream verifies an empty stream still yields an assistant
-// message (empty content).
+// TestRunOnceEmptyStream 验证空流仍产生一条助手消息（内容为空）。
 func TestRunOnceEmptyStream(t *testing.T) {
 	fc := &provider.FakeClient{StreamFn: func(ctx context.Context, req provider.Request) (provider.EventStream, error) {
 		return provider.NewFakeStream(nil), nil
@@ -71,7 +70,7 @@ func TestRunOnceEmptyStream(t *testing.T) {
 	}
 }
 
-// TestRunOnceStreamError verifies a mid-stream error aborts and propagates.
+// TestRunOnceStreamError 验证流中错误会中止并传播。
 func TestRunOnceStreamError(t *testing.T) {
 	fc := &provider.FakeClient{StreamFn: func(ctx context.Context, req provider.Request) (provider.EventStream, error) {
 		return provider.NewFakeStream([]provider.Event{
@@ -89,7 +88,7 @@ func TestRunOnceStreamError(t *testing.T) {
 	}
 }
 
-// TestRunOnceStartError verifies a start failure propagates.
+// TestRunOnceStartError 验证启动失败会传播。
 func TestRunOnceStartError(t *testing.T) {
 	fc := &provider.FakeClient{StreamFn: func(ctx context.Context, req provider.Request) (provider.EventStream, error) {
 		return nil, errors.New("start failed")
@@ -103,8 +102,8 @@ func TestRunOnceStartError(t *testing.T) {
 	}
 }
 
-// TestRunOnceToolCallIgnored verifies phase-1 behavior: a tool call event is
-// tolerated (ignored) and the turn completes.
+// TestRunOnceToolCallIgnored 验证阶段一行为：tool call 事件被容忍（忽略），
+// 回合正常结束。
 func TestRunOnceToolCallIgnored(t *testing.T) {
 	fc := &provider.FakeClient{StreamFn: func(ctx context.Context, req provider.Request) (provider.EventStream, error) {
 		return provider.NewFakeStream([]provider.Event{

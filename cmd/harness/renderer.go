@@ -7,15 +7,15 @@ import (
 	"github.com/agent-project/harness/internal/messages"
 )
 
-// output is a minimal renderer abstraction (full ui.Renderer lands in phase 5;
-// per ADR-008 the CLI only needs a Start/delta/finish shape for phase 1).
+// output 是最小渲染器抽象（完整 ui.Renderer 在阶段五引入；
+// 依据 ADR-008，阶段一 CLI 只需 Start/delta/finish 形态）。
 type output interface {
 	start(t *messages.Thread)
 	delta(text string)
 	finish(m *messages.Message)
 }
 
-// --- text renderer (default) ------------------------------------------------
+// --- 文本渲染器（默认）-----------------------------------------------------
 
 type textRenderer struct{}
 
@@ -27,7 +27,7 @@ func (textRenderer) finish(m *messages.Message) {
 	}
 }
 
-// --- JSON renderer (--json: machine-readable events as JSONL) ----------------
+// --- JSON 渲染器（--json：机器可读的 JSONL 事件）-----------------------------
 
 type jsonEvent struct {
 	Type    string `json:"type"`
