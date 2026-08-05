@@ -103,3 +103,15 @@
 - **背景**：`--model` 未指定时取 models map 排序第一个。真实 API 验证暴露问题：DeepSeek 只支持 `deepseek-v4-flash`/`deepseek-v4-pro`，但排序第一个是 `deepseek-v4`（不存在的模型）导致 400 错误。
 - **选择**：默认取"配置里 models 的排序第一个"（实现不变），但**配置作者需确保第一个模型真实可用**（把可用的模型名放第一位，或用 --model 指定）。已把 config.local.yaml 中 `deepseek-v4` 改为真实可用的 `deepseek-v4-pro`。
 - **理由**：codex 同款行为（catalog 自动默认取第一个）；配置化后模型可用性由配置负责，代码无法校验远端模型名。真实使用中 `--model` 是最可靠的指定方式。
+
+## ADR-017：yaml 配置校验——加载时执行，一次返回全部错误
+
+- **背景**：多 provider 配置化后，错误配置（无 models、非法 wire_api、缺 key）会导致运行时才失败，难以排查。
+- **选择**：`Config.Validate()` 在 loadConfig 后立即执行（加载时校验，不合法直接退出不发起请求）。校验内容：providers 非空、default_provider 存在、wire_api 枚举（openai/anthropic）、models 非空、模型名非空、context_window >= 0、key 来源（api_key 或 env_key）非空。**一次返回全部错误**（多行），便于一次修完。
+- **理由**：加载时校验发现早、错误信息全；比 Resolve 时校验更贴近用户（配置问题应配置层解决）。
+
+## ADR-018：测试多 provider 必须切换 default_provider，不能依赖 --model
+
+- **背景**：`--model <名>` 只在当前选中 provider 的 models 里查。两个 provider 有同名模型时，`--model` 仍命中第一个 provider，造成"测了 anthropic wire"的假象（实际还是 openai wire）。
+- **选择**：测非默认 provider 时，临时改 `default_provider`（或提供 --provider flag）后再测；测试脚本做好配置备份与还原。
+- **理由**：`--model` 的选择域是"当前 provider 内"，跨 provider 测试必须从 provider 选择层切入。
