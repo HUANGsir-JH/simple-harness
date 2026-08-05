@@ -18,6 +18,10 @@ type anthropicClient struct {
 
 func newAnthropicClient(res *Resolved) *anthropicClient {
 	opts := []option.RequestOption{option.WithAPIKey(res.APIKey)}
+	// 某些环境（系统代理）会在出站请求注入 `Authorization: Bearer <无效值>`
+	// 头，DeepSeek 等兼容端点优先读 Authorization 导致 401。
+	// 用 WithAuthToken 显式设置正确的 Bearer 头覆盖它（与 X-Api-Key 双保险）。
+	opts = append(opts, option.WithAuthToken(res.APIKey))
 	if res.BaseURL != "" {
 		opts = append(opts, option.WithBaseURL(res.BaseURL))
 	}
