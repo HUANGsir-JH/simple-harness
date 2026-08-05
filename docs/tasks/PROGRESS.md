@@ -2,6 +2,21 @@
 
 > 按日期追加，最新在上。记录：进展、阻塞、问题、经验。
 
+## 2026-08-05（续）
+
+### anthropic wire 401 根因修复 ✅（重要调试）
+
+- **现象**：deepseek-claude（anthropic wire）调用 401 "Authentication Fails, Your api key: ****AGED is invalid"，但 key 对 openai wire 完全有效，curl 也 200
+- **排查过程**（多步对照实验）：
+  1. curl 直接测：`x-api-key` 和 `Authorization: Bearer` 对 DeepSeek anthropic 端点都 200 → key 有效、端点接受两种头
+  2. SDK 代理调试：发现 SDK 请求头里有 `Authorization: Bearer PROXY_MANAGED`（非 SDK 代码注入，是系统代理/全局软件在出站请求注入的）
+  3. 纯 Go `http.Client` 直连 + `x-api-key: 真实key` → **200**；再加 `Authorization: Bearer PROXY_MANAGED` → **401**
+  4. **根因确认**：DeepSeek 端点**优先读 Authorization 头**。系统注入的 `Bearer PROXY_MANAGED` 覆盖了正确的 `X-Api-Key` → 401。key 本身完全有效
+- **修复**：anthropic 适配层 `newAnthropicClient` 增加 `option.WithAuthToken(res.APIKey)` —— 显式设置正确的 `Authorization: Bearer 真实key`，覆盖系统注入的假头（与 X-Api-Key 双保险）
+- **验证**：`harness run`（deepseek-claude）正常回复 ✅
+- **教训**：OpenAI wire 无此问题（其 Authorization 本就是真实 key）；这是 anthropic wire 特有的坑
+- ADR-019：anthropic wire 必须显式设置 Authorization 头
+
 ## 2026-08-05
 
 ### 双 provider 真实测试 + yaml 校验 ✅
