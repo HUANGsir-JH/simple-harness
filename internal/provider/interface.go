@@ -34,15 +34,38 @@ type Provider interface {
 	ContextWindow() int
 }
 
-// Config 是面向用户的 provider 配置（YAML，可被环境变量覆盖）。
-// API key 可来自配置文件（api_key），也可来自环境变量
-// （EnvKey / 该 wire API 的惯例环境变量名）。
+// Config 是面向用户的完整配置（YAML），支持多 provider 多模型。
+// 结构：default_provider 指定默认供应商，providers 按名称分组定义。
 type Config struct {
-	Provider string `yaml:"provider"` // "openai" | "anthropic"
-	Model    string `yaml:"model"`
-	BaseURL  string `yaml:"base_url,omitempty"` // 可选端点覆盖
-	EnvKey   string `yaml:"env_key,omitempty"`  // 存放 API key 的环境变量名；为空时按 provider 推断
-	APIKey   string `yaml:"api_key,omitempty"`  // 直接写在配置中的 API key（例如由 .env 转换而来）
+	// DefaultProvider 是默认使用的 provider 名；未指定时取 providers 中
+	// 排序后的第一个。
+	DefaultProvider string `yaml:"default_provider,omitempty"`
+	// Providers 是全部自定义供应商，key 为供应商名。
+	Providers map[string]ProviderConfig `yaml:"providers"`
+}
+
+// ProviderConfig 描述一个自定义供应商（连接 + 鉴权 + 其下模型列表）。
+// 注意：与 Provider 接口（运行时抽象）不同，这是配置层的定义。
+type ProviderConfig struct {
+	// WireAPI 是该供应商使用的协议："openai"（Responses API）或
+	// "anthropic"（Messages API）。默认 openai。
+	WireAPI WireAPI `yaml:"wire_api,omitempty"`
+	// BaseURL 覆盖 SDK 默认端点；为空时使用官方默认。
+	BaseURL string `yaml:"base_url,omitempty"`
+	// EnvKey 是存放 API key 的环境变量名；与 APIKey 二选一。
+	EnvKey string `yaml:"env_key,omitempty"`
+	// APIKey 是直接写在配置中的 API key（例如由 .env 转换而来）；
+	// 优先级高于 EnvKey。为空时从 EnvKey 环境变量读取。
+	APIKey string `yaml:"api_key,omitempty"`
+	// Models 是该供应商下的模型定义，key 为模型 ID。
+	Models map[string]Model `yaml:"models"`
+}
+
+// Model 是单个模型定义。
+type Model struct {
+	// ContextWindow 是该模型的上下文窗口（token 数）；
+	// 0 表示使用 DefaultContextWindow。
+	ContextWindow int `yaml:"context_window,omitempty"`
 }
 
 // DefaultEnvKey 返回某 wire API 的惯例 API key 环境变量名。

@@ -13,46 +13,30 @@ func TestDefaultEnvKey(t *testing.T) {
 	}
 }
 
-func TestContextWindowFor(t *testing.T) {
-	cases := []struct {
-		model string
-		want  int
-	}{
-		{"gpt-4o", 128000},
-		{"gpt-5.2", 400000},
-		{"claude-sonnet-5", 1000000},
-		{"unknown-model-xyz", DefaultContextWindow},
-	}
-	for _, c := range cases {
-		if got := ContextWindowFor(c.model); got != c.want {
-			t.Errorf("ContextWindowFor(%q) = %d, want %d", c.model, got, c.want)
-		}
-	}
-}
-
-// TestFactoryMissingKey 验证无 API key 时 NewClient 报错。
-func TestFactoryMissingKey(t *testing.T) {
-	t.Setenv("OPENAI_API_KEY", "")
-	t.Setenv("ANTHROPIC_API_KEY", "")
-	if _, err := NewClient(Config{Provider: "openai", Model: "gpt-4o"}); err == nil {
-		t.Fatal("expected error when API key missing")
-	}
-	if _, err := NewClient(Config{Provider: "anthropic", Model: "claude-sonnet-5"}); err == nil {
-		t.Fatal("expected error when API key missing")
-	}
-}
-
-// TestFactoryUnknownProvider 验证未知 provider 名被拒绝。
+// TestFactoryUnknownProvider 验证未知 wire api 被拒绝。
 func TestFactoryUnknownProvider(t *testing.T) {
-	if _, err := NewClient(Config{Provider: "gemini", Model: "x"}); err == nil {
-		t.Fatal("expected error for unknown provider")
+	if _, err := NewClient(&Resolved{WireAPI: "gemini", Model: "x"}); err == nil {
+		t.Fatal("expected error for unknown wire api")
 	}
 }
 
-// TestFactoryMissingModel 验证 model 为必填。
-func TestFactoryMissingModel(t *testing.T) {
-	t.Setenv("OPENAI_API_KEY", "test-key")
-	if _, err := NewClient(Config{Provider: "openai"}); err == nil {
-		t.Fatal("expected error when model missing")
+// TestFactoryNilResolved 验证 nil 配置报错。
+func TestFactoryNilResolved(t *testing.T) {
+	if _, err := NewClient(nil); err == nil {
+		t.Fatal("expected error for nil resolved")
+	}
+}
+
+// TestFactoryWireAPIDefault 验证 OpenAI 客户端构建成功（key 来自 Resolved）。
+func TestFactoryWireAPIDefault(t *testing.T) {
+	c, err := NewClient(&Resolved{WireAPI: WireOpenAI, Model: "gpt-4o", APIKey: "k"})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	if c == nil {
+		t.Fatal("expected non-nil client")
+	}
+	if c.(*openAIClient).Model() != "gpt-4o" {
+		t.Errorf("model: got %q", c.(*openAIClient).Model())
 	}
 }

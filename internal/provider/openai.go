@@ -19,15 +19,20 @@ type openAIClient struct {
 	client responses.ResponseService
 }
 
-func newOpenAIClient(cfg Config, apiKey string) *openAIClient {
-	opts := []option.RequestOption{option.WithAPIKey(apiKey)}
-	if cfg.BaseURL != "" {
-		opts = append(opts, option.WithBaseURL(cfg.BaseURL))
+func newOpenAIClient(res *Resolved) *openAIClient {
+	opts := []option.RequestOption{option.WithAPIKey(res.APIKey)}
+	if res.BaseURL != "" {
+		opts = append(opts, option.WithBaseURL(res.BaseURL))
 	}
 	c := openai.NewClient(opts...)
 	return &openAIClient{
-		providerBase: providerBase{model: cfg.Model, baseURL: cfg.BaseURL, apiKey: apiKey},
-		client:       c.Responses,
+		providerBase: providerBase{
+			model:         res.Model,
+			baseURL:       res.BaseURL,
+			apiKey:        res.APIKey,
+			contextWindow: res.ContextWindow,
+		},
+		client: c.Responses,
 	}
 }
 

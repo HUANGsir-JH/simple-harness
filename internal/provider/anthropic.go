@@ -16,15 +16,20 @@ type anthropicClient struct {
 	client anthropic.MessageService
 }
 
-func newAnthropicClient(cfg Config, apiKey string) *anthropicClient {
-	opts := []option.RequestOption{option.WithAPIKey(apiKey)}
-	if cfg.BaseURL != "" {
-		opts = append(opts, option.WithBaseURL(cfg.BaseURL))
+func newAnthropicClient(res *Resolved) *anthropicClient {
+	opts := []option.RequestOption{option.WithAPIKey(res.APIKey)}
+	if res.BaseURL != "" {
+		opts = append(opts, option.WithBaseURL(res.BaseURL))
 	}
 	c := anthropic.NewClient(opts...)
 	return &anthropicClient{
-		providerBase: providerBase{model: cfg.Model, baseURL: cfg.BaseURL, apiKey: apiKey},
-		client:       c.Messages,
+		providerBase: providerBase{
+			model:         res.Model,
+			baseURL:       res.BaseURL,
+			apiKey:        res.APIKey,
+			contextWindow: res.ContextWindow,
+		},
+		client: c.Messages,
 	}
 }
 

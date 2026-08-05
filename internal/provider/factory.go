@@ -2,61 +2,32 @@ package provider
 
 import (
 	"fmt"
-	"os"
 )
 
-// NewClient 为给定配置构建流式 LLM 客户端。API key 从环境变量读取
-// （Config.EnvKey，未指定时按 wire API 推断）；缺少 key 时报错。
-// BaseURL 为空时使用 SDK 默认端点。
-func NewClient(cfg Config) (Client, error) {
-	wire, err := parseWireAPI(cfg.Provider)
-	if err != nil {
-		return nil, err
+// NewClient 从解析后的运行时配置构建流式 LLM 客户端。
+// 调用方应先调用 Resolve 得到 Resolved，再传入本函数。
+func NewClient(res *Resolved) (Client, error) {
+	if res == nil {
+		return nil, fmt.Errorf("provider: resolved config is nil")
 	}
-	if cfg.Model == "" {
-		return nil, fmt.Errorf("provider: model is required")
-	}
-
-	envKey := cfg.EnvKey
-	if envKey == "" {
-		envKey = DefaultEnvKey(wire)
-	}
-	apiKey := cfg.APIKey
-	if apiKey == "" {
-		apiKey = os.Getenv(envKey)
-	}
-	if apiKey == "" {
-		return nil, fmt.Errorf("provider: no API key (set %s, configure env_key, or put api_key in the config file)", envKey)
-	}
-
-	switch wire {
+	switch res.WireAPI {
 	case WireOpenAI:
-		return newOpenAIClient(cfg, apiKey), nil
+		return newOpenAIClient(res), nil
 	case WireAnthropic:
-		return newAnthropicClient(cfg, apiKey), nil
+		return newAnthropicClient(res), nil
 	default:
-		return nil, fmt.Errorf("provider: unsupported wire api %q", wire)
+		return nil, fmt.Errorf("provider: unsupported wire api %q", res.WireAPI)
 	}
 }
 
-func parseWireAPI(name string) (WireAPI, error) {
-	switch name {
-	case "openai", "responses", "":
-		return WireOpenAI, nil
-	case "anthropic", "claude", "messages":
-		return WireAnthropic, nil
-	default:
-		return "", fmt.Errorf("provider: unknown provider %q (want openai or anthropic)", name)
-	}
-}
-
-// providerBase 是两个 wire API 共享的 provider 基础实现。
+// providerBase 是各 wire API 共享的 provider 基础实现。
 type providerBase struct {
-	model   string
-	baseURL string
-	apiKey  string
+	model         string
+	baseURL       string
+	apiKey        string
+	contextWindow int
 }
 
 func (p *providerBase) Model() string      { return p.model }
 func (p *providerBase) BaseURL() string    { return p.baseURL }
-func (p *providerBase) ContextWindow() int { return ContextWindowFor(p.model) }
+func (p *providerBase) ContextWindow() int { return p.contextWindow }

@@ -36,7 +36,7 @@ func TestOpenAIStreamTextDelta(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := newOpenAIClient(Config{Model: "gpt-4o", BaseURL: srv.URL}, "test-key")
+	c := newOpenAIClient(&Resolved{Model: "gpt-4o", BaseURL: srv.URL, APIKey: "test-key"})
 	es, err := c.Stream(context.Background(), Request{Messages: []*messages.Message{NewTestUserMsg("hi")}})
 	if err != nil {
 		t.Fatalf("stream: %v", err)
@@ -80,7 +80,7 @@ func TestOpenAIStreamFunctionCall(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := newOpenAIClient(Config{Model: "gpt-4o", BaseURL: srv.URL}, "test-key")
+	c := newOpenAIClient(&Resolved{Model: "gpt-4o", BaseURL: srv.URL, APIKey: "test-key"})
 	es, err := c.Stream(context.Background(), Request{Messages: []*messages.Message{NewTestUserMsg("read it")}})
 	if err != nil {
 		t.Fatalf("stream: %v", err)
@@ -116,7 +116,7 @@ func TestOpenAIStreamError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := newOpenAIClient(Config{Model: "gpt-4o", BaseURL: srv.URL}, "test-key")
+	c := newOpenAIClient(&Resolved{Model: "gpt-4o", BaseURL: srv.URL, APIKey: "test-key"})
 	es, err := c.Stream(context.Background(), Request{Messages: []*messages.Message{NewTestUserMsg("hi")}})
 	if err != nil {
 		t.Fatalf("stream: %v", err)
@@ -147,7 +147,7 @@ func TestAnthropicStreamTextDelta(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := newAnthropicClient(Config{Model: "claude-sonnet-5", BaseURL: srv.URL}, "test-key")
+	c := newAnthropicClient(&Resolved{Model: "claude-sonnet-5", BaseURL: srv.URL, APIKey: "test-key"})
 	es, err := c.Stream(context.Background(), Request{Messages: []*messages.Message{NewTestUserMsg("hi")}})
 	if err != nil {
 		t.Fatalf("stream: %v", err)
@@ -192,7 +192,7 @@ func TestAnthropicStreamToolUse(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := newAnthropicClient(Config{Model: "claude-sonnet-5", BaseURL: srv.URL}, "test-key")
+	c := newAnthropicClient(&Resolved{Model: "claude-sonnet-5", BaseURL: srv.URL, APIKey: "test-key"})
 	es, err := c.Stream(context.Background(), Request{Messages: []*messages.Message{NewTestUserMsg("read it")}})
 	if err != nil {
 		t.Fatalf("stream: %v", err)
