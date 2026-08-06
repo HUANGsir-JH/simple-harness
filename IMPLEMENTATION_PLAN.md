@@ -17,10 +17,11 @@
 | 内部消息模型 | **统一 Message 类型**（role/content/tool_calls/tool_results），provider 适配转换 |
 | 会话存储 | JSONL 文件（每会话一个，追加写） |
 | CLI 交互 | Renderer 接口抽象，v1 简单流式渲染，TUI 后续插拔 |
-| 权限审批 | 分层审批（危险操作确认、安全操作自动放行） |
+| 权限审批 | 三档权限（readonly / acceptedit / bypass）+ 规则匹配引擎（保留扩展点）；2026-08-06 调整，替代原三态 |
+| 系统提示词 | 动态拼接（AGENTS.md 注入 + 组装）；当前硬编码待替换（见"规划调整"） |
 | 工具执行 | 并发执行全部 tool_call，结果按 call_id 回填 |
 | 子 agent | spawn_agent + **主→子单向消息传递**（无 mailbox/队列，简化版） |
-| 内置工具 | 文件操作 + Shell 执行 + apply_patch（grep/搜索未选，可后续补） |
+| 内置工具 | 文件操作 + Shell 执行 + apply_patch（grep/搜索未选，可后续补）；**todo 工具单独开阶段做** |
 | 配置 | YAML 文件（~/.harness/config.yaml + 项目级）+ 环境变量覆盖 |
 | thinking 推理模式 | 模型级配置（`enabled` + `efforts` 档位集，默认启用/默认 high）；CLI `--effort` / `--thinking` / `--no-thinking` 运行时覆盖；按各 wire 标准参数传递（openai → reasoning.effort；anthropic → thinking + output_config.effort） |
 | 定位 | 通用框架（内部包导出、文档完善），项目名暂用 `harness` |
@@ -206,6 +207,13 @@ type Renderer interface {
 - v1：`simple` 渲染器（ANSI 彩色输出 + 文本流式）
 - v2：`tui` 渲染器插拔替换（接口不变）
 - `--json` 模式输出事件 JSONL（排障利器，直接复用 Renderer 接口另一实现）
+
+## 规划调整（2026-08-06 用户补充，记录，实现时探讨）
+
+- **阶段二增补**：除工具调用外，一并实现**完整简单的终端渲染**（文本流式 + 工具调用展示）；编写时考虑好**工具权限框架设计**，预留扩展点（为阶段三铺路）
+- **阶段三权限/审批改为三档**：`readonly` / `acceptedit` / `bypass`；**规则匹配引擎保留扩展点**即可（替代原 UnlessTrusted/OnRequest/Never 三态）
+- **系统提示词动态拼接**：当前 agent.go 硬编码 `Instructions: "You are a helpful coding agent."`，需要动态拼接；新建一个阶段或并入现有阶段（建议并入阶段四，与 AGENTS.md 注入一起做提示词组装）
+- **todo 工具**：阶段二之后**单独开一个阶段**实现，不做进工具系统阶段
 
 ## 实施阶段
 
