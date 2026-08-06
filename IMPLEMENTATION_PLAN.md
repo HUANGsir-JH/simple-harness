@@ -229,14 +229,15 @@ type Renderer interface {
 **成功标准**：`harness run "读取当前目录文件列表并告诉我"` 能触发工具调用并正确回填；**多轮工具调用闭环 + 终端渲染完整可跑 —— 阶段二完成 = 一个可用的简单终端 CLI agent 循环**
 **测试**：各工具单测（临时目录）；loop 并发执行测试（mock 3 个 tool_call 验证并发 + 回填顺序）
 
-**自动化测试方案（2026-08-06 调研）**：
+**自动化测试方案（2026-08-06 调研 + 决策）**：
 - **分层**：
   1. 进程内逻辑测试：`go test` + FakeClient（agent 循环正确性，主力）
-  2. 进程外端到端：**ActiveState/termtest** 驱动真实 harness 进程，LLM 端点指向 mock HTTP server（不花 API）
-  3. 真实 API 冒烟（少量）
+  2. 进程外端到端回归：**ActiveState/termtest** 驱动真实 harness 进程，LLM 端点指向 **mock HTTP server**（确定性，不依赖 LLM 非确定性输出）——回归测试不用真实 LLM 端点
+  3. **真实 API 冒烟**（方案 B 决策）：CI 末尾跑 2-3 条真实调用（DeepSeek 便宜），宽松断言（退出码 0、有 assistant_message、无 error 事件），验证协议兼容/参数被接受/链路通
   4. CI 编排（GitHub Actions 或现有 CI），长跑测试全程 timeout 兜底（防 agent 死循环挂死）
 - **关键设计**：agent 层输出**回合边界事件**（`--json` 的 `turn_done`），作为自动化测试的断言锚点——这是工具无法替代的设计责任
 - **工具选型理由**：termtest = expect 语义（SendLine/Expect/ExpectExitCode）+ vt10x 虚拟终端渲染模拟（匹配"用户看到的内容"）+ **Windows 原生 ConPTY**（本项目 Windows 环境）+ Go 同语言
+- **后续可选**：录制回放（首次真实 API 录响应，之后回放），兼得真实性与确定性，实现成本高，后续阶段再评估
 - **待验证**：termtest 驱动 harness 的集成 demo（Windows 下跑通 `SendLine → Expect → ExpectExitCode`）
 
 ### 阶段 3：审批 + Hooks + 错误重试
