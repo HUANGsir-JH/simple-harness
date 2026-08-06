@@ -121,3 +121,17 @@
 - **背景**：deepseek-claude（anthropic wire）调用持续 401，但 key 对 openai wire 有效、curl 也 200。对照实验（纯 Go http.Client 直连 ± Authorization 头）确认：**系统代理/全局软件会在所有出站请求注入 `Authorization: Bearer PROXY_MANAGED` 头**，而 DeepSeek 等兼容端点**优先读 Authorization 头**，导致正确的 `X-Api-Key` 被无视 → 401。
 - **选择**：anthropic 适配层在 `WithAPIKey`（X-Api-Key 头）之外，**追加 `option.WithAuthToken(apiKey)`** 显式设置正确的 `Authorization: Bearer 真实key`，覆盖系统注入的假头（双保险）。
 - **理由**：key 有效、端点兼容，问题在鉴权头被污染；显式设置正确头是最小且通用的修复。OpenAI wire 无此问题（其 Authorization 本就是真实 key）。
+
+## ADR-020：thinking 推理模式——模型级配置 + 按协议标准参数传递
+
+- **背景**：DeepSeek V4 等模型支持 thinking（推理）模式，默认启用、档位 low/high/max。框架需默认启用、支持多档位、运行时可修改。
+- **选择**：
+  - **配置**（model 级）：`thinking: {enabled, efforts}`。`enabled` 默认 true；`efforts` 是模型支持的档位集（默认 `[low, high, max]`），覆盖默认集，未配置回退默认。
+  - **当前档位默认 high**（openai/anthropic 两协议一致）；high 不在 efforts 内时取 efforts 第一个。efforts 做白名单校验。
+  - **运行时覆盖**（CLI 优先于配置）：`--effort <档位>`（须在模型 efforts 内，否则报错）、`--thinking` / `--no-thinking`（互斥 bool）。
+  - **传递**（各 wire 的 SDK 标准参数，非后端特化字符串）：
+    - openai（Responses）→ `reasoning: {effort: low|high|max}`；关闭传 `effort: "none"`
+    - anthropic（Messages）→ `thinking: {type: enabled, budget_tokens}` + SDK `output_config: {effort}`；关闭传 `thinking: {type: disabled}`
+  - **关闭必须显式传关闭表达**：DeepSeek 等兼容端点默认开启 thinking，"不传参数"无法关闭（不传 = 走模型默认 = 开）。
+- **理由**：配置与传递都是通用语义 / 协议标准字段，DeepSeek 只是恰好兼容，不写任何后端特化。efforts 列表让模型粒度声明支持档位，运行时 --effort 在集内校验。anthropic 的 `output_config.effort` 是 SDK 官方字段（DeepSeek 兼容端点支持）。
+- **注意**：openai wire 关闭时的 `effort: "none"` 是 DeepSeek 等兼容端点在 OpenAI 格式内的关闭约定；标准 OpenAI o 系列 effort 仅 low/medium/high，若后续接入需按官方语义适配关闭。

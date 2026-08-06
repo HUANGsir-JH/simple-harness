@@ -22,6 +22,7 @@
 | 子 agent | spawn_agent + **主→子单向消息传递**（无 mailbox/队列，简化版） |
 | 内置工具 | 文件操作 + Shell 执行 + apply_patch（grep/搜索未选，可后续补） |
 | 配置 | YAML 文件（~/.harness/config.yaml + 项目级）+ 环境变量覆盖 |
+| thinking 推理模式 | 模型级配置（`enabled` + `efforts` 档位集，默认启用/默认 high）；CLI `--effort` / `--thinking` / `--no-thinking` 运行时覆盖；按各 wire 标准参数传递（openai → reasoning.effort；anthropic → thinking + output_config.effort） |
 | 定位 | 通用框架（内部包导出、文档完善），项目名暂用 `harness` |
 
 ## 架构总览
@@ -213,7 +214,7 @@ type Renderer interface {
 **成功标准**：`harness run "你好"` 能从真实 API 拿到流式回复 ✅（DeepSeek 兼容端点验证通过）
 **测试**：provider 单测（mock HTTP）✅；loop 单测（mock LLMClient 返回固定事件流）✅
 
-> 阶段 1 详细设计见 `docs/tasks/TASKS.md`（单元 1.1~1.8 全部完成）。重试项：两 SDK 内置退避重试（ADR-012）。
+> 阶段 1 详细设计见 `docs/tasks/TASKS.md`（单元 1.1~1.9 全部完成）。重试项：两 SDK 内置退避重试（ADR-012）。thinking 推理模式（ADR-020）：模型级配置 + 双 wire 标准参数 + CLI 运行时覆盖，真实 API 双 wire 验证通过。
 
 ### 阶段 2：工具系统 + 并发执行
 **目标**：`tools` 包（Tool 接口 + 注册表 + 错误二分类）、内置工具（read_file/list_dir/glob/shell_command/apply_patch）、并行执行 + call_id 回填

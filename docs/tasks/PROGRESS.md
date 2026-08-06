@@ -2,6 +2,21 @@
 
 > 按日期追加，最新在上。记录：进展、阻塞、问题、经验。
 
+## 2026-08-06
+
+### thinking 推理模式支持 ✅
+
+- **需求**：DeepSeek V4 支持 thinking（默认启用，档位 low/high/max）。框架需默认启用 + 多档位 + 运行时修改。**用户约束：不能变成 DS 特化格式，配置与传递都按通用语义 / 各 wire 标准参数**
+- **配置**（model 级）：`thinking: {enabled, efforts}` —— enabled 默认 true；efforts 是模型支持档位集（默认 [low, high, max]）；当前档位默认 high（openai/anthropic 两协议一致）
+- **CLI 运行时覆盖**（优先于配置）：`--effort <low|high|max>`（须在模型 efforts 内否则报错）+ `--thinking` / `--no-thinking`（互斥 bool）
+- **传递**（各 wire SDK 标准参数）：
+  - openai（Responses）：`reasoning: {effort: low|high|max}`；关闭传 `effort: none`
+  - anthropic（Messages）：`thinking: {type: enabled, budget_tokens}` + SDK `output_config: {effort}`；关闭传 `thinking: {type: disabled}`
+- **关键坑**：DeepSeek **默认开启 thinking** → `--no-thinking` 若不显式传关闭表达（effort none / thinking disabled）根本关不掉
+- **真实 API 验证**（双 wire 全路径）：deepseek（openai wire）high / max / none 全通过；deepseek-claude（anthropic wire）enabled+high / max / disabled 全通过，无 400
+- **测试**：resolve 默认值 + efforts 解析 + YAML 解析、validate 白名单、wire 请求体参数断言（4 个新测试）、CLI flag 互斥与校验（3 个新测试），全绿
+- 文档：ADR-020；config.example.yaml 更新 thinking 示例；config.local.yaml deepseek 模型加 thinking 配置
+
 ## 2026-08-05（续）
 
 ### anthropic wire 401 根因修复 ✅（重要调试）
