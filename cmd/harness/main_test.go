@@ -136,3 +136,57 @@ func TestRunModelFlag(t *testing.T) {
 		t.Errorf("--model flag not recognized: %v", err)
 	}
 }
+
+// writeTestConfig 在临时目录写入一个带 thinking 配置的测试配置文件。
+func writeTestConfig(t *testing.T, efforts string) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := `default_provider: p
+providers:
+  p:
+    wire_api: openai
+    api_key: sk-test
+    models:
+      m:
+        context_window: 128000
+        thinking:
+          efforts: [` + efforts + `]
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	return path
+}
+
+// TestRunThinkingFlagsMutuallyExclusive 验证 --thinking 与 --no-thinking 互斥。
+func TestRunThinkingFlagsMutuallyExclusive(t *testing.T) {
+	cfgPath := writeTestConfig(t, "low, high, max")
+	err := runCmd([]string{"--config", cfgPath, "--thinking", "--no-thinking", "hi"}, false)
+	if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("expected mutual exclusion error, got %v", err)
+	}
+}
+
+// TestRunEffortNotSupported 验证 --effort 不在模型 efforts 内时报错。
+func TestRunEffortNotSupported(t *testing.T) {
+	cfgPath := writeTestConfig(t, "low, high") // 不支持 max
+	err := runCmd([]string{"--config", cfgPath, "--effort", "max", "hi"}, false)
+	if err == nil || !strings.Contains(err.Error(), "not supported") {
+		t.Fatalf("expected effort not supported error, got %v", err)
+	}
+}
+
+// TestRunThinkingFlagsParsed 验证 --thinking/--no-thinking/--effort 被 flag 解析接受
+// （错误发生在配置缺失而非 flag 未定义）。
+func TestRunThinkingFlagsParsed(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "missing.yaml")
+	err := runCmd([]string{"--config", cfgPath, "--thinking", "--effort", "max", "hi"}, false)
+	if err == nil {
+		t.Fatal("expected config error")
+	}
+	if strings.Contains(err.Error(), "flag provided but not defined") {
+		t.Errorf("thinking flags not recognized: %v", err)
+	}
+}

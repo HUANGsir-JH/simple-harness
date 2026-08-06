@@ -11,6 +11,7 @@ import (
 //   - default_provider 存在（若指定）
 //   - 每个 provider 有非空的 models、wire_api 合法、至少一个 key 来源
 //   - 每个模型名非空、context_window 必须 >= 0（0 表示回退默认，不算错）
+//   - thinking.efforts 中每个档位若配置必须在 low/high/max 白名单内
 //
 // 返回所有错误（多行），便于一次修完。
 func (c Config) Validate() error {
@@ -69,6 +70,13 @@ func validateProvider(name string, p ProviderConfig) []string {
 			}
 			if p.Models[m].ContextWindow < 0 {
 				errs = append(errs, fmt.Sprintf("%s.models.%s.context_window: %d invalid (must be >= 0)", prefix, m, p.Models[m].ContextWindow))
+			}
+			if t := p.Models[m].Thinking; t != nil {
+				for _, e := range t.Efforts {
+					if e != EffortLow && e != EffortHigh && e != EffortMax {
+						errs = append(errs, fmt.Sprintf("%s.models.%s.thinking.efforts: %q invalid (want low, high or max)", prefix, m, e))
+					}
+				}
 			}
 		}
 	}

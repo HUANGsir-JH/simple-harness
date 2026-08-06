@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"slices"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -177,6 +178,9 @@ providers:
     models:
       deepseek-v4-flash:
         context_window: 128000
+        thinking:
+          enabled: false
+          efforts: [low, high, max]
       deepseek-v4:
         context_window: 256000
   claude:
@@ -198,10 +202,97 @@ providers:
 	if ds.WireAPI != WireOpenAI || ds.BaseURL != "https://api.deepseek.com/" || ds.APIKey != "sk-1" {
 		t.Errorf("deepseek: %+v", ds)
 	}
-	if ds.Models["deepseek-v4-flash"].ContextWindow != 128000 {
-		t.Errorf("deepseek-v4-flash: %+v", ds.Models["deepseek-v4-flash"])
+	flash := ds.Models["deepseek-v4-flash"]
+	if flash.ContextWindow != 128000 {
+		t.Errorf("deepseek-v4-flash: %+v", flash)
+	}
+	if flash.Thinking == nil {
+		t.Fatal("deepseek-v4-flash: thinking not parsed")
+	}
+	if flash.Thinking.Enabled == nil || *flash.Thinking.Enabled {
+		t.Errorf("deepseek-v4-flash thinking.enabled: %+v", flash.Thinking.Enabled)
+	}
+	if !slices.Equal(flash.Thinking.Efforts, []string{EffortLow, EffortHigh, EffortMax}) {
+		t.Errorf("deepseek-v4-flash thinking.efforts: got %v", flash.Thinking.Efforts)
 	}
 	if cfg.Providers["claude"].WireAPI != WireAnthropic {
 		t.Errorf("claude wire api: %q", cfg.Providers["claude"].WireAPI)
+	}
+}
+
+// TestResolveThinkingDefault 验证未配置 thinking 时默认启用、默认支持集、档位 high。
+func TestResolveThinkingDefault(t *testing.T) {
+	r, err := Resolve(testConfig(), "") // 模型均未配置 thinking
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if !r.ThinkingEnabled {
+		t.Error("thinking: expected enabled by default")
+	}
+	if r.ThinkingEffort != DefaultThinkingEffort {
+		t.Errorf("thinking effort: got %q want %q", r.ThinkingEffort, DefaultThinkingEffort)
+	}
+	if !slices.Equal(r.ThinkingEfforts, DefaultEfforts) {
+		t.Errorf("thinking efforts: got %v want default %v", r.ThinkingEfforts, DefaultEfforts)
+	}
+}
+
+// TestResolveThinkingDisabled 验证 enabled: false 生效。
+func TestResolveThinkingDisabled(t *testing.T) {
+	f := false
+	cfg := Config{
+		Providers: map[string]ProviderConfig{
+			"p": {APIKey: "k", Models: map[string]Model{
+				"m": {Thinking: &Thinking{Enabled: &f}},
+			}},
+		},
+	}
+	r, err := Resolve(cfg, "")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if r.ThinkingEnabled {
+		t.Error("thinking: expected disabled")
+	}
+}
+
+// TestResolveThinkingEfforts 验证 efforts 支持集解析；high 不在集内时
+// 当前档位回退到第一个。
+func TestResolveThinkingEfforts(t *testing.T) {
+	cfg := Config{
+		Providers: map[string]ProviderConfig{
+			"p": {APIKey: "k", Models: map[string]Model{
+				"m": {Thinking: &Thinking{Efforts: []string{EffortLow, EffortMax}}},
+			}},
+		},
+	}
+	r, err := Resolve(cfg, "")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if !slices.Contains(r.ThinkingEfforts, EffortMax) {
+		t.Errorf("thinking efforts: got %v want contains %q", r.ThinkingEfforts, EffortMax)
+	}
+	// high 不在集内 → 当前档位取第一个（low）
+	if r.ThinkingEffort != EffortLow {
+		t.Errorf("thinking effort: got %q want %q", r.ThinkingEffort, EffortLow)
+	}
+}
+
+// TestResolveThinkingEffortsContainHigh 验证 high 在集内时当前档位保持 high。
+func TestResolveThinkingEffortsContainHigh(t *testing.T) {
+	cfg := Config{
+		Providers: map[string]ProviderConfig{
+			"p": {APIKey: "k", Models: map[string]Model{
+				"m": {Thinking: &Thinking{Efforts: []string{EffortLow, EffortHigh, EffortMax}}},
+			}},
+		},
+	}
+	r, err := Resolve(cfg, "")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if r.ThinkingEffort != EffortHigh {
+		t.Errorf("thinking effort: got %q want %q", r.ThinkingEffort, EffortHigh)
 	}
 }

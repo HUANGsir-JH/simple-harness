@@ -66,7 +66,32 @@ type Model struct {
 	// ContextWindow 是该模型的上下文窗口（token 数）；
 	// 0 表示使用 DefaultContextWindow。
 	ContextWindow int `yaml:"context_window,omitempty"`
+	// Thinking 是该模型的 thinking（推理模式）配置；
+	// 未配置时默认启用 thinking、档位 high（见 DefaultThinkingEffort）。
+	Thinking *Thinking `yaml:"thinking,omitempty"`
 }
+
+// Thinking 是模型级 thinking（推理模式）配置。字段是通用语义，
+// 各 wire 适配层按各自 SDK 标准参数传递（openai → reasoning.effort；
+// anthropic → thinking + output_config.effort），不对具体后端特化。
+type Thinking struct {
+	// Enabled 是否启用 thinking；nil（未配置）表示启用。
+	Enabled *bool `yaml:"enabled,omitempty"`
+	// Efforts 是模型支持的推理档位集（EffortLow / EffortHigh / EffortMax），
+	// 覆盖默认档位集 DefaultEfforts；未配置回退默认。
+	// 运行时 --effort 只能在 Efforts 内选择。
+	Efforts []string `yaml:"efforts,omitempty"`
+}
+
+// thinking 推理档位（通用语义，非某后端特化）。
+const (
+	EffortLow  = "low"
+	EffortHigh = "high"
+	EffortMax  = "max"
+)
+
+// DefaultThinkingEffort 是未配置 thinking.effort 时的默认档位。
+const DefaultThinkingEffort = EffortHigh
 
 // DefaultEnvKey 返回某 wire API 的惯例 API key 环境变量名。
 func DefaultEnvKey(w WireAPI) string {

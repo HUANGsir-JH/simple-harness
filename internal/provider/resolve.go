@@ -3,21 +3,28 @@ package provider
 import (
 	"fmt"
 	"os"
+	"slices"
 	"sort"
 )
 
 // DefaultContextWindow 是模型未配置 context_window 时的默认值。
 const DefaultContextWindow = 128000
 
+// DefaultEfforts 是模型未配置 thinking.efforts 时的默认档位集。
+var DefaultEfforts = []string{EffortLow, EffortHigh, EffortMax}
+
 // Resolved 是解析后的运行时配置：选定 provider + 模型。
 // 由 Resolve 产出，NewClient 直接消费。
 type Resolved struct {
-	ProviderID    string
-	WireAPI       WireAPI
-	BaseURL       string
-	APIKey        string
-	Model         string
-	ContextWindow int
+	ProviderID      string
+	WireAPI         WireAPI
+	BaseURL         string
+	APIKey          string
+	Model           string
+	ContextWindow   int
+	ThinkingEnabled bool
+	ThinkingEffort  string
+	ThinkingEfforts []string
 }
 
 // Resolve 从 Config 与可选的 --model 参数解析出运行时配置。
@@ -41,9 +48,12 @@ func Resolve(cfg Config, modelFlag string) (*Resolved, error) {
 	}
 
 	cw := DefaultContextWindow
-	if m := p.Models[model]; m.ContextWindow > 0 {
+	m := p.Models[model]
+	if m.ContextWindow > 0 {
 		cw = m.ContextWindow
 	}
+
+	thinkingEnabled, thinkingEfforts, thinkingEffort := resolveThinking(m)
 
 	apiKey, err := resolveAPIKey(p, p.WireAPI)
 	if err != nil {
@@ -51,13 +61,39 @@ func Resolve(cfg Config, modelFlag string) (*Resolved, error) {
 	}
 
 	return &Resolved{
-		ProviderID:    providerID,
-		WireAPI:       p.WireAPI,
-		BaseURL:       p.BaseURL,
-		APIKey:        apiKey,
-		Model:         model,
-		ContextWindow: cw,
+		ProviderID:      providerID,
+		WireAPI:         p.WireAPI,
+		BaseURL:         p.BaseURL,
+		APIKey:          apiKey,
+		Model:           model,
+		ContextWindow:   cw,
+		ThinkingEnabled: thinkingEnabled,
+		ThinkingEffort:  thinkingEffort,
+		ThinkingEfforts: thinkingEfforts,
 	}, nil
+}
+
+// resolveThinking 解析模型的 thinking 配置。
+//   - enabled：默认启用（Enabled nil → true）
+//   - efforts：默认 DefaultEfforts；配置了则用配置值（支持集，供 --effort 校验）
+//   - current：当前生效档位，openai/anthropic 协议均默认 DefaultThinkingEffort（high）；
+//     若 high 不在 efforts 中，取 efforts 第一个
+func resolveThinking(m Model) (enabled bool, efforts []string, current string) {
+	enabled = true
+	efforts = DefaultEfforts
+	if m.Thinking != nil {
+		if m.Thinking.Enabled != nil {
+			enabled = *m.Thinking.Enabled
+		}
+		if len(m.Thinking.Efforts) > 0 {
+			efforts = m.Thinking.Efforts
+		}
+	}
+	current = DefaultThinkingEffort
+	if !slices.Contains(efforts, current) && len(efforts) > 0 {
+		current = efforts[0]
+	}
+	return
 }
 
 // resolveProvider 选择 provider：default_provider 优先，否则取排序后第一个。

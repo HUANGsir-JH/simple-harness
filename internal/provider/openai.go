@@ -10,6 +10,7 @@ import (
 	"github.com/openai/openai-go/option"
 	"github.com/openai/openai-go/packages/ssestream"
 	"github.com/openai/openai-go/responses"
+	"github.com/openai/openai-go/shared"
 )
 
 // openAIClient 基于 OpenAI Responses API（及 OpenAI 兼容端点）实现 Client。
@@ -27,10 +28,12 @@ func newOpenAIClient(res *Resolved) *openAIClient {
 	c := openai.NewClient(opts...)
 	return &openAIClient{
 		providerBase: providerBase{
-			model:         res.Model,
-			baseURL:       res.BaseURL,
-			apiKey:        res.APIKey,
-			contextWindow: res.ContextWindow,
+			model:           res.Model,
+			baseURL:         res.BaseURL,
+			apiKey:          res.APIKey,
+			contextWindow:   res.ContextWindow,
+			thinkingEnabled: res.ThinkingEnabled,
+			thinkingEffort:  res.ThinkingEffort,
 		},
 		client: c.Responses,
 	}
@@ -44,6 +47,14 @@ func (o *openAIClient) Stream(ctx context.Context, req Request) (EventStream, er
 		Instructions:      openai.String(req.Instructions),
 		Input:             responses.ResponseNewParamsInputUnion{OfInputItemList: toOpenAIInput(req.Messages)},
 		ParallelToolCalls: openai.Bool(true),
+	}
+	// thinking：按 OpenAI Responses API 标准 reasoning 参数传递（effort 三档）。
+	// 关闭时仍显式传 effort "none" —— DeepSeek 等兼容端点默认开启 thinking，
+	// 只有 effort: none 才能真正关闭。
+	if o.thinkingEnabled {
+		params.Reasoning = shared.ReasoningParam{Effort: shared.ReasoningEffort(o.thinkingEffort)}
+	} else {
+		params.Reasoning = shared.ReasoningParam{Effort: shared.ReasoningEffort("none")}
 	}
 	if req.MaxOutputTokens > 0 {
 		params.MaxOutputTokens = openai.Int(int64(req.MaxOutputTokens))

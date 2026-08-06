@@ -22,10 +22,12 @@ func NewClient(res *Resolved) (Client, error) {
 
 // providerBase 是各 wire API 共享的 provider 基础实现。
 type providerBase struct {
-	model         string
-	baseURL       string
-	apiKey        string
-	contextWindow int
+	model           string
+	baseURL         string
+	apiKey          string
+	contextWindow   int
+	thinkingEnabled bool
+	thinkingEffort  string
 }
 
 func (p *providerBase) Model() string      { return p.model }

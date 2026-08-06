@@ -5,6 +5,21 @@ import (
 	"testing"
 )
 
+// TestValidateBadThinkingEffort 验证 thinking.efforts 中非法档位报错。
+func TestValidateBadThinkingEffort(t *testing.T) {
+	cfg := Config{
+		Providers: map[string]ProviderConfig{
+			"p": {APIKey: "k", Models: map[string]Model{
+				"m": {Thinking: &Thinking{Efforts: []string{"turbo"}}},
+			}},
+		},
+	}
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "thinking.efforts") {
+		t.Fatalf("expected thinking.efforts error, got %v", err)
+	}
+}
+
 // TestValidateOK 验证合法配置通过。
 func TestValidateOK(t *testing.T) {
 	cfg := testConfig()

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 
@@ -66,6 +67,9 @@ func usage() {
 	fmt.Println("flags:")
 	fmt.Println("  --json                       emit machine-readable events as JSONL")
 	fmt.Println("  --model <name>               model to use (default: first model of default provider)")
+	fmt.Println("  --effort <low|high|max>      reasoning effort override (must be in the model's thinking.efforts)")
+	fmt.Println("  --thinking                   force enable thinking (default: model config)")
+	fmt.Println("  --no-thinking                force disable thinking (default: model config)")
 	fmt.Println()
 	fmt.Println("config: project config.local.yaml or ~/.harness/config.yaml")
 	fmt.Println("  default_provider + providers.<name>.{wire_api, base_url, api_key, models}")
@@ -73,9 +77,13 @@ func usage() {
 
 func runCmd(args []string, jsonOut bool) error {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
-	var configPath, modelFlag string
+	var configPath, modelFlag, effortFlag string
+	var thinkingFlag, noThinkingFlag bool
 	fs.StringVar(&configPath, "config", "", "path to config file (default ~/.harness/config.yaml)")
 	fs.StringVar(&modelFlag, "model", "", "model to use (must be defined in the selected provider; default: first model)")
+	fs.StringVar(&effortFlag, "effort", "", "reasoning effort override (low|high|max; must be in the model's thinking.efforts)")
+	fs.BoolVar(&thinkingFlag, "thinking", false, "force enable thinking (default: model config)")
+	fs.BoolVar(&noThinkingFlag, "no-thinking", false, "force disable thinking (default: model config)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -92,6 +100,23 @@ func runCmd(args []string, jsonOut bool) error {
 	res, err := provider.Resolve(cfg, modelFlag)
 	if err != nil {
 		return fmt.Errorf("resolve: %w", err)
+	}
+
+	// 运行时覆盖 thinking 开关与档位（CLI 优先于模型配置）。
+	if thinkingFlag && noThinkingFlag {
+		return fmt.Errorf("run: --thinking and --no-thinking are mutually exclusive")
+	}
+	if thinkingFlag {
+		res.ThinkingEnabled = true
+	}
+	if noThinkingFlag {
+		res.ThinkingEnabled = false
+	}
+	if effortFlag != "" {
+		if !slices.Contains(res.ThinkingEfforts, effortFlag) {
+			return fmt.Errorf("run: --effort %q not supported by model %q (supported: %v)", effortFlag, res.Model, res.ThinkingEfforts)
+		}
+		res.ThinkingEffort = effortFlag
 	}
 
 	client, err := provider.NewClient(res)

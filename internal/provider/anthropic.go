@@ -28,10 +28,12 @@ func newAnthropicClient(res *Resolved) *anthropicClient {
 	c := anthropic.NewClient(opts...)
 	return &anthropicClient{
 		providerBase: providerBase{
-			model:         res.Model,
-			baseURL:       res.BaseURL,
-			apiKey:        res.APIKey,
-			contextWindow: res.ContextWindow,
+			model:           res.Model,
+			baseURL:         res.BaseURL,
+			apiKey:          res.APIKey,
+			contextWindow:   res.ContextWindow,
+			thinkingEnabled: res.ThinkingEnabled,
+			thinkingEffort:  res.ThinkingEffort,
 		},
 		client: c.Messages,
 	}
@@ -44,6 +46,15 @@ func (a *anthropicClient) Stream(ctx context.Context, req Request) (EventStream,
 		Model:     a.model,
 		MaxTokens: 4096, // 硬默认值；阶段二配置中完善
 		Messages:  toAnthropicMessages(req.Messages),
+	}
+	// thinking：按 Anthropic Messages API 标准 thinking 参数开启（budget_tokens
+	// 取最小合法值，兼容端点可忽略）；档位通过 SDK 的 output_config.effort 传递。
+	// 关闭时显式传 thinking disabled —— DeepSeek 等兼容端点默认开启 thinking。
+	if a.thinkingEnabled {
+		params.Thinking = anthropic.ThinkingConfigParamOfEnabled(1024)
+		params.OutputConfig = anthropic.OutputConfigParam{Effort: anthropic.OutputConfigEffort(a.thinkingEffort)}
+	} else {
+		params.Thinking = anthropic.ThinkingConfigParamUnion{OfDisabled: &anthropic.ThinkingConfigDisabledParam{}}
 	}
 	if req.Instructions != "" {
 		params.System = []anthropic.TextBlockParam{{Text: req.Instructions}}

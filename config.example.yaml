@@ -5,7 +5,16 @@
 #
 # 结构：default_provider 指定默认供应商，providers 按名称分组。
 # 每个 provider 含 wire_api / base_url / api_key(或 env_key) / models。
-# 每个模型可配 context_window（token 数，不配则默认 128000）。
+# 每个模型可配：
+#   context_window  token 数（不配则默认 128000）
+#   thinking        推理模式：
+#     enabled: true   # 是否启用，默认 true（不配即启用）
+#     efforts: [low, high, max]  # 模型支持的档位集（默认三档）
+#
+# 运行时覆盖（CLI 优先于模型配置）：
+#   harness run --effort max "..."       # 选档位（须在模型 efforts 内）
+#   harness run --no-thinking "..."      # 关闭 thinking
+#   harness run --thinking "..."         # 强制开启 thinking
 #
 # API key 两种提供方式:
 #   1. 直接写在本文件的 api_key 字段（本地配置推荐，如 .env 转换）
@@ -23,8 +32,13 @@ providers:
     models:
       gpt-4o:
         context_window: 128000
+        thinking:                 # 关闭 thinking 示例
+          enabled: false
       gpt-4o-mini:
         context_window: 128000
+        thinking:
+          enabled: true           # 默认即开启，可省略
+          efforts: [low, high, max]  # 支持档位集，默认三档
 
   my-anthropic:
     wire_api: anthropic
@@ -33,3 +47,5 @@ providers:
     models:
       claude-sonnet-5:
         context_window: 1000000
+        thinking:
+          efforts: [low, high]    # 只支持两档示例

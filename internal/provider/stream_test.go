@@ -2,6 +2,8 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -219,4 +221,153 @@ func TestAnthropicStreamToolUse(t *testing.T) {
 
 func NewTestUserMsg(s string) *messages.Message {
 	return &messages.Message{Role: messages.RoleUser, Content: s}
+}
+
+// TestOpenAIStreamReasoning 验证 thinking 启用时，请求体按 OpenAI Responses
+// 标准 reasoning 参数传递档位。
+func TestOpenAIStreamReasoning(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		var sb strings.Builder
+		sb.WriteString(sseEvent(`{"type":"response.created","sequence_number":1}`))
+		sb.WriteString(sseEvent(`{"type":"response.completed","response":{"id":"resp_1"},"sequence_number":2}`))
+		w.Write([]byte(sb.String()))
+	}))
+	defer srv.Close()
+
+	c := newOpenAIClient(&Resolved{Model: "gpt-4o", BaseURL: srv.URL, APIKey: "test-key", ThinkingEnabled: true, ThinkingEffort: EffortHigh})
+	es, err := c.Stream(context.Background(), Request{Messages: []*messages.Message{NewTestUserMsg("hi")}})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	defer es.Close()
+	for es.Next() {
+	}
+	if es.Err() != nil {
+		t.Fatalf("stream err: %v", es.Err())
+	}
+	reasoning, ok := body["reasoning"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing reasoning param in body: %v", body)
+	}
+	if reasoning["effort"] != EffortHigh {
+		t.Errorf("reasoning.effort: got %v want %q", reasoning["effort"], EffortHigh)
+	}
+}
+
+// TestOpenAIStreamReasoningDisabled 验证 thinking 关闭时，请求体显式传
+// reasoning.effort=none（DeepSeek 等默认开启的后端靠它真正关闭）。
+func TestOpenAIStreamReasoningDisabled(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte(sseEvent(`{"type":"response.completed","response":{"id":"resp_1"},"sequence_number":1}`)))
+	}))
+	defer srv.Close()
+
+	c := newOpenAIClient(&Resolved{Model: "gpt-4o", BaseURL: srv.URL, APIKey: "test-key", ThinkingEnabled: false})
+	es, err := c.Stream(context.Background(), Request{Messages: []*messages.Message{NewTestUserMsg("hi")}})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	defer es.Close()
+	for es.Next() {
+	}
+	reasoning, ok := body["reasoning"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing reasoning param in body: %v", body)
+	}
+	if reasoning["effort"] != "none" {
+		t.Errorf("reasoning.effort: got %v want none", reasoning["effort"])
+	}
+}
+
+// TestAnthropicStreamThinking 验证 thinking 启用时，请求体携带 Anthropic
+// 标准 thinking 参数与 SDK output_config.effort 档位。
+func TestAnthropicStreamThinking(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		var sb strings.Builder
+		sb.WriteString(anthropicSSE("message_start", `{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-sonnet-5","content":[],"stop_reason":null,"usage":{"input_tokens":10,"output_tokens":1}}}`))
+		sb.WriteString(anthropicSSE("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`))
+		sb.WriteString(anthropicSSE("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}`))
+		sb.WriteString(anthropicSSE("content_block_stop", `{"type":"content_block_stop","index":0}`))
+		sb.WriteString(anthropicSSE("message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":2}}`))
+		sb.WriteString(anthropicSSE("message_stop", `{"type":"message_stop"}`))
+		w.Write([]byte(sb.String()))
+	}))
+	defer srv.Close()
+
+	c := newAnthropicClient(&Resolved{Model: "claude-sonnet-5", BaseURL: srv.URL, APIKey: "test-key", ThinkingEnabled: true, ThinkingEffort: EffortMax})
+	es, err := c.Stream(context.Background(), Request{Messages: []*messages.Message{NewTestUserMsg("hi")}})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	defer es.Close()
+	for es.Next() {
+	}
+	if es.Err() != nil {
+		t.Fatalf("stream err: %v", es.Err())
+	}
+	thinking, ok := body["thinking"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing thinking param in body: %v", body)
+	}
+	if thinking["type"] != "enabled" {
+		t.Errorf("thinking.type: got %v want enabled", thinking["type"])
+	}
+	oc, ok := body["output_config"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing output_config param in body: %v", body)
+	}
+	if oc["effort"] != EffortMax {
+		t.Errorf("output_config.effort: got %v want %q", oc["effort"], EffortMax)
+	}
+}
+
+// TestAnthropicStreamThinkingDisabled 验证 thinking 关闭时，请求体显式传
+// thinking disabled（DeepSeek 等默认开启的后端靠它真正关闭），且无 output_config。
+func TestAnthropicStreamThinkingDisabled(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		var sb strings.Builder
+		sb.WriteString(anthropicSSE("message_start", `{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-sonnet-5","content":[],"stop_reason":null,"usage":{"input_tokens":10,"output_tokens":1}}}`))
+		sb.WriteString(anthropicSSE("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`))
+		sb.WriteString(anthropicSSE("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}`))
+		sb.WriteString(anthropicSSE("content_block_stop", `{"type":"content_block_stop","index":0}`))
+		sb.WriteString(anthropicSSE("message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":2}}`))
+		sb.WriteString(anthropicSSE("message_stop", `{"type":"message_stop"}`))
+		w.Write([]byte(sb.String()))
+	}))
+	defer srv.Close()
+
+	c := newAnthropicClient(&Resolved{Model: "claude-sonnet-5", BaseURL: srv.URL, APIKey: "test-key", ThinkingEnabled: false})
+	es, err := c.Stream(context.Background(), Request{Messages: []*messages.Message{NewTestUserMsg("hi")}})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	defer es.Close()
+	for es.Next() {
+	}
+	thinking, ok := body["thinking"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing thinking param in body: %v", body)
+	}
+	if thinking["type"] != "disabled" {
+		t.Errorf("thinking.type: got %v want disabled", thinking["type"])
+	}
+	if _, ok := body["output_config"]; ok {
+		t.Error("output_config param should be absent when thinking disabled")
+	}
 }
