@@ -229,6 +229,16 @@ type Renderer interface {
 **成功标准**：`harness run "读取当前目录文件列表并告诉我"` 能触发工具调用并正确回填；**多轮工具调用闭环 + 终端渲染完整可跑 —— 阶段二完成 = 一个可用的简单终端 CLI agent 循环**
 **测试**：各工具单测（临时目录）；loop 并发执行测试（mock 3 个 tool_call 验证并发 + 回填顺序）
 
+**自动化测试方案（2026-08-06 调研）**：
+- **分层**：
+  1. 进程内逻辑测试：`go test` + FakeClient（agent 循环正确性，主力）
+  2. 进程外端到端：**ActiveState/termtest** 驱动真实 harness 进程，LLM 端点指向 mock HTTP server（不花 API）
+  3. 真实 API 冒烟（少量）
+  4. CI 编排（GitHub Actions 或现有 CI），长跑测试全程 timeout 兜底（防 agent 死循环挂死）
+- **关键设计**：agent 层输出**回合边界事件**（`--json` 的 `turn_done`），作为自动化测试的断言锚点——这是工具无法替代的设计责任
+- **工具选型理由**：termtest = expect 语义（SendLine/Expect/ExpectExitCode）+ vt10x 虚拟终端渲染模拟（匹配"用户看到的内容"）+ **Windows 原生 ConPTY**（本项目 Windows 环境）+ Go 同语言
+- **待验证**：termtest 驱动 harness 的集成 demo（Windows 下跑通 `SendLine → Expect → ExpectExitCode`）
+
 ### 阶段 3：审批 + Hooks + 错误重试
 **目标**：`approval` 包（三态策略 + 黑白名单 + TTY 交互 + allowlist）、`hooks` 包（PreToolUse/PermissionRequest/Stop）、错误重试完善
 **成功标准**：危险命令触发确认（TTY）/ 自动拒绝（非 TTY）；hook 能拦截工具执行；429 重试生效
