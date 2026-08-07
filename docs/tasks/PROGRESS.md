@@ -4,6 +4,14 @@
 
 ## 2026-08-07
 
+### middleware 可读性重构 + onAgent 接线 ✅
+
+- **类型别名降噪**：`chain.go` 五个洋葱 hook 签名加 `Handler` 类型别名（AgentHandler/ReasoningHandler/...，用 `=` alias 与原签名完全等价 → Base/测试零改动），接口与 Wrap* 不再被长签名糊眼
+- **详细注释**：WrapAgent 集中解释组装 vs 执行两阶段、倒序循环原因（注册顺序外层在前）、`inner := next` 快照（闭包捕获变量非取值）、空链零开销透传；其余 Wrap* 简注引用；ComposeSystemPrompt 注明与洋葱相反是正序流水线
+- **onAgent 接线**：此前 5 个洋葱 hook 中 onAgent 是死 hook（Run 未调用 WrapAgent）→ 已把 Run 主体包进 WrapAgent，before 先于 turn_start、after 后于 turn_done（回合级准备/收尾）；rc/thread 判空提到最外层
+- **测试**：新增 TestRunOnAgentWrapsTurn（agentSpy 记录 before/after + 事件序列，断言 before<turn_start<turn_done<after）；全量 go test 绿
+- **现状**：6 hook 全部真实接线（onAgent/onReasoning/onToolCall/onActing/onModelCall/onSystemPrompt），阶段三权限只需实现 onActing before 即可挂载
+
 ### 阶段二：工具系统 + 并发执行 + 终端渲染 + middleware 骨架 ✅
 
 - **交付**：`harness run <prompt>` 单轮 + `harness` 交互式 REPL，工具闭环 + 终端渲染（thinking 灰显 + 工具调用展示 + --json 事件）完整可跑 —— **可用的简单终端 CLI agent 循环**（阶段二定位达成）

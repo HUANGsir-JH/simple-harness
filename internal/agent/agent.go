@@ -91,51 +91,57 @@ func (a *Agent) SetInstructions(s string) { a.instructions = s }
 // 事件通过 onEvent 实时回调；thread 被追加助手/工具结果消息（副作用）。
 // 错误二分类：工具错误 RespondToModel → 结果回填、循环继续；Fatal → 终止。
 func (a *Agent) Run(ctx context.Context, rc *middleware.RuntimeContext, thread *messages.Thread, onEvent OnEvent) error {
-	emit := func(e Event) {
-		if onEvent != nil {
-			onEvent(e)
-		}
-	}
-	emit(Event{Type: EventTurnStart})
 	if rc == nil {
 		rc = middleware.NewRuntimeContext()
 	}
 	if thread == nil {
 		return fmt.Errorf("agent: thread is nil")
 	}
-
-	sysPrompt, err := a.mw.ComposeSystemPrompt(ctx, rc, a.instructions)
-	if err != nil {
-		return fmt.Errorf("agent: compose system prompt: %w", err)
+	emit := func(e Event) {
+		if onEvent != nil {
+			onEvent(e)
+		}
 	}
 
-	var result sampleResult
-	reasoning := a.mw.WrapReasoning(func(ctx context.Context, rc *middleware.RuntimeContext, in middleware.ReasoningInput) error {
-		r, err := a.sample(ctx, in, sysPrompt, emit)
+	// onAgent 包住整个回合：before 先于 turn_start（回合级准备，如加载
+	// AgentState）、after 后于 turn_done（回合级收尾）。空链时透传无开销。
+	wrapped := a.mw.WrapAgent(func(ctx context.Context, rc *middleware.RuntimeContext, _ middleware.AgentInput) error {
+		emit(Event{Type: EventTurnStart})
+
+		sysPrompt, err := a.mw.ComposeSystemPrompt(ctx, rc, a.instructions)
 		if err != nil {
-			return err
+			return fmt.Errorf("agent: compose system prompt: %w", err)
 		}
-		result = *r
+
+		var result sampleResult
+		reasoning := a.mw.WrapReasoning(func(ctx context.Context, rc *middleware.RuntimeContext, in middleware.ReasoningInput) error {
+			r, err := a.sample(ctx, in, sysPrompt, emit)
+			if err != nil {
+				return err
+			}
+			result = *r
+			return nil
+		})
+
+		for {
+			result = sampleResult{}
+			if err := reasoning(ctx, rc, middleware.ReasoningInput{Messages: thread.Messages, Tools: a.tools.Specs()}); err != nil {
+				emit(Event{Type: EventError, Err: err})
+				return err
+			}
+			thread.Add(result.assistant)
+			if len(result.toolCalls) == 0 {
+				break // 无工具调用 → 回合结束
+			}
+			if err := a.runToolBatch(ctx, rc, result.toolCalls, thread, emit); err != nil {
+				emit(Event{Type: EventError, Err: err})
+				return err
+			}
+		}
+		emit(Event{Type: EventTurnDone})
 		return nil
 	})
-
-	for {
-		result = sampleResult{}
-		if err := reasoning(ctx, rc, middleware.ReasoningInput{Messages: thread.Messages, Tools: a.tools.Specs()}); err != nil {
-			emit(Event{Type: EventError, Err: err})
-			return err
-		}
-		thread.Add(result.assistant)
-		if len(result.toolCalls) == 0 {
-			break // 无工具调用 → 回合结束
-		}
-		if err := a.runToolBatch(ctx, rc, result.toolCalls, thread, emit); err != nil {
-			emit(Event{Type: EventError, Err: err})
-			return err
-		}
-	}
-	emit(Event{Type: EventTurnDone})
-	return nil
+	return wrapped(ctx, rc, middleware.AgentInput{Messages: thread.Messages})
 }
 
 // sampleResult 是一次采样轮的结果。

@@ -337,6 +337,40 @@ func TestRunMiddlewareChain(t *testing.T) {
 	}
 }
 
+// agentSpy 覆写 OnAgent，记录洋葱调用（验证 onAgent 包裹整个回合）。
+type agentSpy struct {
+	middleware.Base
+	seq *[]string
+}
+
+func (s *agentSpy) OnAgent(ctx context.Context, rc *middleware.RuntimeContext, in middleware.AgentInput, next middleware.AgentHandler) error {
+	*s.seq = append(*s.seq, "onAgent:before")
+	err := next(ctx, rc, in)
+	*s.seq = append(*s.seq, "onAgent:after")
+	return err
+}
+
+// TestRunOnAgentWrapsTurn 验证 onAgent 是回合最外层：
+// before 先于 turn_start、after 后于 turn_done（与事件打进同一序列对比）。
+func TestRunOnAgentWrapsTurn(t *testing.T) {
+	fc := &provider.FakeClient{StreamFn: func(ctx context.Context, req provider.Request) (provider.EventStream, error) {
+		return textStream("ok"), nil
+	}}
+	a := New(fc, "m")
+	a.SetTools(tools.NewRegistry())
+	var seq []string
+	a.SetMiddleware(middleware.NewChain(&agentSpy{seq: &seq}))
+
+	if err := a.Run(context.Background(), nil, newThread(), func(e Event) { seq = append(seq, string(e.Type)) }); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	bi, ti := indexOf(seq, "onAgent:before"), indexOf(seq, "turn_start")
+	di, ai := indexOf(seq, "turn_done"), indexOf(seq, "onAgent:after")
+	if !(bi >= 0 && ti >= 0 && di >= 0 && ai >= 0 && bi < ti && di < ai) {
+		t.Fatalf("onAgent 未包裹回合（期望 before<turn_start 且 turn_done<after）: %v", seq)
+	}
+}
+
 // TestRunStreamError 验证 provider 流错误传播。
 func TestRunStreamError(t *testing.T) {
 	fc := &provider.FakeClient{StreamFn: func(ctx context.Context, req provider.Request) (provider.EventStream, error) {
