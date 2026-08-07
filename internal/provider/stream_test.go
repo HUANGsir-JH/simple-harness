@@ -194,3 +194,39 @@ func TestAnthropicStreamThinkingDisabled(t *testing.T) {
 		t.Error("output_config param should be absent when thinking disabled")
 	}
 }
+
+// TestAnthropicStreamThinkingDelta 验证 thinking_delta 流式文本转换为统一事件。
+func TestAnthropicStreamThinkingDelta(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		var sb strings.Builder
+		sb.WriteString(anthropicSSE("message_start", `{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-sonnet-5","content":[],"stop_reason":null,"usage":{"input_tokens":10,"output_tokens":1}}}`))
+		sb.WriteString(anthropicSSE("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":"sig_1"}}`))
+		sb.WriteString(anthropicSSE("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Let me think"}}`))
+		sb.WriteString(anthropicSSE("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" more"}}`))
+		sb.WriteString(anthropicSSE("content_block_stop", `{"type":"content_block_stop","index":0}`))
+		sb.WriteString(anthropicSSE("message_stop", `{"type":"message_stop"}`))
+		w.Write([]byte(sb.String()))
+	}))
+	defer srv.Close()
+
+	c := newAnthropicClient(&Resolved{Model: "claude-sonnet-5", BaseURL: srv.URL, APIKey: "test-key"})
+	es, err := c.Stream(context.Background(), Request{Messages: []*messages.Message{NewTestUserMsg("hi")}})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	defer es.Close()
+
+	var thinking strings.Builder
+	for es.Next() {
+		if ev := es.Current(); ev.Type == EventThinkingDelta {
+			thinking.WriteString(ev.Text)
+		}
+	}
+	if err := es.Err(); err != nil {
+		t.Fatalf("stream err: %v", err)
+	}
+	if thinking.String() != "Let me think more" {
+		t.Errorf("thinking: got %q", thinking.String())
+	}
+}

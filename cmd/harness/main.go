@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"flag"
 	"fmt"
@@ -13,7 +14,9 @@ import (
 
 	"github.com/agent-project/harness/internal/agent"
 	"github.com/agent-project/harness/internal/messages"
+	"github.com/agent-project/harness/internal/middleware"
 	"github.com/agent-project/harness/internal/provider"
+	"github.com/agent-project/harness/internal/tools"
 	"gopkg.in/yaml.v3"
 )
 
@@ -40,8 +43,7 @@ func run(args []string) error {
 	}
 
 	if len(rest) == 0 {
-		usage()
-		return nil
+		return repl(jsonOut) // 直接 harness（无子命令）→ 交互式
 	}
 	switch rest[0] {
 	case "version":
@@ -60,9 +62,10 @@ func run(args []string) error {
 func usage() {
 	fmt.Println("harness: minimal agent harness")
 	fmt.Println("usage:")
-	fmt.Println("  harness run <prompt>         run a single turn with the configured model")
-	fmt.Println("  harness version              print version")
-	fmt.Println("  harness help                 show this help")
+	fmt.Println("  harness                       interactive mode (REPL, multi-turn)")
+	fmt.Println("  harness run <prompt>          run a single turn with the configured model")
+	fmt.Println("  harness version               print version")
+	fmt.Println("  harness help                  show this help")
 	fmt.Println()
 	fmt.Println("flags:")
 	fmt.Println("  --json                       emit machine-readable events as JSONL")
@@ -70,58 +73,79 @@ func usage() {
 	fmt.Println("  --effort <low|high|max>      reasoning effort override (must be in the model's thinking.efforts)")
 	fmt.Println("  --thinking                   force enable thinking (default: model config)")
 	fmt.Println("  --no-thinking                force disable thinking (default: model config)")
+	fmt.Println("  --no-thinking-display        do not show thinking text (only affects text renderer)")
 	fmt.Println()
 	fmt.Println("config: project config.local.yaml or ~/.harness/config.yaml")
 	fmt.Println("  default_provider + providers.<name>.{base_url, api_key, models} (anthropic wire)")
 }
 
-func runCmd(args []string, jsonOut bool) error {
-	fs := flag.NewFlagSet("run", flag.ContinueOnError)
-	var configPath, modelFlag, effortFlag string
-	var thinkingFlag, noThinkingFlag bool
-	fs.StringVar(&configPath, "config", "", "path to config file (default ~/.harness/config.yaml)")
-	fs.StringVar(&modelFlag, "model", "", "model to use (must be defined in the selected provider; default: first model)")
-	fs.StringVar(&effortFlag, "effort", "", "reasoning effort override (low|high|max; must be in the model's thinking.efforts)")
-	fs.BoolVar(&thinkingFlag, "thinking", false, "force enable thinking (default: model config)")
-	fs.BoolVar(&noThinkingFlag, "no-thinking", false, "force disable thinking (default: model config)")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	prompt := strings.Join(fs.Args(), " ")
-	if prompt == "" {
-		return fmt.Errorf("run: prompt is required (harness run \"your prompt\")")
-	}
-
-	cfg, err := loadConfig(configPath)
-	if err != nil {
-		return err
-	}
-
+// buildAgent 从配置装配完整 agent：工具注册表 + middleware 链（工具说明注入）。
+func buildAgent(cfg provider.Config, modelFlag, effortFlag string, thinking, noThinking bool) (*agent.Agent, error) {
 	res, err := provider.Resolve(cfg, modelFlag)
 	if err != nil {
-		return fmt.Errorf("resolve: %w", err)
+		return nil, fmt.Errorf("resolve: %w", err)
 	}
-
-	// 运行时覆盖 thinking 开关与档位（CLI 优先于模型配置）。
-	if thinkingFlag && noThinkingFlag {
-		return fmt.Errorf("run: --thinking and --no-thinking are mutually exclusive")
+	if thinking && noThinking {
+		return nil, fmt.Errorf("--thinking and --no-thinking are mutually exclusive")
 	}
-	if thinkingFlag {
+	if thinking {
 		res.ThinkingEnabled = true
 	}
-	if noThinkingFlag {
+	if noThinking {
 		res.ThinkingEnabled = false
 	}
 	if effortFlag != "" {
 		if !slices.Contains(res.ThinkingEfforts, effortFlag) {
-			return fmt.Errorf("run: --effort %q not supported by model %q (supported: %v)", effortFlag, res.Model, res.ThinkingEfforts)
+			return nil, fmt.Errorf("--effort %q not supported by model %q (supported: %v)", effortFlag, res.Model, res.ThinkingEfforts)
 		}
 		res.ThinkingEffort = effortFlag
 	}
 
 	client, err := provider.NewClient(res)
 	if err != nil {
-		return fmt.Errorf("provider: %w\nhint: see config in ~/.harness/config.yaml and set the API key env var", err)
+		return nil, fmt.Errorf("provider: %w", err)
+	}
+
+	reg := tools.NewRegistry()
+	for _, t := range tools.Builtins() {
+		if err := reg.Register(t); err != nil {
+			return nil, err
+		}
+	}
+	// 工具说明注入系统提示（onSystemPrompt middleware；阶段四 AGENTS.md 等在此追加）。
+	mw := middleware.NewChain(middleware.ToolInstructionsMiddleware{Tools: reg.Specs()})
+
+	a := agent.New(client, res.Model)
+	a.SetTools(reg)
+	a.SetMiddleware(mw)
+	return a, nil
+}
+
+func runCmd(args []string, jsonOut bool) error {
+	fs := flag.NewFlagSet("run", flag.ContinueOnError)
+	var configPath, modelFlag, effortFlag string
+	var thinkingFlag, noThinkingFlag, noThinkingDisplay bool
+	fs.StringVar(&configPath, "config", "", "path to config file (default ~/.harness/config.yaml)")
+	fs.StringVar(&modelFlag, "model", "", "model to use (must be defined in the selected provider; default: first model)")
+	fs.StringVar(&effortFlag, "effort", "", "reasoning effort override (low|high|max; must be in the model's thinking.efforts)")
+	fs.BoolVar(&thinkingFlag, "thinking", false, "force enable thinking (default: model config)")
+	fs.BoolVar(&noThinkingFlag, "no-thinking", false, "force disable thinking (default: model config)")
+	fs.BoolVar(&noThinkingDisplay, "no-thinking-display", false, "do not show thinking text")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	prompt := strings.Join(fs.Args(), " ")
+	if prompt == "" {
+		return fmt.Errorf("run: prompt is required (harness run \"your prompt\"; 不带参数运行 `harness` 进入交互式)")
+	}
+
+	cfg, err := loadConfig(configPath)
+	if err != nil {
+		return err
+	}
+	a, err := buildAgent(cfg, modelFlag, effortFlag, thinkingFlag, noThinkingFlag)
+	if err != nil {
+		return err
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -129,23 +153,69 @@ func runCmd(args []string, jsonOut bool) error {
 
 	thread := messages.NewThread()
 	thread.Add(messages.NewUserMessage(prompt))
-
-	a := agent.New(client, res.Model)
+	rc := middleware.NewRuntimeContext()
 
 	var renderer output
 	if jsonOut {
 		renderer = jsonRenderer{}
 	} else {
-		renderer = textRenderer{}
+		renderer = newTextRenderer(!noThinkingDisplay)
 	}
 	renderer.start(thread)
 
-	msg, err := a.RunOnce(ctx, thread, renderer.delta)
+	if err := a.Run(ctx, rc, thread, renderer.event); err != nil {
+		return err
+	}
+	return nil
+}
+
+// repl 是交互式模式：循环 读输入 → 回合 → 显示，复用同一 thread（会话延续）。
+func repl(jsonOut bool) error {
+	cfg, err := loadConfig("")
 	if err != nil {
 		return err
 	}
-	renderer.finish(msg)
-	return nil
+	a, err := buildAgent(cfg, "", "", false, false)
+	if err != nil {
+		return err
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	thread := messages.NewThread()
+	rc := middleware.NewRuntimeContext()
+	rc.SessionID = "interactive"
+
+	var renderer output
+	if jsonOut {
+		renderer = jsonRenderer{}
+	} else {
+		renderer = newTextRenderer(true)
+	}
+	renderer.start(thread)
+
+	reader := bufio.NewReader(os.Stdin)
+	fmt.Println("harness 交互式模式（输入 exit/quit 或 Ctrl+C 退出）")
+	for {
+		fmt.Print("> ")
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			fmt.Println()
+			return nil // EOF（Ctrl+D）
+		}
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if line == "exit" || line == "quit" {
+			return nil
+		}
+		thread.Add(messages.NewUserMessage(line))
+		if err := a.Run(ctx, rc, thread, renderer.event); err != nil {
+			fmt.Fprintf(os.Stderr, "harness: %v\n", err)
+		}
+	}
 }
 
 // --- 配置加载（临时简化版；阶段四做完整 YAML）-------------------------------

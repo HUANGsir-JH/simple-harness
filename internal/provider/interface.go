@@ -106,6 +106,8 @@ type EventType string
 const (
 	// EventTextDelta 是助手回复的文本增量。
 	EventTextDelta EventType = "text_delta"
+	// EventThinkingDelta 是模型的推理文本增量（thinking；阶段二透出供展示）。
+	EventThinkingDelta EventType = "thinking_delta"
 	// EventToolCall 是模型发起的、已完成的函数调用请求（阶段二起）。
 	EventToolCall EventType = "tool_call"
 	// EventDone 标记本次采样回合的结束。

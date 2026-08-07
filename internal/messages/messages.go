@@ -26,11 +26,20 @@ const (
 // Message 是统一消息类型，也是核心层唯一操作的消息类型；
 // provider 适配层负责与各后端原生格式互转。
 type Message struct {
-	ID         string     `json:"id,omitempty"`
-	Role       Role       `json:"role"`
-	Content    string     `json:"content,omitempty"`
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`   // 助手消息携带这些
-	ToolCallID string     `json:"tool_call_id,omitempty"` // tool results reference a call
+	ID          string            `json:"id,omitempty"`
+	Role        Role              `json:"role"`
+	Content     string            `json:"content,omitempty"`
+	ToolCalls   []ToolCall        `json:"tool_calls,omitempty"`   // 助手消息携带这些
+	ToolCallID  string            `json:"tool_call_id,omitempty"` // tool results reference a call
+	ToolResults []ToolResultBlock `json:"tool_results,omitempty"` // tool result 消息携带（多块合并，满足 anthropic 紧邻要求）
+	IsError     bool              `json:"is_error,omitempty"`     // 单块 tool result 标记执行失败
+}
+
+// ToolResultBlock 是一次工具执行的单块结果（可多条合并进一条 tool result 消息）。
+type ToolResultBlock struct {
+	ToolCallID string `json:"tool_call_id"`
+	Success    bool   `json:"success"`
+	Content    string `json:"content"`
 }
 
 // ToolCall 是模型请求的一次函数调用。
@@ -87,14 +96,21 @@ func NewAssistantMessage(content string) *Message {
 	}
 }
 
-// NewToolResultMessage 构造一条引用指定调用的工具结果消息。
+// NewToolResultMessage 构造一条引用单个调用的工具结果消息（兼容单块场景）。
+// success=false 时置 IsError，provider 适配层转各后端 is_error 标记。
 func NewToolResultMessage(callID string, success bool, content string) *Message {
 	return &Message{
 		Role:       RoleTool,
 		ToolCallID: callID,
 		Content:    content,
-		ToolCalls:  nil,
+		IsError:    !success,
 	}
+}
+
+// NewToolResultsMessage 构造一条携带多块工具结果的消息（合并一批调用结果，
+// 满足 anthropic "tool_use 后下一条消息含全部 tool_result" 的要求）。
+func NewToolResultsMessage(results []ToolResultBlock) *Message {
+	return &Message{Role: RoleTool, ToolResults: results}
 }
 
 // AppendToolResult 将结果记录到匹配的 ToolCall（按 ID）上。

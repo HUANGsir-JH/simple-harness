@@ -121,14 +121,39 @@ func toAnthropicAssistantMessage(m *messages.Message) anthropic.MessageParam {
 }
 
 func toAnthropicToolResult(m *messages.Message) anthropic.MessageParam {
+	// 多块：一批 tool_result 合并进一条 user 消息（anthropic 要求 tool_use 后
+	// 的下一条消息含全部对应 tool_result）。
+	if len(m.ToolResults) > 0 {
+		blocks := make([]anthropic.ContentBlockParamUnion, 0, len(m.ToolResults))
+		for _, r := range m.ToolResults {
+			content := []anthropic.ToolResultBlockParamContentUnion{{OfText: &anthropic.TextBlockParam{Text: r.Content}}}
+			block := anthropic.ToolResultBlockParam{
+				ToolUseID: r.ToolCallID,
+				Content:   content,
+			}
+			if !r.Success {
+				block.IsError = anthropic.Bool(true)
+			}
+			blocks = append(blocks, anthropic.ContentBlockParamUnion{OfToolResult: &block})
+		}
+		return anthropic.MessageParam{
+			Role:    anthropic.MessageParamRoleUser,
+			Content: blocks,
+		}
+	}
+	// 单块兼容。
 	content := []anthropic.ToolResultBlockParamContentUnion{{OfText: &anthropic.TextBlockParam{Text: m.Content}}}
+	block := anthropic.ToolResultBlockParam{
+		ToolUseID: m.ToolCallID,
+		Content:   content,
+	}
+	if m.IsError {
+		block.IsError = anthropic.Bool(true)
+	}
 	return anthropic.MessageParam{
 		Role: anthropic.MessageParamRoleUser,
 		Content: []anthropic.ContentBlockParamUnion{
-			{OfToolResult: &anthropic.ToolResultBlockParam{
-				ToolUseID: m.ToolCallID,
-				Content:   content,
-			}},
+			{OfToolResult: &block},
 		},
 	}
 }
@@ -205,8 +230,12 @@ func (s *anthropicStream) Next() bool {
 			}
 			continue
 		case "content_block_delta":
-			if ev.Delta.Type == "text_delta" {
+			switch ev.Delta.Type {
+			case "text_delta":
 				s.cur = Event{Type: EventTextDelta, Text: ev.Delta.Text}
+				return true
+			case "thinking_delta":
+				s.cur = Event{Type: EventThinkingDelta, Text: ev.Delta.Thinking}
 				return true
 			}
 			continue

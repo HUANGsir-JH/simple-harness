@@ -1,0 +1,159 @@
+// Package e2e 是进程外端到端测试：termtest 驱动真实 harness 进程，
+// LLM 端点指向 mock HTTP server（确定性，不依赖真实 API）。
+// 验证：单轮 run 的 turn_done 锚点、交互式 REPL。
+package e2e
+
+import (
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/ActiveState/termtest"
+)
+
+// harnessExe 是 TestMain 构建的二进制路径。
+var harnessExe string
+
+// TestMain 先构建 harness 二进制（一次），再跑测试。
+func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "harness-e2e")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "tempdir:", err)
+		os.Exit(1)
+	}
+	harnessExe = filepath.Join(dir, "harness.exe")
+	cmd := exec.Command("go", "build", "-o", harnessExe, "../../cmd/harness")
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintln(os.Stderr, "build harness:", err)
+		os.Exit(1)
+	}
+	code := m.Run()
+	os.RemoveAll(dir)
+	os.Exit(code)
+}
+
+// sse 格式化 Anthropic 风格 SSE 事件（SDK 按 event: 字段路由）。
+func sse(eventType, data string) string {
+	return "event: " + eventType + "\ndata: " + data + "\n\n"
+}
+
+const msgStart = `{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"m","content":[],"stop_reason":null,"usage":{"input_tokens":10,"output_tokens":1}}}`
+
+// mockLLMServer 起一个确定性 mock：第 1 次请求返回 list_dir 工具调用，
+// 之后返回固定文本回复。
+func mockLLMServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	var reqCount atomic.Int32
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		var sb strings.Builder
+		sb.WriteString(sse("message_start", msgStart))
+		if reqCount.Add(1) == 1 {
+			// 首轮：工具调用 list_dir。
+			sb.WriteString(sse("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call_1","name":"list_dir","input":{}}}`))
+		} else {
+			// 次轮：文本回复。
+			sb.WriteString(sse("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`))
+			sb.WriteString(sse("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"目录已列出。"}}`))
+		}
+		sb.WriteString(sse("content_block_stop", `{"type":"content_block_stop","index":0}`))
+		sb.WriteString(sse("message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":5}}`))
+		sb.WriteString(sse("message_stop", `{"type":"message_stop"}`))
+		_, _ = w.Write([]byte(sb.String()))
+	}))
+}
+
+// writeTestConfig 写一个指向 mock 端点的测试配置（thinking 关闭，简化流式），
+// 返回配置文件路径。
+func writeTestConfig(t *testing.T, baseURL string) string {
+	t.Helper()
+	return writeConfigTo(t, baseURL, filepath.Join(t.TempDir(), "config.yaml"))
+}
+
+// writeConfigTo 把测试配置写到指定路径。
+func writeConfigTo(t *testing.T, baseURL, path string) string {
+	t.Helper()
+	content := fmt.Sprintf(`providers:
+  mock:
+    base_url: %s
+    api_key: test-key
+    models:
+      m:
+        context_window: 128000
+        thinking:
+          enabled: false
+`, baseURL)
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	return path
+}
+
+// TestRunSingleTurnE2E 验证单轮 run：mock 首轮工具调用 → 工具执行回填 →
+// 次轮文本 → turn_done 锚点 → 退出码 0。
+func TestRunSingleTurnE2E(t *testing.T) {
+	srv := mockLLMServer(t)
+	defer srv.Close()
+	cfg := writeTestConfig(t, srv.URL)
+
+	cp, err := termtest.NewTest(t, termtest.Options{
+		CmdName:        harnessExe,
+		Args:           []string{"run", "--config", cfg, "--json", "读取当前目录文件列表"},
+		WorkDirectory:  t.TempDir(),
+		DefaultTimeout: 30 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("newtest: %v", err)
+	}
+	defer cp.Close()
+
+	// JSON 事件流：工具调用 → 回合边界。
+	if _, err := cp.Expect("tool_call"); err != nil {
+		t.Fatalf("expect tool_call: %v", err)
+	}
+	if _, err := cp.Expect("turn_done"); err != nil {
+		t.Fatalf("expect turn_done: %v", err)
+	}
+	if _, err := cp.ExpectExitCode(0); err != nil {
+		t.Fatalf("expect exit 0: %v", err)
+	}
+}
+
+// TestInteractiveE2E 验证交互式 REPL：发送输入 → 回合（工具闭环）→ 回复 → 退出。
+// 交互式入口用默认 config 查找（项目级 config.local.yaml），故把测试配置
+// 写到工作目录。
+func TestInteractiveE2E(t *testing.T) {
+	srv := mockLLMServer(t)
+	defer srv.Close()
+	workDir := t.TempDir()
+	writeConfigTo(t, srv.URL, filepath.Join(workDir, "config.local.yaml"))
+
+	cp, err := termtest.NewTest(t, termtest.Options{
+		CmdName:        harnessExe,
+		WorkDirectory:  workDir,
+		DefaultTimeout: 30 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("newtest: %v", err)
+	}
+	defer cp.Close()
+
+	cp.SendLine("你好")
+	if _, err := cp.Expect("目录已列出"); err != nil {
+		t.Fatalf("expect reply: %v", err)
+	}
+	cp.SendLine("exit")
+	if _, err := cp.ExpectExitCode(0); err != nil {
+		t.Fatalf("expect exit 0: %v", err)
+	}
+}

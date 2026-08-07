@@ -23,12 +23,24 @@
 | 1.8 | 真实 API 端到端验证（DeepSeek 兼容端点） | ✅ 已完成 2026-08-04 |
 | 1.9 | thinking 推理模式（模型级配置 + 双 wire + CLI 运行时覆盖） | ✅ 已完成 2026-08-06 |
 
-## 阶段 2：工具系统 + 并发执行 + 终端渲染
+## 阶段 2：工具系统 + 并发执行 + 终端渲染 + middleware 骨架
 
-- **目标**：**移除 openai wire**（删 openai.go/相关测试，config/枚举/校验调整，provider 只留 anthropic，真实 API 复验 deepseek-claude）；`tools` 包（Tool 接口 + 注册表 + 错误二分类）、内置工具（read_file/list_dir/glob/shell_command/apply_patch）、并行执行 + call_id 回填、**完整简单的终端渲染**（文本流式 + 工具调用展示）；**agent 重构为纯 ReAct loop + middleware 挂载点骨架**（onActing 即预留的工具权限扩展点）
-- **成功标准**：`harness run "读取当前目录文件列表并告诉我"` 能触发工具调用并正确回填；**多轮工具调用闭环在终端渲染下完整可跑 —— 阶段二完成 = 一个可用的简单终端 CLI agent 循环**
-- **测试**：进程内 FakeClient 单测（主力）+ **termtest** 进程外端到端（LLM 端点 mock HTTP server，确定性）+ **CI 末尾真实 API 冒烟 2-3 条**（宽松断言，验证链路）+ `turn_done` 回合边界事件作断言锚点（详见 IMPLEMENTATION_PLAN 阶段 2）
-- **状态**：进行中（2026-08-07 移除 openai wire ✅；其余工具系统/渲染/middleware 骨架未开始）
+- **目标**：**移除 openai wire** ✅；`tools` 包（Tool 接口 + 注册表 + 错误二分类）、内置工具（5 个）、并行执行 + call_id 回填、完整简单的终端渲染（thinking + 工具调用 + --json）、**agent 纯 ReAct loop + middleware 挂载点**（onActing 即权限扩展点）、**交互式 REPL**
+- **成功标准**：`harness run "读取当前目录文件列表并告诉我"` 触发工具调用并正确回填 ✅；多轮工具调用闭环在终端渲染下完整可跑 ✅；`harness` 交互式多轮 ✅ —— **阶段二完成 = 一个可用的简单终端 CLI agent 循环**
+- **测试**：tools 单测（临时目录 + shell 真跑 + apply_patch）；agent loop 单测（FakeClient：无工具/tool 闭环/并行/错误二分类/middleware 链/thinking）；**termtest 进程外 e2e（mock HTTP：单轮 turn_done 锚点 + 交互式）**；真实 API 冒烟 ✅
+- **状态**：✅ 已完成（2026-08-07）
+
+### 单元表
+
+| # | 单元 | 状态 |
+|---|---|---|
+| 2.1 | tools 包（Tool 接口 + 注册表 + 错误二分类） | ✅ 2026-08-07 |
+| 2.2 | 内置工具（read_file/list_dir/glob/shell_command/apply_patch） | ✅ 2026-08-07 |
+| 2.3 | middleware 链（RuntimeContext + 6 hook + ToolInstructions） | ✅ 2026-08-07 |
+| 2.4 | agent 纯 ReAct loop + 回合级事件（thinking/turn_done） | ✅ 2026-08-07 |
+| 2.5 | 终端渲染（thinking + 工具调用展示 + --json 事件） | ✅ 2026-08-07 |
+| 2.6 | CLI 装配 + 交互式 REPL | ✅ 2026-08-07 |
+| 2.7 | termtest 进程外端到端 + 真实冒烟 | ✅ 2026-08-07 |
 
 ## todo 工具阶段（阶段 2 之后单开，编号待定）
 

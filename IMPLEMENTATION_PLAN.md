@@ -271,8 +271,8 @@ type Renderer interface {
 
 > 阶段 1 详细设计见 `docs/tasks/TASKS.md`（单元 1.1~1.9 全部完成）。重试项：两 SDK 内置退避重试（ADR-012）。thinking 推理模式（ADR-020）：模型级配置 + 双 wire 标准参数 + CLI 运行时覆盖，真实 API 双 wire 验证通过。
 
-### 阶段 2：工具系统 + 并发执行 + 终端渲染 + middleware 挂载点骨架
-**目标**：**移除 openai wire**（删除 openai.go 及相关测试，config/校验/枚举/loadConfig 调整，provider 只留 anthropic；真实 API 复验 deepseek-claude）；`tools` 包（Tool 接口 + 注册表 + 错误二分类）、内置工具（read_file/list_dir/glob/shell_command/apply_patch）、并行执行 + call_id 回填、完整简单的终端渲染（文本流式 + 工具调用展示）；**agent 重构为纯 ReAct loop + middleware 挂载点骨架**（链机制 + 事件流走通，onActing 即预留的工具权限扩展点）
+### 阶段 2：工具系统 + 并发执行 + 终端渲染 + middleware 挂载点骨架 ✅ 已完成（2026-08-07）
+**目标**：**移除 openai wire** ✅（删除 openai.go 及相关测试，config/校验/枚举/loadConfig 调整，provider 只留 anthropic；真实 API 复验 deepseek-claude）；`tools` 包（Tool 接口 + 注册表 + 错误二分类）、内置工具（read_file/list_dir/glob/shell_command/apply_patch）、并行执行 + call_id 回填、完整简单的终端渲染（thinking + 工具调用展示 + --json）；**agent 重构为纯 ReAct loop + middleware 挂载点骨架**（链机制 + 事件流走通，onActing 即预留的工具权限扩展点）；**`harness` 交互式 REPL**
 **成功标准**：`harness run "读取当前目录文件列表并告诉我"` 能触发工具调用并正确回填；**多轮工具调用闭环 + 终端渲染完整可跑 —— 阶段二完成 = 一个可用的简单终端 CLI agent 循环**
 **测试**：各工具单测（临时目录）；loop 并发执行测试（mock 3 个 tool_call 验证并发 + 回填顺序）
 

@@ -147,6 +147,15 @@
 - **代价（知情）**：阿里 qwen（仅 openai 兼容）、DeepSeek openai 格式不再支持；config.local.yaml 中 qwen / deepseek（openai wire）provider 需移除或停用；DeepSeek 只能走 deepseek-claude（anthropic wire，ADR-019 的 401 坑仍需 WithAuthToken 覆盖）。
 - **影响 ADR**：ADR-020 的 openai 传递部分作废；ADR-001 / ADR-015 中"两 wire"相关描述以本文为准。
 
+## ADR-024：middleware 贯穿 ctx + 工具说明注入 + tool_result 多块合并
+
+- **背景**：阶段二实现工具闭环时确认三处设计细节。
+- **选择**：
+  1. **middleware hook 贯穿 `context.Context`**：执行链需要 ctx（取消/超时），而 RuntimeContext 是 per-call 元数据（SessionID + attrs，单用户无 UserID）不含 ctx → 各 hook 签名 `(ctx context.Context, rc *RuntimeContext, in X, next)`。
+  2. **工具说明注入系统提示**（onSystemPrompt middleware）：codex 调研证实 apply_patch 工具 description 只有一句，语法靠 freeform grammar 字段（anthropic wire 无此机制）；codex 在系统提示 `# Tool Guidelines` 注入完整语法 → 阶段二用 ToolInstructionsMiddleware 注入"工具列表 + apply_patch 语法"（阶段四 AGENTS.md 等在此追加）。
+  3. **tool_result 多块合并**：anthropic 要求 tool_use 后的**下一条消息**含全部对应 tool_result；多工具调用回填多条独立 tool_result 消息触发 400（真实 API 暴露）→ 一批工具结果合并成一条消息（`messages.Message.ToolResults []ToolResultBlock`），provider 转多块。
+- **理由**：ctx 贯穿是执行硬需求；工具说明必须注入否则格式敏感工具不可用；多块合并满足 anthropic 协议约束（不按完成顺序，按调用顺序回填）。
+
 ## ADR-023：Workspace 统一目录 + Compaction 范围 + 子 Agent 形态（AgentScope 调研第三轮）
 
 - **背景**：AgentScope 调研（ADR-021）确认 middleware / loop / 状态快照 / 权限后，继续确认 workspace / compaction / 子 agent 三点。
