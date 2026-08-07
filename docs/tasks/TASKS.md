@@ -41,17 +41,17 @@
 - **成功标准**：危险命令按权限档位放行/确认/拒绝；middleware 链能拦截工具执行；429 重试生效
 - **状态**：未开始（2026-08-06 调整为三档权限；2026-08-07 确认通过 middleware 挂载）
 
-## 阶段 4：会话 + AGENTS.md + 系统提示词动态拼接 + 压缩
+## 阶段 4：Workspace（~/.harness/）+ 会话 + 系统提示词拼接 + 压缩
 
-- **目标**：`session` 包（JSONL 消息流 + **轻量 AgentState 快照** + resume）、`agentsmd` 包（**作为 onSystemPrompt middleware** 注入 + 系统提示词动态拼接）、`compact` 包（TokenBudget v1，作为 onReasoning middleware）
-- **成功标准**：`harness resume --last` 能完整恢复（含权限/todo 等非消息状态）；AGENTS.md 注入生效；系统提示词随上下文动态组装；长会话自动压缩
-- **状态**：未开始（2026-08-06 增补系统提示词动态拼接）
+- **目标**：**`~/.harness/` 统一 workspace**（sessions/快照、subagents/*.md 预留、tools.json、memory/）；`session` 包（JSONL 消息流 + **轻量 AgentState 快照** + resume，落 workspace）；`agentsmd` 包（**作为 onSystemPrompt middleware** 注入 + 系统提示词动态拼接，AGENTS.md 项目级向上搜索保留）；`compact` 包（TokenBudget v1 + 摘要式 + **大工具结果 eviction**，作为 onReasoning middleware，**不做 overflow 安全网**）
+- **成功标准**：`harness resume --last` 能完整恢复（含权限/todo 等非消息状态）；AGENTS.md 注入生效；系统提示词随上下文动态组装；长会话自动压缩；超大工具结果落盘 + read_file 指针
+- **状态**：未开始（2026-08-06 增补系统提示词动态拼接；2026-08-07 确认 workspace/compaction 范围）
 
-## 阶段 5：子 Agent + CLI 完善 + 文档
+## 阶段 5：子 Agent（内置 + 并行 + 状态）+ CLI 完善 + 文档
 
-- **目标**：`spawn_agent` + `send_message` 单向通信、Renderer 接口完成（simple 渲染器 + --json 模式）、config 包（YAML 加载）、CLI 子命令完善、docs/ 设计文档
-- **成功标准**：`harness run "用子 agent 分析这个目录结构"` 端到端跑通；`--json` 输出结构化事件；config 文件可配置多后端
-- **状态**：未开始
+- **目标**：**内置几个子 agent**（general-purpose 等）+ **并行执行** + **状态跟踪**（pending/running/completed）+ `send_message` 单向（fork 过滤保留）；自定义声明式（subagents/*.md）预留扩展点；Renderer 接口完成（simple 渲染器 + --json 模式）、config 包（YAML 加载）、CLI 子命令完善、docs/ 设计文档
+- **成功标准**：`harness run "用子 agent 分析这个目录结构"` 端到端跑通；并行子 agent 状态可查；`--json` 输出结构化事件；config 文件可配置
+- **状态**：未开始（2026-08-07 确认子 agent 形态：内置 + 并行 + 状态，细节阶段五探讨）
 
 ## 阶段 6（后续可选）：TUI / 摘要式压缩 / grep 工具 / 双向通信
 

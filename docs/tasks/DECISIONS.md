@@ -55,6 +55,7 @@
 - **背景**：长会话必然超窗，压缩是刚需；但摘要式需要额外 LLM 调用。
 - **选择**：v1 TokenBudget 式（清空历史保留系统提示 + 最近 N 条 + 占位），v2 摘要式（单独 LLM 摘要 + 保留最近用户消息）。
 - **理由**：codex 两种都有；TokenBudget 式 10 行可跑通，摘要式质量更好但成本高，分阶段合理。
+- **修订（2026-08-07，ADR-023）**：增加**大工具结果 eviction**（>80K 落盘 + head/tail preview + read_file 指针，治"宽"）；**不做 overflow 安全网**（eviction 撑住宽度后模型超限概率大降，砍被动抢救）。TokenBudget 仅作 v1 保底，主路径为摘要式 + eviction。
 
 ## ADR-010：配置用 YAML + 环境变量覆盖
 
@@ -145,6 +146,18 @@
   - 用户判断：与本项目最终目标（架构设计——middleware / loop / 事件 / 权限——的实践与复用）不背离；多后端接入是加分项非必需，接入面收窄的代价可接受。
 - **代价（知情）**：阿里 qwen（仅 openai 兼容）、DeepSeek openai 格式不再支持；config.local.yaml 中 qwen / deepseek（openai wire）provider 需移除或停用；DeepSeek 只能走 deepseek-claude（anthropic wire，ADR-019 的 401 坑仍需 WithAuthToken 覆盖）。
 - **影响 ADR**：ADR-020 的 openai 传递部分作废；ADR-001 / ADR-015 中"两 wire"相关描述以本文为准。
+
+## ADR-023：Workspace 统一目录 + Compaction 范围 + 子 Agent 形态（AgentScope 调研第三轮）
+
+- **背景**：AgentScope 调研（ADR-021）确认 middleware / loop / 状态快照 / 权限后，继续确认 workspace / compaction / 子 agent 三点。
+- **选择**：
+  1. **Workspace = `~/.harness/` 统一目录**，作为 agent 数据唯一事实源：`sessions/`（JSONL + AgentState 快照）、`subagents/*.md`（预留）、`tools.json`（工具 allow/deny）、`memory/`、`plans/`（后续）；AGENTS.md 保持项目级向上搜索（两源拼接注入）。
+  2. **Compaction**：TokenBudget v1（保底）+ 摘要式（主）+ 大工具结果 eviction（>80K 落盘 + head/tail preview + read_file 指针，治"宽"）；**不做 overflow 安全网**。
+  3. **子 agent**：**内置几个**（general-purpose 等）+ **允许并行** + **状态跟踪**（pending / running / completed）；**自定义声明式预留**（subagents/*.md 留扩展点，不实现）；保留 fork 过滤 + 主→子单向。实现细节阶段五探讨。
+- **理由**：
+  - workspace：一个目录 = 一个 agent 的全部数据，好理解 / 好备份 / 好调试；不引入多租户与 filesystem 抽象（本地目录约定即可）。
+  - compaction：eviction 治宽、摘要治深，两个主动手段够用；砍 overflow 被动抢救，避免阶段四膨胀。
+  - 子 agent：内置几个覆盖主要委托场景，免自定义注册复杂度；并行 + 状态跟踪是"真并行可观测"的核心；声明式仅预留扩展点。
 
 ## ADR-021：架构修订——进程内 Middleware + 纯 loop + AgentState 轻量快照 + 三档权限（AgentScope 调研）
 
