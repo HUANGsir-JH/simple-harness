@@ -32,6 +32,19 @@ func TestShellCommandTimeout(t *testing.T) {
 	wantRespondToModel(t, err, "slow command")
 }
 
+// TestShellCommandQuotedPath 验证含引号路径的命令不被破坏
+// （Windows cmd 引号转义坑：exec.Command 的 \" 与 cmd 的 "" 不兼容，走 .bat 修复）。
+func TestShellCommandQuotedPath(t *testing.T) {
+	dir := t.TempDir()
+	r, err := call(ShellCommandTool{}, map[string]any{"command": "echo \"" + dir + "\""})
+	if err != nil || !r.Success {
+		t.Fatalf("quoted: %v %v", r, err)
+	}
+	if !strings.Contains(r.Content, dir) {
+		t.Errorf("content: got %q", r.Content)
+	}
+}
+
 // slowCommand 返回一个至少阻塞 200ms 的跨平台命令。
 func slowCommand() string {
 	if isWindows() {
