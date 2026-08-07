@@ -45,10 +45,21 @@ func TestShellCommandQuotedPath(t *testing.T) {
 	}
 }
 
-// slowCommand 返回一个至少阻塞 200ms 的跨平台命令。
+// slowCommand 返回一个至少阻塞 1s 的跨平台命令。
 func slowCommand() string {
 	if isWindows() {
-		return "ping -n 3 127.0.0.1 >nul"
+		return "Start-Sleep -Seconds 1"
 	}
-	return "sleep 0.5"
+	return "sleep 1"
+}
+
+// TestShellCommandUnicode 验证中文输出不乱码（Windows PowerShell UTF-8 前缀）。
+func TestShellCommandUnicode(t *testing.T) {
+	r, err := call(ShellCommandTool{}, map[string]any{"command": "echo 中文测试"})
+	if err != nil || !r.Success {
+		t.Fatalf("unicode: %v %v", r, err)
+	}
+	if !strings.Contains(r.Content, "中文测试") {
+		t.Errorf("content: got %q", r.Content)
+	}
 }

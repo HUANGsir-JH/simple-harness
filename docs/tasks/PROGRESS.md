@@ -14,7 +14,7 @@
 - **关键修复（补）**：真实 API 暴露 anthropic **工具参数流式**——content_block_start 时 tool_use 的 input 为空（`{}`），参数经 input_json_delta 分片到达。原实现只读 start 的 input → **工具参数全空**（apply_patch/shell_command 报"参数为空"）。修复：按 content block index 累积 input_json_delta，content_block_stop 时输出完整参数（+ input_json_delta 累积单测）。**验证：apply_patch 创建/修改/删除 test.txt + read_file 回读，文件增删改读全闭环 ✅**（此前真实 API 测试都用了无参工具 list_dir，未暴露）
 - **渲染 + CLI**（2.5-2.6）：renderer 订阅 agent 事件（text/thinking/tool/边界）；--json 输出完整事件流（含 turn_done）；`harness` 交互式 REPL（复用 thread 会话延续）、`harness run <prompt>` 单轮
 - **测试**：单测全绿（tools/middleware/agent/provider/messages/cmd）；**termtest 进程外 e2e 跑通**（mock HTTP：单轮 turn_done 锚点 + 交互式工具闭环，Windows ConPTY 集成 demo ✅）；真实 API 冒烟 ✅（读取目录/计数 .md/交互式）
-- **踩坑**：Go flag 顺序（flag 在 prompt 前）复现 ADR-018；交互式入口暂不支持 --config（用默认 config.local.yaml 查找）；**Windows cmd 引号坑**——Go exec 的 `\"` 转义与 cmd 的 `""` 引号转义不兼容，含引号路径的命令（`dir "D:\path"`）经 exec.Command 传给 cmd 会破坏路径 → shell_command 改走**临时 .bat 执行**（命令原样，引号/中文均正常，cleanup 删临时文件），真实 API 复验通过
+- **踩坑**：Go flag 顺序（flag 在 prompt 前）复现 ADR-018；交互式入口暂不支持 --config（用默认 config.local.yaml 查找）；**Windows shell 引号坑**——Go exec 的 `\"` 转义与 cmd 的 `""` 引号转义不兼容（含引号路径命令被破坏）。对照 codex 调研：codex Windows 用 **PowerShell**（非 cmd）+ UTF-8 输出前缀 → shell_command 改为 **PowerShell `-Command` + UTF-8 前缀**（引号/中文均正常，无临时文件），真实 API 复验通过
 
 ### 移除 openai wire，provider 收敛为单 anthropic ✅
 
