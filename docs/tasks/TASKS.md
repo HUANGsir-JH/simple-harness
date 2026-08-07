@@ -25,7 +25,7 @@
 
 ## 阶段 2：工具系统 + 并发执行 + 终端渲染
 
-- **目标**：`tools` 包（Tool 接口 + 注册表 + 错误二分类）、内置工具（read_file/list_dir/glob/shell_command/apply_patch）、并行执行 + call_id 回填、**完整简单的终端渲染**（文本流式 + 工具调用展示）；编写时**预留工具权限框架扩展点**（为阶段三三档权限铺路）
+- **目标**：`tools` 包（Tool 接口 + 注册表 + 错误二分类）、内置工具（read_file/list_dir/glob/shell_command/apply_patch）、并行执行 + call_id 回填、**完整简单的终端渲染**（文本流式 + 工具调用展示）；**agent 重构为纯 ReAct loop + middleware 挂载点骨架**（onActing 即预留的工具权限扩展点）
 - **成功标准**：`harness run "读取当前目录文件列表并告诉我"` 能触发工具调用并正确回填；**多轮工具调用闭环在终端渲染下完整可跑 —— 阶段二完成 = 一个可用的简单终端 CLI agent 循环**
 - **测试**：进程内 FakeClient 单测（主力）+ **termtest** 进程外端到端（LLM 端点 mock HTTP server，确定性）+ **CI 末尾真实 API 冒烟 2-3 条**（宽松断言，验证链路）+ `turn_done` 回合边界事件作断言锚点（详见 IMPLEMENTATION_PLAN 阶段 2）
 - **状态**：未开始（2026-08-06 增补终端渲染 + 权限扩展点）
@@ -37,14 +37,14 @@
 
 ## 阶段 3：权限/审批（三档）+ Hooks + 错误重试
 
-- **目标**：三档权限（`readonly` / `acceptedit` / `bypass`）+ **规则匹配引擎（保留扩展点）** + `hooks` 包（PreToolUse/PermissionRequest/Stop）、错误重试完善
-- **成功标准**：危险命令按权限档位放行/确认/拒绝；hook 能拦截工具执行；429 重试生效
-- **状态**：未开始（2026-08-06 调整为三档权限，替代原三态）
+- **目标**：三档权限（`readonly` / `acceptedit` / `bypass`）**以 onActing middleware 挂载** + 黑白名单 + TTY 交互 + allowlist（规则匹配引擎保留扩展点，复杂匹配不强做）；错误重试完善
+- **成功标准**：危险命令按权限档位放行/确认/拒绝；middleware 链能拦截工具执行；429 重试生效
+- **状态**：未开始（2026-08-06 调整为三档权限；2026-08-07 确认通过 middleware 挂载）
 
 ## 阶段 4：会话 + AGENTS.md + 系统提示词动态拼接 + 压缩
 
-- **目标**：`session` 包（JSONL 持久化 + resume）、`agentsmd` 包、**系统提示词动态拼接**（组装 developer/system 消息，替换 agent.go 硬编码 Instructions）、`compact` 包（TokenBudget v1）
-- **成功标准**：`harness resume --last` 能恢复历史继续对话；AGENTS.md 注入生效；系统提示词随上下文动态组装；长会话自动压缩
+- **目标**：`session` 包（JSONL 消息流 + **轻量 AgentState 快照** + resume）、`agentsmd` 包（**作为 onSystemPrompt middleware** 注入 + 系统提示词动态拼接）、`compact` 包（TokenBudget v1，作为 onReasoning middleware）
+- **成功标准**：`harness resume --last` 能完整恢复（含权限/todo 等非消息状态）；AGENTS.md 注入生效；系统提示词随上下文动态组装；长会话自动压缩
 - **状态**：未开始（2026-08-06 增补系统提示词动态拼接）
 
 ## 阶段 5：子 Agent + CLI 完善 + 文档

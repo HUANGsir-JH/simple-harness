@@ -135,3 +135,17 @@
   - **关闭必须显式传关闭表达**：DeepSeek 等兼容端点默认开启 thinking，"不传参数"无法关闭（不传 = 走模型默认 = 开）。
 - **理由**：配置与传递都是通用语义 / 协议标准字段，DeepSeek 只是恰好兼容，不写任何后端特化。efforts 列表让模型粒度声明支持档位，运行时 --effort 在集内校验。anthropic 的 `output_config.effort` 是 SDK 官方字段（DeepSeek 兼容端点支持）。
 - **注意**：openai wire 关闭时的 `effort: "none"` 是 DeepSeek 等兼容端点在 OpenAI 格式内的关闭约定；标准 OpenAI o 系列 effort 仅 low/medium/high，若后续接入需按官方语义适配关闭。
+
+## ADR-021：架构修订——进程内 Middleware + 纯 loop + AgentState 轻量快照 + 三档权限（AgentScope 调研）
+
+- **背景**：阶段一完成、阶段二开始前，用户提供 AgentScope Java v2 文档（`agent-scope-llms.txt`），要求模仿其功能/实现完善 simple-harness 的设计。通读其核心文档后，经问答确认 4 项架构修订。
+- **选择**：
+  1. **扩展机制：进程内 middleware 为核心**。新增 `internal/middleware` 包，定义 5 个 hook：`onAgent` / `onReasoning` / `onActing` / `onModelCall`（onion：包 next、可观察事件流）+ `onSystemPrompt`（transformer 链）。原计划的子进程 hooks（PreToolUse/PermissionRequest/Stop）**降级为远期**（作为 middleware 的一种外部实现）。
+  2. **agent 纯 loop + 挂载点**：agent 核心循环只做 采样→工具→回填；压缩/权限/记忆/AGENTS.md 注入全部作为 middleware 挂载。**阶段二即搭挂载点骨架**，避免工程能力揉进 agent.go。挂载映射：`onActing` = 权限扩展点（阶段三 approval）；`onSystemPrompt` = 系统提示词拼接 + AGENTS.md 注入（阶段四 agentsmd）；`onReasoning` = 压缩（阶段四 compact）。
+  3. **会话 = JSONL + 轻量 AgentState 快照**：消息仍追加 JSONL（保留换后端零迁移与可读性）；另存一份可序列化运行时状态快照（权限规则/todo/plan 指针/摘要），`resume` 恢复完整会话（不只消息）。
+  4. **权限保持三档**：阶段三只做 readonly / acceptedit / bypass + 黑白名单 + TTY 交互 + allowlist，以 onActing middleware 挂载；AgentScope 的复杂规则匹配引擎（Rules + Mode + 不可绕过 Checks、suggested-rules 记忆）**不强做**，由 middleware 挂载点天然承载后续演进。
+- **理由**：
+  - middleware 化让工程能力可单测、可插拔、不污染核心循环（AgentScope 第一支柱："capabilities 叠加在 loop 上，不揉进 loop"）。
+  - 会话快照解决"消息流无法表达权限/todo/plan 等非消息状态"的 resume 缺口，又保留 JSONL 的零迁移/可读性（换后端无需迁移）。
+  - 权限三档符合 simple 定位：复杂规则匹配是增强不是刚需，middleware 机制先行即可，不超前设计。
+- **参考**：AgentScope Java v2 文档（`agent-scope-llms.txt`；重点篇目：architecture / middleware / message-and-event / context / permission-system / workspace / compaction / memory / subagent）。

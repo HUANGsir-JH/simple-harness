@@ -15,10 +15,12 @@
 | LLM 后端 | 抽象为多后端；**配置结构体 + 1 个 HTTP 客户端**（codex 的 ConfiguredModelProvider 模式：base_url + env_key + wire_api，Anthropic/Ollama 无需独立实现） |
 | 客户端依赖 | 官方 SDK（openai-go、anthropic-sdk-go） |
 | 内部消息模型 | **统一 Message 类型**（role/content/tool_calls/tool_results），provider 适配转换 |
-| 会话存储 | JSONL 文件（每会话一个，追加写） |
+| 会话存储 | JSONL 文件（每会话一个，追加写）+ 轻量 AgentState 快照（见"会话状态"行） |
 | CLI 交互 | Renderer 接口抽象，v1 简单流式渲染，TUI 后续插拔 |
-| 权限审批 | 三档权限（readonly / acceptedit / bypass）+ 规则匹配引擎（保留扩展点）；2026-08-06 调整，替代原三态 |
-| 系统提示词 | 动态拼接（AGENTS.md 注入 + 组装）；当前硬编码待替换（见"规划调整"） |
+| 扩展机制 | **进程内 middleware**（onAgent / onReasoning / onActing / onModelCall / onSystemPrompt 五 hook，洋葱式）+ 链机制为核心扩展点；子进程 hooks 降级远期（2026-08-07 AgentScope 调研修订，替代原子进程 hook 方案） |
+| 权限审批 | 三档权限（readonly / acceptedit / bypass）+ 规则匹配引擎（保留扩展点）；**复杂规则匹配不强做**——middleware 挂载点天然承载后续演进（2026-08-07 确认） |
+| 系统提示词 | 动态拼接（AGENTS.md 注入 + 组装），作为 middleware 的 **onSystemPrompt** hook 实现 |
+| 会话状态 | JSONL 消息流（追加写，换后端零迁移）+ **轻量 AgentState 快照**（权限/todo/plan 指针/摘要 → 完整 resume）（2026-08-07 AgentScope 调研修订） |
 | 工具执行 | 并发执行全部 tool_call，结果按 call_id 回填 |
 | 子 agent | spawn_agent + **主→子单向消息传递**（无 mailbox/队列，简化版） |
 | 内置工具 | 文件操作 + Shell 执行 + apply_patch（grep/搜索未选，可后续补）；**todo 工具单独开阶段做** |
@@ -32,22 +34,41 @@
 harness/
 ├── cmd/harness/          # 入口：run / resume / config 子命令
 ├── internal/
-│   ├── agent/            # ★ agent loop（turn 循环 + 事件流）
+│   ├── agent/            # ★ 纯 ReAct loop（采样→工具→回填）+ 事件流（不含任何工程能力）
+│   ├── middleware/       # ★ Middleware 接口（onAgent/onReasoning/onActing/onModelCall/onSystemPrompt）+ 洋葱链
 │   ├── provider/         # Provider 接口 + HTTP 客户端（Responses/chat 两 wire）
 │   ├── messages/         # 统一 Message 模型 + JSONL 序列化
 │   ├── tools/            # 工具注册表 + shell/file/apply_patch 实现
-│   ├── approval/         # 三态审批策略 + 危险命令黑名单 + TTY 交互 + allowlist
-│   ├── session/          # 会话管理（JSONL 持久化 + resume 重放）
-│   ├── compact/          # 上下文压缩（TokenBudget 式 v1 → 摘要式 v2）
+│   ├── approval/         # 三档权限（readonly/acceptedit/bypass），作为 onActing middleware 实现
+│   ├── session/          # 会话（JSONL 追加写 + 轻量 AgentState 快照 + resume）
+│   ├── compact/          # 上下文压缩（TokenBudget v1 → 摘要 v2），作为 onReasoning middleware 实现
 │   ├── ui/               # Renderer 接口：simple（v1）/ tui（v2 插拔）
-│   ├── hooks/            # PreToolUse / PermissionRequest / Stop 子进程 hook
-│   ├── agentsmd/         # AGENTS.md 向上搜索 + 注入 developer 消息
+│   ├── agentsmd/         # AGENTS.md 向上搜索 + 注入，作为 onSystemPrompt middleware 实现
+│   ├── hooks/            # （远期）子进程 hook，middleware 的一种实现
 │   └── config/           # YAML 配置加载 + 环境变量合并
 ├── go.mod
 └── docs/                 # 设计文档
 ```
 
 ## 核心设计
+
+### 0. Middleware（进程内扩展机制 · 2026-08-07 新增）
+
+参照 AgentScope 的第一支柱：**capabilities 叠加在 reasoning loop 上，不揉进 loop 里**。agent 核心循环只做 采样→工具→回填；压缩/权限/记忆/AGENTS.md 注入全部作为 middleware 挂载。
+
+```go
+type Middleware interface {
+    OnAgent(ctx, in AgentInput, next Next[AgentInput])                          // 包一层完整回复（洋葱）
+    OnReasoning(ctx, in ReasoningInput, next Next[ReasoningInput])              // 包一个推理轮（洋葱）
+    OnActing(ctx, in ActingInput, next Next[ActingInput])                       // 包一次工具执行（洋葱）→ 权限扩展点
+    OnModelCall(ctx, in ModelCallInput, next Next[ModelCallInput])              // 包一次模型调用（洋葱）
+    OnSystemPrompt(ctx, current string) string                                  // 组装系统提示（transformer 链）
+}
+```
+
+- **两种类型**：前四者是 **onion**（`next.apply(input)` 进入内层，前后都可插逻辑、可观察事件流）；`onSystemPrompt` 是 **transformer**（前输出 → 后输入，从左到右）。
+- **挂载点用途映射**：`onActing` = 工具权限扩展点（阶段三 approval 挂这）；`onSystemPrompt` = 系统提示词动态拼接 + AGENTS.md 注入（阶段四 agentsmd 挂这）；`onReasoning` = 上下文压缩（阶段四 compact 挂这）。
+- **阶段落地**：阶段二只搭**挂载点骨架**（链机制 + 事件流走通，中间件本体为空实现），避免阶段二就把工程能力写进 agent.go。
 
 ### 1. 统一消息模型（`internal/messages/`）
 
@@ -215,6 +236,12 @@ type Renderer interface {
 - **系统提示词动态拼接**：当前 agent.go 硬编码 `Instructions: "You are a helpful coding agent."`，需要动态拼接；新建一个阶段或并入现有阶段（建议并入阶段四，与 AGENTS.md 注入一起做提示词组装）
 - **todo 工具**：阶段二之后**单独开一个阶段**实现，不做进工具系统阶段
 
+- **（2026-08-07）AgentScope 调研 → 架构修订**：用户提供 AgentScope Java v2 llms.txt（`agent-scope-llms.txt`），通读其 20 篇核心文档后经问答确认 4 项架构决策（详见决策表 + 核心设计 0 + ADR-021）：
+  1. **扩展机制**：进程内 middleware（5 hook，洋葱式）替代子进程 hooks 作为核心扩展点；子进程 hooks 降级远期
+  2. **agent 架构**：纯 ReAct loop + middleware 挂载点骨架，capabilities 不揉进 loop（阶段二即搭骨架）
+  3. **会话状态**：JSONL 消息流 + 轻量 AgentState 快照（权限/todo/plan 指针/摘要 → 完整 resume）
+  4. **权限**：保持三档，复杂规则匹配引擎不强做——middleware 挂载点承载后续演进
+
 ## 实施阶段
 
 ### 阶段 1：骨架 + 统一消息模型 + Provider + 最小 loop ✅ 已完成（2026-08-04）
@@ -224,8 +251,8 @@ type Renderer interface {
 
 > 阶段 1 详细设计见 `docs/tasks/TASKS.md`（单元 1.1~1.9 全部完成）。重试项：两 SDK 内置退避重试（ADR-012）。thinking 推理模式（ADR-020）：模型级配置 + 双 wire 标准参数 + CLI 运行时覆盖，真实 API 双 wire 验证通过。
 
-### 阶段 2：工具系统 + 并发执行 + 终端渲染
-**目标**：`tools` 包（Tool 接口 + 注册表 + 错误二分类）、内置工具（read_file/list_dir/glob/shell_command/apply_patch）、并行执行 + call_id 回填、完整简单的终端渲染（文本流式 + 工具调用展示）；预留工具权限框架扩展点
+### 阶段 2：工具系统 + 并发执行 + 终端渲染 + middleware 挂载点骨架
+**目标**：`tools` 包（Tool 接口 + 注册表 + 错误二分类）、内置工具（read_file/list_dir/glob/shell_command/apply_patch）、并行执行 + call_id 回填、完整简单的终端渲染（文本流式 + 工具调用展示）；**agent 重构为纯 ReAct loop + middleware 挂载点骨架**（链机制 + 事件流走通，onActing 即预留的工具权限扩展点）
 **成功标准**：`harness run "读取当前目录文件列表并告诉我"` 能触发工具调用并正确回填；**多轮工具调用闭环 + 终端渲染完整可跑 —— 阶段二完成 = 一个可用的简单终端 CLI agent 循环**
 **测试**：各工具单测（临时目录）；loop 并发执行测试（mock 3 个 tool_call 验证并发 + 回填顺序）
 
@@ -240,15 +267,15 @@ type Renderer interface {
 - **后续可选**：录制回放（首次真实 API 录响应，之后回放），兼得真实性与确定性，实现成本高，后续阶段再评估
 - **待验证**：termtest 驱动 harness 的集成 demo（Windows 下跑通 `SendLine → Expect → ExpectExitCode`）
 
-### 阶段 3：审批 + Hooks + 错误重试
-**目标**：`approval` 包（三态策略 + 黑白名单 + TTY 交互 + allowlist）、`hooks` 包（PreToolUse/PermissionRequest/Stop）、错误重试完善
-**成功标准**：危险命令触发确认（TTY）/ 自动拒绝（非 TTY）；hook 能拦截工具执行；429 重试生效
-**测试**：审批策略单测（黑白名单匹配）；hook 单测（mock 子进程）；重试单测（mock 429 响应）
+### 阶段 3：审批（三档，作为 onActing middleware）+ 错误重试
+**目标**：`approval` 包实现三档权限（readonly / acceptedit / bypass）+ 黑白名单 + TTY 交互 + allowlist，**以 onActing middleware 挂载**（拒绝/确认结果回填，拒绝 ≠ Fatal）；规则匹配引擎保留扩展点（复杂匹配不强做）；错误重试完善（429 依赖 SDK，补充流中断恢复）
+**成功标准**：危险命令按权限档位放行/确认/拒绝；middleware 链能拦截工具执行；429 重试生效
+**测试**：审批策略单测（黑白名单匹配）；middleware 链单测；重试单测（mock 429 响应）
 
-### 阶段 4：会话 + AGENTS.md + 压缩
-**目标**：`session` 包（JSONL 持久化 + resume）、`agentsmd` 包、`compact` 包（TokenBudget v1）
-**成功标准**：`harness resume --last` 能恢复历史继续对话；AGENTS.md 注入生效；长会话自动压缩
-**测试**：session 单测（写读回放）；agentsmd 单测（临时目录向上搜索）；compact 单测（token 估算超限触发）
+### 阶段 4：会话（JSONL + AgentState 快照）+ AGENTS.md + 系统提示词拼接 + 压缩
+**目标**：`session` 包（JSONL 消息流 + **轻量 AgentState 快照** + resume）、`agentsmd` 包（**作为 onSystemPrompt middleware** 注入，配合动态系统提示词拼接）、`compact` 包（TokenBudget v1，作为 onReasoning middleware）
+**成功标准**：`harness resume --last` 能完整恢复（含权限/todo 等非消息状态）；AGENTS.md 注入生效；系统提示词动态组装；长会话自动压缩
+**测试**：session 单测（写读回放 + 快照往返）；agentsmd 单测（临时目录向上搜索）；compact 单测（token 估算超限触发）
 
 ### 阶段 5：子 Agent + CLI 完善 + 文档
 **目标**：`spawn_agent` + `send_message` 单向通信、Renderer 接口完成（simple 渲染器 + --json 模式）、config 包（YAML 加载）、CLI 子命令完善、docs/ 设计文档
