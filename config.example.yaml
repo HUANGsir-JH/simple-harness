@@ -4,7 +4,9 @@
 # 运行: harness run "你好"
 #
 # 结构：default_provider 指定默认供应商，providers 按名称分组。
-# 每个 provider 含 wire_api / base_url / api_key(或 env_key) / models。
+# 每个 provider 含 base_url / api_key(或 env_key) / models。
+# 2026-08-07：仅支持 anthropic wire（ADR-022）——多 provider = 多 anthropic
+# 兼容端点（Anthropic 官方、DeepSeek anthropic 兼容等），只需 base_url 覆盖。
 # 每个模型可配：
 #   context_window  token 数（不配则默认 128000）
 #   thinking        推理模式：
@@ -18,34 +20,22 @@
 #
 # API key 两种提供方式:
 #   1. 直接写在本文件的 api_key 字段（本地配置推荐，如 .env 转换）
-#   2. env_key 指定环境变量名，运行时从环境读取
+#   2. env_key 指定环境变量名，运行时从环境读取（默认 ANTHROPIC_API_KEY）
 #
 # 模型选择: harness run --model <名> 指定；不指定用 default_provider 的 models 第一个。
 
-default_provider: my-openai
+default_provider: my-anthropic
 
 providers:
-  my-openai:                      # 自定义供应商名
-    wire_api: openai              # openai (Responses API, 兼容 Ollama/DeepSeek 等) | anthropic
-    base_url: https://api.example.com/v1   # 自定义端点；留空用官方默认
-    api_key: sk-xxx               # 或 env_key: OPENAI_API_KEY
-    models:
-      gpt-4o:
-        context_window: 128000
-        thinking:                 # 关闭 thinking 示例
-          enabled: false
-      gpt-4o-mini:
-        context_window: 128000
-        thinking:
-          enabled: true           # 默认即开启，可省略
-          efforts: [low, high, max]  # 支持档位集，默认三档
-
-  my-anthropic:
-    wire_api: anthropic
-    base_url: https://api.anthropic.com/
-    env_key: ANTHROPIC_API_KEY
+  my-anthropic:                 # 自定义供应商名
+    base_url: https://api.anthropic.com/   # 自定义端点（如 DeepSeek anthropic 兼容）；留空用官方默认
+    env_key: ANTHROPIC_API_KEY  # 或 api_key: sk-xxx
     models:
       claude-sonnet-5:
         context_window: 1000000
         thinking:
-          efforts: [low, high]    # 只支持两档示例
+          efforts: [low, high, max]
+      claude-haiku-4-5:
+        context_window: 1000000
+        thinking:
+          enabled: false        # 关闭 thinking 示例

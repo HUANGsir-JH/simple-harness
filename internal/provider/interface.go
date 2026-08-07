@@ -1,6 +1,7 @@
-// Package provider 定义多后端 LLM 客户端抽象。
-// 依据 ADR-001，多后端支持是一个配置结构体 + 每个 wire API 一个 HTTP 客户端
-// （openai Responses / anthropic Messages）；兼容端点无需为每家厂商单独实现。
+// Package provider 定义 LLM 客户端抽象与 anthropic wire 适配。
+// 依据 ADR-022，仅保留 anthropic Messages 一个 wire（2026-08-07 移除 openai wire）；
+// 多后端 = 多 anthropic 兼容端点（配置结构体 + 单一 HTTP 客户端），DeepSeek 等
+// 兼容端点只需 base_url 覆盖。
 package provider
 
 import (
@@ -10,31 +11,10 @@ import (
 	"github.com/agent-project/harness/internal/messages"
 )
 
-// WireAPI 标识 provider 使用的请求/响应 wire 协议。
-type WireAPI string
+// DefaultAPIKeyEnv 是 API key 的惯例环境变量名（未配置 env_key 时的回退）。
+const DefaultAPIKeyEnv = "ANTHROPIC_API_KEY"
 
-const (
-	// WireOpenAI 是 OpenAI Responses API（同样适用于 Ollama、LM Studio 等
-	// OpenAI 兼容端点）。
-	WireOpenAI WireAPI = "openai"
-	// WireAnthropic 是 Anthropic Messages API。
-	WireAnthropic WireAPI = "anthropic"
-)
-
-// Provider 描述一个已配置的模型后端。实现很薄：
-// wire API、模型、base URL 覆盖、上下文窗口。
-type Provider interface {
-	// WireAPI 返回与该后端通信所用的协议。
-	WireAPI() WireAPI
-	// Model 返回采样所用的模型 ID。
-	Model() string
-	// BaseURL 覆盖 SDK 默认端点；空字符串表示默认。
-	BaseURL() string
-	// ContextWindow 返回模型的上下文窗口（token 数）。
-	ContextWindow() int
-}
-
-// Config 是面向用户的完整配置（YAML），支持多 provider 多模型。
+// Config 是面向用户的完整配置（YAML），支持多 provider（多 anthropic 兼容端点）。
 // 结构：default_provider 指定默认供应商，providers 按名称分组定义。
 type Config struct {
 	// DefaultProvider 是默认使用的 provider 名；未指定时取 providers 中
@@ -45,11 +25,7 @@ type Config struct {
 }
 
 // ProviderConfig 描述一个自定义供应商（连接 + 鉴权 + 其下模型列表）。
-// 注意：与 Provider 接口（运行时抽象）不同，这是配置层的定义。
 type ProviderConfig struct {
-	// WireAPI 是该供应商使用的协议："openai"（Responses API）或
-	// "anthropic"（Messages API）。默认 openai。
-	WireAPI WireAPI `yaml:"wire_api,omitempty"`
 	// BaseURL 覆盖 SDK 默认端点；为空时使用官方默认。
 	BaseURL string `yaml:"base_url,omitempty"`
 	// EnvKey 是存放 API key 的环境变量名；与 APIKey 二选一。
@@ -71,9 +47,8 @@ type Model struct {
 	Thinking *Thinking `yaml:"thinking,omitempty"`
 }
 
-// Thinking 是模型级 thinking（推理模式）配置。字段是通用语义，
-// 各 wire 适配层按各自 SDK 标准参数传递（openai → reasoning.effort；
-// anthropic → thinking + output_config.effort），不对具体后端特化。
+// Thinking 是模型级 thinking（推理模式）配置。传递按 anthropic Messages
+// SDK 标准参数（thinking + output_config.effort），不对具体后端特化。
 type Thinking struct {
 	// Enabled 是否启用 thinking；nil（未配置）表示启用。
 	Enabled *bool `yaml:"enabled,omitempty"`
@@ -93,16 +68,8 @@ const (
 // DefaultThinkingEffort 是未配置 thinking.effort 时的默认档位。
 const DefaultThinkingEffort = EffortHigh
 
-// DefaultEnvKey 返回某 wire API 的惯例 API key 环境变量名。
-func DefaultEnvKey(w WireAPI) string {
-	if w == WireAnthropic {
-		return "ANTHROPIC_API_KEY"
-	}
-	return "OPENAI_API_KEY"
-}
-
 // ToolSpec 是统一的工具 schema。provider 适配层将其转换为
-// 各后端的原生工具定义格式。
+// anthropic SDK 的原生工具定义格式。
 type ToolSpec struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description"`

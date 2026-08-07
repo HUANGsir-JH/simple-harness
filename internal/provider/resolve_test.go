@@ -18,7 +18,6 @@ func testConfig() Config {
 		DefaultProvider: "deepseek",
 		Providers: map[string]ProviderConfig{
 			"deepseek": {
-				WireAPI: WireOpenAI,
 				BaseURL: "https://api.deepseek.com/",
 				APIKey:  "sk-deepseek",
 				Models: map[string]Model{
@@ -27,7 +26,6 @@ func testConfig() Config {
 				},
 			},
 			"claude": {
-				WireAPI: WireAnthropic,
 				BaseURL: "https://api.anthropic.com/",
 				EnvKey:  "ANTHROPIC_API_KEY",
 				Models: map[string]Model{
@@ -47,7 +45,7 @@ func TestResolveDefaultProvider(t *testing.T) {
 	if r.ProviderID != "deepseek" {
 		t.Errorf("provider: got %q", r.ProviderID)
 	}
-	if r.WireAPI != WireOpenAI || r.BaseURL != "https://api.deepseek.com/" || r.APIKey != "sk-deepseek" {
+	if r.BaseURL != "https://api.deepseek.com/" || r.APIKey != "sk-deepseek" {
 		t.Errorf("provider config mismatch: %+v", r)
 	}
 	// 未指定 --model → 取 models 排序第一个（deepseek-v4 < deepseek-v4-flash）
@@ -172,7 +170,6 @@ func TestConfigYAML(t *testing.T) {
 default_provider: deepseek
 providers:
   deepseek:
-    wire_api: openai
     base_url: https://api.deepseek.com/
     api_key: sk-1
     models:
@@ -184,7 +181,6 @@ providers:
       deepseek-v4:
         context_window: 256000
   claude:
-    wire_api: anthropic
     models:
       claude-sonnet-5: {}
 `
@@ -199,7 +195,7 @@ providers:
 		t.Fatalf("providers: got %d want 2", len(cfg.Providers))
 	}
 	ds := cfg.Providers["deepseek"]
-	if ds.WireAPI != WireOpenAI || ds.BaseURL != "https://api.deepseek.com/" || ds.APIKey != "sk-1" {
+	if ds.BaseURL != "https://api.deepseek.com/" || ds.APIKey != "sk-1" {
 		t.Errorf("deepseek: %+v", ds)
 	}
 	flash := ds.Models["deepseek-v4-flash"]
@@ -214,9 +210,6 @@ providers:
 	}
 	if !slices.Equal(flash.Thinking.Efforts, []string{EffortLow, EffortHigh, EffortMax}) {
 		t.Errorf("deepseek-v4-flash thinking.efforts: got %v", flash.Thinking.Efforts)
-	}
-	if cfg.Providers["claude"].WireAPI != WireAnthropic {
-		t.Errorf("claude wire api: %q", cfg.Providers["claude"].WireAPI)
 	}
 }
 

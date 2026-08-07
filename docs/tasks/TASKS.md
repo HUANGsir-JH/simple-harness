@@ -28,7 +28,7 @@
 - **目标**：**移除 openai wire**（删 openai.go/相关测试，config/枚举/校验调整，provider 只留 anthropic，真实 API 复验 deepseek-claude）；`tools` 包（Tool 接口 + 注册表 + 错误二分类）、内置工具（read_file/list_dir/glob/shell_command/apply_patch）、并行执行 + call_id 回填、**完整简单的终端渲染**（文本流式 + 工具调用展示）；**agent 重构为纯 ReAct loop + middleware 挂载点骨架**（onActing 即预留的工具权限扩展点）
 - **成功标准**：`harness run "读取当前目录文件列表并告诉我"` 能触发工具调用并正确回填；**多轮工具调用闭环在终端渲染下完整可跑 —— 阶段二完成 = 一个可用的简单终端 CLI agent 循环**
 - **测试**：进程内 FakeClient 单测（主力）+ **termtest** 进程外端到端（LLM 端点 mock HTTP server，确定性）+ **CI 末尾真实 API 冒烟 2-3 条**（宽松断言，验证链路）+ `turn_done` 回合边界事件作断言锚点（详见 IMPLEMENTATION_PLAN 阶段 2）
-- **状态**：未开始（2026-08-06 增补终端渲染 + 权限扩展点）
+- **状态**：进行中（2026-08-07 移除 openai wire ✅；其余工具系统/渲染/middleware 骨架未开始）
 
 ## todo 工具阶段（阶段 2 之后单开，编号待定）
 

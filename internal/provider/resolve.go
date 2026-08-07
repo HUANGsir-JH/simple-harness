@@ -17,7 +17,6 @@ var DefaultEfforts = []string{EffortLow, EffortHigh, EffortMax}
 // 由 Resolve 产出，NewClient 直接消费。
 type Resolved struct {
 	ProviderID      string
-	WireAPI         WireAPI
 	BaseURL         string
 	APIKey          string
 	Model           string
@@ -35,7 +34,7 @@ type Resolved struct {
 //     未指定取该 provider 的 models 中排序后的第一个
 //
 // context_window 取模型定义值；未配置（0）回退 DefaultContextWindow。
-// API key 解析：APIKey 字段 → EnvKey 环境变量 → 该 wire API 的惯例环境变量名。
+// API key 解析：APIKey 字段 → EnvKey 环境变量 → DefaultAPIKeyEnv（ANTHROPIC_API_KEY）。
 func Resolve(cfg Config, modelFlag string) (*Resolved, error) {
 	providerID, p, err := resolveProvider(cfg)
 	if err != nil {
@@ -55,14 +54,13 @@ func Resolve(cfg Config, modelFlag string) (*Resolved, error) {
 
 	thinkingEnabled, thinkingEfforts, thinkingEffort := resolveThinking(m)
 
-	apiKey, err := resolveAPIKey(p, p.WireAPI)
+	apiKey, err := resolveAPIKey(p)
 	if err != nil {
 		return nil, fmt.Errorf("provider %q: %w", providerID, err)
 	}
 
 	return &Resolved{
 		ProviderID:      providerID,
-		WireAPI:         p.WireAPI,
 		BaseURL:         p.BaseURL,
 		APIKey:          apiKey,
 		Model:           model,
@@ -76,7 +74,7 @@ func Resolve(cfg Config, modelFlag string) (*Resolved, error) {
 // resolveThinking 解析模型的 thinking 配置。
 //   - enabled：默认启用（Enabled nil → true）
 //   - efforts：默认 DefaultEfforts；配置了则用配置值（支持集，供 --effort 校验）
-//   - current：当前生效档位，openai/anthropic 协议均默认 DefaultThinkingEffort（high）；
+//   - current：当前生效档位，默认 DefaultThinkingEffort（high）；
 //     若 high 不在 efforts 中，取 efforts 第一个
 func resolveThinking(m Model) (enabled bool, efforts []string, current string) {
 	enabled = true
@@ -137,17 +135,17 @@ func resolveModel(models map[string]Model, modelFlag string) (string, error) {
 	return names[0], nil
 }
 
-// resolveAPIKey 解析 API key：APIKey 字段 → EnvKey 环境变量 → 惯例变量名。
-func resolveAPIKey(p ProviderConfig, w WireAPI) (string, error) {
+// resolveAPIKey 解析 API key：APIKey 字段 → EnvKey 环境变量 → DefaultAPIKeyEnv。
+func resolveAPIKey(p ProviderConfig) (string, error) {
 	if p.APIKey != "" {
 		return p.APIKey, nil
 	}
 	envKey := p.EnvKey
 	if envKey == "" {
-		envKey = DefaultEnvKey(w)
+		envKey = DefaultAPIKeyEnv
 	}
 	if k := os.Getenv(envKey); k != "" {
 		return k, nil
 	}
-	return "", fmt.Errorf("no API key (set api_key, env_key %q, or %s)", envKey, DefaultEnvKey(w))
+	return "", fmt.Errorf("no API key (set api_key, env_key %q, or %s)", envKey, DefaultAPIKeyEnv)
 }

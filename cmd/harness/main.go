@@ -72,7 +72,7 @@ func usage() {
 	fmt.Println("  --no-thinking                force disable thinking (default: model config)")
 	fmt.Println()
 	fmt.Println("config: project config.local.yaml or ~/.harness/config.yaml")
-	fmt.Println("  default_provider + providers.<name>.{wire_api, base_url, api_key, models}")
+	fmt.Println("  default_provider + providers.<name>.{base_url, api_key, models} (anthropic wire)")
 }
 
 func runCmd(args []string, jsonOut bool) error {

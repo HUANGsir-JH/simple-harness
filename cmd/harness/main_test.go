@@ -57,7 +57,6 @@ func TestLoadConfigFromFile(t *testing.T) {
 	content := `default_provider: deepseek
 providers:
   deepseek:
-    wire_api: openai
     base_url: https://api.deepseek.com/
     api_key: sk-test
     models:
@@ -79,7 +78,7 @@ providers:
 	if !ok {
 		t.Fatal("expected deepseek provider")
 	}
-	if ds.WireAPI != "openai" || ds.BaseURL != "https://api.deepseek.com/" || ds.APIKey != "sk-test" {
+	if ds.BaseURL != "https://api.deepseek.com/" || ds.APIKey != "sk-test" {
 		t.Errorf("deepseek: %+v", ds)
 	}
 	if ds.Models["deepseek-v4-flash"].ContextWindow != 128000 {
@@ -145,7 +144,6 @@ func writeTestConfig(t *testing.T, efforts string) string {
 	content := `default_provider: p
 providers:
   p:
-    wire_api: openai
     api_key: sk-test
     models:
       m:

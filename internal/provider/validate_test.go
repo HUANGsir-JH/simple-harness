@@ -56,23 +56,7 @@ func TestValidateNoModels(t *testing.T) {
 	}
 }
 
-// TestValidateBadWireAPI 验证非法 wire_api 报错。
-func TestValidateBadWireAPI(t *testing.T) {
-	cfg := Config{
-		Providers: map[string]ProviderConfig{
-			"p": {
-				WireAPI: "gemini",
-				APIKey:  "k",
-				Models:  map[string]Model{"m": {}},
-			},
-		},
-	}
-	err := cfg.Validate()
-	if err == nil || !strings.Contains(err.Error(), "wire_api") {
-		t.Fatalf("expected wire_api error, got %v", err)
-	}
-}
-
+// TestValidateBadWireAPI 删除：单 wire（anthropic）后不再有 wire_api 校验。
 // TestValidateNegativeContextWindow 验证负 context_window 报错。
 func TestValidateNegativeContextWindow(t *testing.T) {
 	cfg := Config{
@@ -107,8 +91,7 @@ func TestValidateMultipleErrors(t *testing.T) {
 	cfg := Config{
 		Providers: map[string]ProviderConfig{
 			"p": {
-				WireAPI: "gemini",
-				Models:  map[string]Model{"m": {ContextWindow: -5}},
+				Models: map[string]Model{"m": {ContextWindow: -5}},
 			},
 			// 无 key、无 models
 			"q": {},
@@ -118,8 +101,8 @@ func TestValidateMultipleErrors(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected errors")
 	}
-	// 应有 4 条错误：p 的 wire_api、p 的 context_window、p 缺 key、q 缺 models + 缺 key（2条）
-	if n := strings.Count(err.Error(), "\n  - "); n != 5 {
-		t.Errorf("expected 5 errors, got %d:\n%s", n, err)
+	// 应有 4 条错误：p 的 context_window、p 缺 key、q 缺 models、q 缺 key
+	if n := strings.Count(err.Error(), "\n  - "); n != 4 {
+		t.Errorf("expected 4 errors, got %d:\n%s", n, err)
 	}
 }

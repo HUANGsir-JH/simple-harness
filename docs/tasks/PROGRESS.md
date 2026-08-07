@@ -2,6 +2,20 @@
 
 > 按日期追加，最新在上。记录：进展、阻塞、问题、经验。
 
+## 2026-08-07
+
+### 移除 openai wire，provider 收敛为单 anthropic ✅
+
+- **背景**：AgentScope 调研后用户决策——抛弃 openai wire（Responses 与 Chat Completions 都不要），只留 anthropic Messages（ADR-022）。理由：单 wire = 最大 simple，thinking/事件形状唯一；接入面收窄的代价（DeepSeek openai 格式、阿里 qwen 失联）可接受。
+- **改动**：
+  - provider 包：删 `openai.go`、`Provider` 接口、`WireAPI` 类型/常量、`ProviderConfig.WireAPI` 字段、`factory.go` 的 switch 分派；`DefaultEnvKey(w)` → `DefaultAPIKeyEnv` 常量（ANTHROPIC_API_KEY）；`NewClient` 直接构造 anthropic；`Resolved` 去 `WireAPI` 字段
+  - **保留** `Client`/`EventStream`/`Event` 接口 + `FakeClient`（agent 与 SDK 的可测边界，阶段二测试主力）
+  - 测试：删 5 个 openai 用例（含 sseEvent helper）+ wire_api 校验用例，适配新签名
+  - config：`config.example.yaml` 改单 anthropic 结构；`config.local.yaml` 移除 deepseek(openai)/qwen(openai)，保留 deepseek-claude/qwen-claude，`default_provider` → deepseek-claude（用 Go + yaml.v3 脚本处理，key 未进对话/记忆）
+  - go.mod：`go mod tidy` 移除 openai-go
+- **验证**：`go build`/`go vet`/`go test` 全绿；真实 API 复验 deepseek-claude：默认 / `--effort max` / `--no-thinking` 三路径流式回复 + assistant_message 正常，无 error 事件
+- **结论**：provider 层保留"接口边界"（可测性），砍掉"多 wire 抽象"（单 wire 下的负担）——这才是移除 openai 消化的真正复杂度
+
 ## 2026-08-06
 
 ### thinking 推理模式支持 ✅

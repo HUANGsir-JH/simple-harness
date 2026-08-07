@@ -9,7 +9,7 @@ import (
 // 校验项：
 //   - providers 非空
 //   - default_provider 存在（若指定）
-//   - 每个 provider 有非空的 models、wire_api 合法、至少一个 key 来源
+//   - 每个 provider 有非空的 models、至少一个 key 来源
 //   - 每个模型名非空、context_window 必须 >= 0（0 表示回退默认，不算错）
 //   - thinking.efforts 中每个档位若配置必须在 low/high/max 白名单内
 //
@@ -47,13 +47,6 @@ func (c Config) Validate() error {
 func validateProvider(name string, p ProviderConfig) []string {
 	var errs []string
 	prefix := "providers." + name
-
-	switch p.WireAPI {
-	case "", WireOpenAI, WireAnthropic:
-		// 合法；空默认 openai
-	default:
-		errs = append(errs, fmt.Sprintf("%s.wire_api: %q invalid (want openai or anthropic)", prefix, p.WireAPI))
-	}
 
 	if len(p.Models) == 0 {
 		errs = append(errs, fmt.Sprintf("%s.models: no models configured", prefix))

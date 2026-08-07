@@ -39,8 +39,6 @@ func newAnthropicClient(res *Resolved) *anthropicClient {
 	}
 }
 
-func (a *anthropicClient) WireAPI() WireAPI { return WireAnthropic }
-
 func (a *anthropicClient) Stream(ctx context.Context, req Request) (EventStream, error) {
 	params := anthropic.MessageNewParams{
 		Model:     a.model,
