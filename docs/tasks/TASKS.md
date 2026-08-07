@@ -35,7 +35,7 @@
 | # | 单元 | 状态 |
 |---|---|---|
 | 2.1 | tools 包（Tool 接口 + 注册表 + 错误二分类） | ✅ 2026-08-07 |
-| 2.2 | 内置工具（read_file/list_dir/glob/shell_command/apply_patch） | ✅ 2026-08-07 |
+| 2.2 | 内置工具（read_file/list_dir/glob/write_file/shell_command/apply_patch） | ✅ 2026-08-07 |
 | 2.3 | middleware 链（RuntimeContext + 6 hook + ToolInstructions） | ✅ 2026-08-07 |
 | 2.4 | agent 纯 ReAct loop + 回合级事件（thinking/turn_done） | ✅ 2026-08-07 |
 | 2.5 | 终端渲染（thinking + 工具调用展示 + --json 事件） | ✅ 2026-08-07 |

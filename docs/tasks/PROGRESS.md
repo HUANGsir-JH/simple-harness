@@ -7,7 +7,7 @@
 ### 阶段二：工具系统 + 并发执行 + 终端渲染 + middleware 骨架 ✅
 
 - **交付**：`harness run <prompt>` 单轮 + `harness` 交互式 REPL，工具闭环 + 终端渲染（thinking 灰显 + 工具调用展示 + --json 事件）完整可跑 —— **可用的简单终端 CLI agent 循环**（阶段二定位达成）
-- **tools 包**（2.1-2.2）：Tool 接口 + 注册表（有序）+ ToolError 二分类（RespondToModel/Fatal）；5 内置工具（read_file/list_dir/glob/shell_command/apply_patch）。shell 平台分派（Windows cmd /C / POSIX sh -c）；apply_patch v1 支持 codex 格式子集（Begin/End Patch + Add/Update/Delete + @@ hunk）
+- **tools 包**（2.1-2.2）：Tool 接口 + 注册表（有序）+ ToolError 二分类（RespondToModel/Fatal）；6 内置工具（read_file/list_dir/glob/write_file/shell_command/apply_patch）。shell 平台分派（Windows cmd /C / POSIX sh -c）；apply_patch v1 支持 codex 格式子集（Begin/End Patch + Add/Update/Delete + @@ hunk）；write_file 整文件覆盖写（补 apply_patch 无法整文件重写的缺口，真实 API 验证多行创建）
 - **middleware 链**（2.3）：RuntimeContext（单用户无 UserID）+ 6 hook（onAgent/onReasoning/onToolCall/onActing/onModelCall 洋葱 + onSystemPrompt transformer），**hook 贯穿 context.Context**（执行链需要，ADR-024）；Base 空实现；内置 ToolInstructionsMiddleware（工具说明注入系统提示，codex 调研依据）
 - **agent 纯 loop**（2.4）：Run(ctx, rc, thread, onEvent) 多轮 采样→工具→回填；回合级事件 7 类（turn_start/thinking_delta/text_delta/tool_call/tool_result/turn_done/error），turn_done 为测试锚点；provider Event 加 EventThinkingDelta（anthropic thinking_delta 流式）
 - **关键修复**：多工具调用时多条独立 tool_result 消息触发 anthropic 400（"tool_use 无紧随 tool_result"）→ 一批结果合并成一条多块消息（messages.ToolResults），ADR-024

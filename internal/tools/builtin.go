@@ -6,6 +6,7 @@ func Builtins() []Tool {
 		ReadFileTool{},
 		ListDirTool{},
 		GlobTool{},
+		WriteFileTool{},
 		ShellCommandTool{},
 		ApplyPatchTool{},
 	}
