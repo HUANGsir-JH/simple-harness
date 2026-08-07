@@ -130,11 +130,21 @@
   - **当前档位默认 high**（openai/anthropic 两协议一致）；high 不在 efforts 内时取 efforts 第一个。efforts 做白名单校验。
   - **运行时覆盖**（CLI 优先于配置）：`--effort <档位>`（须在模型 efforts 内，否则报错）、`--thinking` / `--no-thinking`（互斥 bool）。
   - **传递**（各 wire 的 SDK 标准参数，非后端特化字符串）：
-    - openai（Responses）→ `reasoning: {effort: low|high|max}`；关闭传 `effort: "none"`
     - anthropic（Messages）→ `thinking: {type: enabled, budget_tokens}` + SDK `output_config: {effort}`；关闭传 `thinking: {type: disabled}`
+    - ~~openai（Responses）→ `reasoning: {effort: low|high|max}`；关闭传 `effort: "none"`~~（openai wire 已于 2026-08-07 移除，见 ADR-022）
   - **关闭必须显式传关闭表达**：DeepSeek 等兼容端点默认开启 thinking，"不传参数"无法关闭（不传 = 走模型默认 = 开）。
 - **理由**：配置与传递都是通用语义 / 协议标准字段，DeepSeek 只是恰好兼容，不写任何后端特化。efforts 列表让模型粒度声明支持档位，运行时 --effort 在集内校验。anthropic 的 `output_config.effort` 是 SDK 官方字段（DeepSeek 兼容端点支持）。
 - **注意**：openai wire 关闭时的 `effort: "none"` 是 DeepSeek 等兼容端点在 OpenAI 格式内的关闭约定；标准 OpenAI o 系列 effort 仅 low/medium/high，若后续接入需按官方语义适配关闭。
+
+## ADR-022：移除 openai wire，只保留 anthropic Messages（单 wire）
+
+- **背景**：阶段一实现 openai（Responses）/ anthropic（Messages）双 wire。AgentScope 调研后，用户决策：**抛弃 openai wire——Responses 与 Chat Completions 都不要**（曾短暂评估迁移到 Chat Completions，用户进一步明确 openai 生态整体不要）。
+- **选择**：移除 `internal/provider/openai.go` 及 openai 相关测试；`WireOpenAI` 枚举、`DefaultEnvKey`、config 校验 / loadConfig 相应调整；provider 只保留 anthropic Messages 一个 wire。DeepSeek 等兼容端点只能走其 anthropic 兼容端点。
+- **理由**：
+  - provider 单一 wire = 最大 simple：thinking 一种传递方式、事件一种形状、适配层一个，无双 wire 归一双重逻辑。
+  - 用户判断：与本项目最终目标（架构设计——middleware / loop / 事件 / 权限——的实践与复用）不背离；多后端接入是加分项非必需，接入面收窄的代价可接受。
+- **代价（知情）**：阿里 qwen（仅 openai 兼容）、DeepSeek openai 格式不再支持；config.local.yaml 中 qwen / deepseek（openai wire）provider 需移除或停用；DeepSeek 只能走 deepseek-claude（anthropic wire，ADR-019 的 401 坑仍需 WithAuthToken 覆盖）。
+- **影响 ADR**：ADR-020 的 openai 传递部分作废；ADR-001 / ADR-015 中"两 wire"相关描述以本文为准。
 
 ## ADR-021：架构修订——进程内 Middleware + 纯 loop + AgentState 轻量快照 + 三档权限（AgentScope 调研）
 

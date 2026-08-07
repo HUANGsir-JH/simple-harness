@@ -14,6 +14,8 @@
 | 语言 | Go |
 | LLM 后端 | 抽象为多后端；**配置结构体 + 1 个 HTTP 客户端**（codex 的 ConfiguredModelProvider 模式：base_url + env_key + wire_api，Anthropic/Ollama 无需独立实现） |
 | 客户端依赖 | 官方 SDK（openai-go、anthropic-sdk-go） |
+| wire 数量 | **只保留 anthropic Messages 一个 wire**（2026-08-07 决策：Responses 与 Chat Completions 都不要，openai wire 整体移除）——provider 单一 wire 最大 simple；代价：openai 兼容端点（DeepSeek openai 格式 / 阿里 qwen）不再支持，DeepSeek 只能走其 anthropic 兼容端点 |
+| 事件模型 | **分层**：provider 层 Event（采样级，4 类 → 扩展 thinking_delta/生命周期，信号基于两 SDK 各自能力）+ agent 层回合级事件（turn_done/tool_result）。不搞 AgentScope start/delta/end 三件套（2026-08-07 探索确认） |
 | 内部消息模型 | **统一 Message 类型**（role/content/tool_calls/tool_results），provider 适配转换 |
 | 会话存储 | JSONL 文件（每会话一个，追加写）+ 轻量 AgentState 快照（见"会话状态"行） |
 | CLI 交互 | Renderer 接口抽象，v1 简单流式渲染，TUI 后续插拔 |
@@ -36,7 +38,7 @@ harness/
 ├── internal/
 │   ├── agent/            # ★ 纯 ReAct loop（采样→工具→回填）+ 事件流（不含任何工程能力）
 │   ├── middleware/       # ★ Middleware 接口（onAgent/onReasoning/onActing/onModelCall/onSystemPrompt）+ 洋葱链
-│   ├── provider/         # Provider 接口 + HTTP 客户端（Responses/chat 两 wire）
+│   ├── provider/         # Provider 接口 + HTTP 客户端（仅 anthropic Messages wire，2026-08-07 移除 openai wire）
 │   ├── messages/         # 统一 Message 模型 + JSONL 序列化
 │   ├── tools/            # 工具注册表 + shell/file/apply_patch 实现
 │   ├── approval/         # 三档权限（readonly/acceptedit/bypass），作为 onActing middleware 实现
@@ -69,6 +71,13 @@ type Middleware interface {
 - **两种类型**：前四者是 **onion**（`next.apply(input)` 进入内层，前后都可插逻辑、可观察事件流）；`onSystemPrompt` 是 **transformer**（前输出 → 后输入，从左到右）。
 - **挂载点用途映射**：`onActing` = 工具权限扩展点（阶段三 approval 挂这）；`onSystemPrompt` = 系统提示词动态拼接 + AGENTS.md 注入（阶段四 agentsmd 挂这）；`onReasoning` = 上下文压缩（阶段四 compact 挂这）。
 - **阶段落地**：阶段二只搭**挂载点骨架**（链机制 + 事件流走通，中间件本体为空实现），避免阶段二就把工程能力写进 agent.go。
+
+**事件模型（分层 · 2026-08-07 探索确认）**：不引入 AgentScope 的 start/delta/end 三件套，按两层分工：
+
+- **provider 层 `Event`（采样级，贴近 SDK）**：现有 4 类（text_delta / tool_call / done / error）→ 扩展：
+  - `thinking_delta`——推理文本（anthropic 完整流式 thinking_delta）
+  - 生命周期 `start` / `done` / `failed` / `incomplete`——信号来源：anthropic message_start/stop + error（失败是阶段四 overflow 安全网的触发信号）
+- **agent 层回合级事件（阶段二新建）**：`turn_done`（回合结束 = 测试锚点）、`tool_result`（工具执行结果，provider 不感知执行）等，渲染器 / `--json` / TUI 订阅
 
 ### 1. 统一消息模型（`internal/messages/`）
 
@@ -242,6 +251,10 @@ type Renderer interface {
   3. **会话状态**：JSONL 消息流 + 轻量 AgentState 快照（权限/todo/plan 指针/摘要 → 完整 resume）
   4. **权限**：保持三档，复杂规则匹配引擎不强做——middleware 挂载点承载后续演进
 
+- **（2026-08-07 续）移除 openai wire + 事件模型分层**（用户决策 + 两 SDK 能力探索）：
+  1. **移除 openai wire（Responses 与 Chat Completions 都不要），只留 anthropic Messages**：provider 单一 wire 最大 simple，thinking/事件形状唯一；代价是 openai 兼容端点（DeepSeek openai 格式 / 阿里 qwen）不再支持，DeepSeek 只能走其 anthropic 兼容端点
+  2. **事件模型分层**：provider 层 Event 扩展（thinking_delta + 生命周期 start/done/failed/incomplete，信号源自 anthropic message_start/stop + error）+ agent 层回合级事件（turn_done / tool_result）。不搞 AgentScope start/delta/end 三件套
+
 ## 实施阶段
 
 ### 阶段 1：骨架 + 统一消息模型 + Provider + 最小 loop ✅ 已完成（2026-08-04）
@@ -252,7 +265,7 @@ type Renderer interface {
 > 阶段 1 详细设计见 `docs/tasks/TASKS.md`（单元 1.1~1.9 全部完成）。重试项：两 SDK 内置退避重试（ADR-012）。thinking 推理模式（ADR-020）：模型级配置 + 双 wire 标准参数 + CLI 运行时覆盖，真实 API 双 wire 验证通过。
 
 ### 阶段 2：工具系统 + 并发执行 + 终端渲染 + middleware 挂载点骨架
-**目标**：`tools` 包（Tool 接口 + 注册表 + 错误二分类）、内置工具（read_file/list_dir/glob/shell_command/apply_patch）、并行执行 + call_id 回填、完整简单的终端渲染（文本流式 + 工具调用展示）；**agent 重构为纯 ReAct loop + middleware 挂载点骨架**（链机制 + 事件流走通，onActing 即预留的工具权限扩展点）
+**目标**：**移除 openai wire**（删除 openai.go 及相关测试，config/校验/枚举/loadConfig 调整，provider 只留 anthropic；真实 API 复验 deepseek-claude）；`tools` 包（Tool 接口 + 注册表 + 错误二分类）、内置工具（read_file/list_dir/glob/shell_command/apply_patch）、并行执行 + call_id 回填、完整简单的终端渲染（文本流式 + 工具调用展示）；**agent 重构为纯 ReAct loop + middleware 挂载点骨架**（链机制 + 事件流走通，onActing 即预留的工具权限扩展点）
 **成功标准**：`harness run "读取当前目录文件列表并告诉我"` 能触发工具调用并正确回填；**多轮工具调用闭环 + 终端渲染完整可跑 —— 阶段二完成 = 一个可用的简单终端 CLI agent 循环**
 **测试**：各工具单测（临时目录）；loop 并发执行测试（mock 3 个 tool_call 验证并发 + 回填顺序）
 
