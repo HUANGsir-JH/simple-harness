@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"strings"
 
 	"github.com/agent-project/harness/internal/messages"
 	"github.com/anthropics/anthropic-sdk-go"
@@ -65,7 +66,7 @@ func (a *anthropicClient) Stream(ctx context.Context, req Request) (EventStream,
 	}
 
 	stream := a.client.NewStreaming(ctx, params)
-	return &anthropicStream{stream: stream}, nil
+	return newAnthropicStream(stream), nil
 }
 
 // --- 转换：统一消息 → Messages API 参数 ------------------------------
@@ -208,6 +209,21 @@ type anthropicStream struct {
 	stream *ssestream.Stream[anthropic.MessageStreamEventUnion]
 	cur    Event
 	err    error
+	// pending 跟踪正在流式累积参数的 tool_use 块（按 content block index）。
+	// anthropic 工具参数经 input_json_delta 分片累积，content_block_start
+	// 时 input 可能为空（大参数流式）或已带全（小参数）。
+	pending map[int64]*pendingToolCall
+}
+
+// pendingToolCall 是一个正在累积参数的 tool_use 块。
+type pendingToolCall struct {
+	call    *messages.ToolCall
+	initial string          // content_block_start 时的 input（JSON 序列化）
+	partial strings.Builder // input_json_delta 累积
+}
+
+func newAnthropicStream(stream *ssestream.Stream[anthropic.MessageStreamEventUnion]) *anthropicStream {
+	return &anthropicStream{stream: stream, pending: map[int64]*pendingToolCall{}}
 }
 
 func (s *anthropicStream) Next() bool {
@@ -217,16 +233,17 @@ func (s *anthropicStream) Next() bool {
 		case "content_block_start":
 			cb := ev.ContentBlock
 			if cb.Type == "tool_use" {
-				args, _ := json.Marshal(cb.Input)
-				s.cur = Event{
-					Type: EventToolCall,
-					ToolCall: &messages.ToolCall{
-						ID:   cb.ID,
-						Name: cb.Name,
-						Args: args,
-					},
+				// 记录工具调用开始；参数在 input_json_delta 或 start 的 input 中。
+				initial := ""
+				if cb.Input != nil {
+					if data, err := json.Marshal(cb.Input); err == nil {
+						initial = string(data)
+					}
 				}
-				return true
+				s.pending[ev.Index] = &pendingToolCall{
+					call: &messages.ToolCall{ID: cb.ID, Name: cb.Name},
+					initial: initial,
+				}
 			}
 			continue
 		case "content_block_delta":
@@ -236,6 +253,27 @@ func (s *anthropicStream) Next() bool {
 				return true
 			case "thinking_delta":
 				s.cur = Event{Type: EventThinkingDelta, Text: ev.Delta.Thinking}
+				return true
+			case "input_json_delta":
+				if p := s.pending[ev.Index]; p != nil {
+					p.partial.WriteString(ev.Delta.PartialJSON)
+				}
+				continue
+			}
+			continue
+		case "content_block_stop":
+			if p := s.pending[ev.Index]; p != nil {
+				// 完成工具调用：优先用流式累积的参数，其次 start 自带 input，最后空对象。
+				args := p.partial.String()
+				if args == "" {
+					args = p.initial
+				}
+				if args == "" {
+					args = "{}"
+				}
+				p.call.Args = json.RawMessage(args)
+				s.cur = Event{Type: EventToolCall, ToolCall: p.call}
+				delete(s.pending, ev.Index)
 				return true
 			}
 			continue

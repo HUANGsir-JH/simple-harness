@@ -67,7 +67,7 @@ func TestAnthropicStreamTextDelta(t *testing.T) {
 	}
 }
 
-// TestAnthropicStreamToolUse 验证 tool_use 块转换。
+// TestAnthropicStreamToolUse 验证 tool_use 块转换（start 已带全参数）。
 func TestAnthropicStreamToolUse(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -108,6 +108,50 @@ func TestAnthropicStreamToolUse(t *testing.T) {
 
 func NewTestUserMsg(s string) *messages.Message {
 	return &messages.Message{Role: messages.RoleUser, Content: s}
+}
+
+// TestAnthropicStreamToolCallStreamingArgs 验证工具参数经 input_json_delta
+// 分片累积（真实 API 行为：content_block_start 时 input 为空，参数后续流式）。
+func TestAnthropicStreamToolCallStreamingArgs(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		var sb strings.Builder
+		sb.WriteString(anthropicSSE("message_start", `{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-sonnet-5","content":[],"stop_reason":null,"usage":{"input_tokens":10,"output_tokens":1}}}`))
+		sb.WriteString(anthropicSSE("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"apply_patch","input":{}}}`))
+		sb.WriteString(anthropicSSE("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"pat"}}`))
+		sb.WriteString(anthropicSSE("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"ch\":\"simple\"}"}}`))
+		sb.WriteString(anthropicSSE("content_block_stop", `{"type":"content_block_stop","index":0}`))
+		sb.WriteString(anthropicSSE("message_stop", `{"type":"message_stop"}`))
+		w.Write([]byte(sb.String()))
+	}))
+	defer srv.Close()
+
+	c := newAnthropicClient(&Resolved{Model: "claude-sonnet-5", BaseURL: srv.URL, APIKey: "test-key"})
+	es, err := c.Stream(context.Background(), Request{Messages: []*messages.Message{NewTestUserMsg("create")}})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	defer es.Close()
+
+	var call *messages.ToolCall
+	for es.Next() {
+		if ev := es.Current(); ev.Type == EventToolCall {
+			call = ev.ToolCall
+		}
+	}
+	if err := es.Err(); err != nil {
+		t.Fatalf("stream err: %v", err)
+	}
+	if call == nil {
+		t.Fatal("expected a tool call")
+	}
+	if call.Name != "apply_patch" || call.ID != "toolu_1" {
+		t.Errorf("call: %+v", call)
+	}
+	// 两个分片累积成完整参数 JSON。
+	if string(call.Args) != `{"patch":"simple"}` {
+		t.Errorf("args: got %s", call.Args)
+	}
 }
 
 // TestAnthropicStreamThinking 验证 thinking 启用时，请求体携带 Anthropic
