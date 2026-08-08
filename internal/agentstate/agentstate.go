@@ -19,15 +19,17 @@ import (
 
 // AgentState 是会话的运行时状态快照。
 type AgentState struct {
-	SessionID string     `json:"session_id"`
-	Model     string     `json:"model,omitempty"`
-	CWD       string     `json:"cwd,omitempty"`
-	CreatedAt string     `json:"created_at"`
-	UpdatedAt string     `json:"updated_at"`
-	Todos     []TodoItem `json:"todos,omitempty"`             // todo 工具挂这
-	Permission *PermissionState `json:"permission,omitempty"` // 阶段三填，预留
-	Plan      *PlanState        `json:"plan,omitempty"`       // plan 文件指针，预留
-	Summary   string            `json:"summary,omitempty"`    // 压缩摘要，预留
+	SessionID       string           `json:"session_id"`
+	Model           string           `json:"model,omitempty"`            // 会话使用的模型（resume 恢复）
+	ThinkingEnabled *bool            `json:"thinking_enabled,omitempty"` // nil = 继承 client 默认（配置）
+	ThinkingEffort  string           `json:"thinking_effort,omitempty"`  // 推理档位；空 = 继承 client 默认
+	CWD             string           `json:"cwd,omitempty"`
+	CreatedAt       string           `json:"created_at"`
+	UpdatedAt       string           `json:"updated_at"`
+	Todos           []TodoItem       `json:"todos,omitempty"`      // todo 工具挂这
+	Permission      *PermissionState `json:"permission,omitempty"` // 阶段三填，预留
+	Plan            *PlanState       `json:"plan,omitempty"`       // plan 文件指针，预留
+	Summary         string           `json:"summary,omitempty"`    // 压缩摘要，预留
 }
 
 // TodoItem 是单个任务项（AgentScope tasksContext 对位）。

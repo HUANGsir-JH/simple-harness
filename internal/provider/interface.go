@@ -83,6 +83,10 @@ type Request struct {
 	Messages        []*messages.Message
 	Tools           []ToolSpec // 工具定义（阶段二起）
 	MaxOutputTokens int        // 0 表示模型默认
+	// ThinkingEnabled / ThinkingEffort 是 per-call 覆盖（ADR-026 运行时切换）：
+	// nil / 空 = 使用 client 配置默认（来自 Resolved）。
+	ThinkingEnabled *bool
+	ThinkingEffort  string
 }
 
 // Client 是暴露给 agent 循环的流式 LLM 客户端。

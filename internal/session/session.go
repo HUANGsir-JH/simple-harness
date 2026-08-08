@@ -11,6 +11,7 @@ import (
 	"github.com/agent-project/harness/internal/agent"
 	"github.com/agent-project/harness/internal/agentstate"
 	"github.com/agent-project/harness/internal/messages"
+	"github.com/agent-project/harness/internal/middleware"
 )
 
 // FileAgentState 是会话目录下的 state 文件名。
@@ -95,11 +96,63 @@ func (s *Session) Dir() string { return s.dir }
 // Thread 返回会话的消息序列（resume 后含历史）。
 func (s *Session) Thread() *messages.Thread { return s.thread }
 
-// State 返回 AgentState（经 rc.State 注入 agent；StateMiddleware after 落盘）。
+// State 返回 AgentState（经 rc.State 注入 agent；SessionMiddleware after 落盘）。
 func (s *Session) State() *agentstate.AgentState { return s.state }
 
-// StatePath 返回 agentstate.json 路径（StateMiddleware 用）。
+// StatePath 返回 agentstate.json 路径（SessionMiddleware 用）。
 func (s *Session) StatePath() string { return s.statePath }
+
+// Model 返回会话使用的模型（来自 AgentState；空 = 未设置）。
+func (s *Session) Model() string { return s.state.Model }
+
+// RuntimeContext 从会话构建 per-call 上下文（无状态 agent 对位 ADR-026：
+// agent 不持有会话状态，一切经 rc 传入）。每次 agent.Run 调用新建；
+// 切换会话 = 换 Session 再取 rc，并行 = 每 goroutine 一个 rc。
+func (s *Session) RuntimeContext() *middleware.RuntimeContext {
+	rc := middleware.NewRuntimeContext()
+	rc.SessionID = s.ID
+	rc.Messages = s.thread
+	rc.State = s.state
+	rc.StatePath = s.statePath
+	rc.Model = s.state.Model
+	rc.ThinkingEffort = s.state.ThinkingEffort
+	if s.state.ThinkingEnabled != nil {
+		v := *s.state.ThinkingEnabled
+		rc.ThinkingEnabled = &v
+	}
+	return rc
+}
+
+// SetModel 更新会话模型并立即落盘（/model 运行时切换）。
+func (s *Session) SetModel(model string) error {
+	s.state.Model = model
+	return agentstate.SaveFile(s.statePath, s.state)
+}
+
+// SetThinkingEnabled 更新 thinking 开关并立即落盘（--thinking/--no-thinking、
+// 运行时切换）。nil 表示恢复继承 client 默认。
+func (s *Session) SetThinkingEnabled(enabled *bool) error {
+	if enabled != nil {
+		v := *enabled
+		s.state.ThinkingEnabled = &v
+	} else {
+		s.state.ThinkingEnabled = nil
+	}
+	return agentstate.SaveFile(s.statePath, s.state)
+}
+
+// SetThinkingEffort 更新推理档位并立即落盘（/effort 运行时切换）。
+func (s *Session) SetThinkingEffort(effort string) error {
+	s.state.ThinkingEffort = effort
+	return agentstate.SaveFile(s.statePath, s.state)
+}
+
+// AddUser 添加一条用户消息：写入 thread（模型可见）并记录 transcript（user 行）。
+func (s *Session) AddUser(content string) {
+	msg := messages.NewUserMessage(content)
+	s.thread.Add(msg)
+	s.WriteUser(msg)
+}
 
 // Writer 返回 transcript writer（CLI 转发 agent 事件用）。
 func (s *Session) Writer() *TranscriptWriter { return s.writer }

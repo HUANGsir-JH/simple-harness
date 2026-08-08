@@ -192,3 +192,16 @@
   4. **AgentState 注入机制**：独立 `internal/agentstate` 包（middleware 与 session 都只依赖它，避免循环引用）；`RuntimeContext.State *agentstate.AgentState` 字段；`session.StateMiddleware` 挂 onAgent（before 加载 / after 保存，对应 AgentScope call() load/save）；**工具 Handle 签名加 `rc *middleware.RuntimeContext`**（todo 等经 rc.State 读写）。
 - **理由**：项目分桶贴合"我在哪个项目用 harness"（resume 从 cwd 定位，FindProject 逐级向上）；块级事件流使中断零丢失、resume 渲染逐块回放；AgentState 独立包解循环依赖；todo 挂 state 是 AgentScope tasksContext 对位，为 todo 工具铺路。
 - **影响 ADR**：ADR-023 的 `sessions/` 扁平布局以本文为准；ADR-021 第 3 点"JSONL + AgentState 快照"细化为块级 transcript + 注入机制。
+
+## ADR-026：无状态 agent 架构 + 运行时切换（会话/模型/推理强度）（2026-08-08）
+
+- **背景**：进入 todo 工具阶段前，用户要求优化代码结构，并明确未来需求——**进程内 resume 切换 session、多个 agent 并行**、运行时切换模型与推理强度。用户提出对齐 AgentScope：**无状态的 harness agent，其余全部由 RuntimeContext 和 AgentState 承载**。推演并行场景后发现"每会话一个 agent/chain（SessionApp）"方案过度：无状态化后一个共享 agent + 一个共享 chain（全部中间件无状态）即可被多 goroutine 并发 Run。
+- **选择**：
+  1. **agent 完全无状态**：`agent.Run(ctx, rc, onEvent)` 去掉 thread 参数，消息序列从 `rc.Messages`（*messages.Thread，命名对齐 `provider.Request.Messages` 避免与并发线程混淆）读写。agent 不持有任何会话状态；每次 Run 传独立 rc → **切换会话 = 换 rc，并行 = 每 goroutine 一个 rc**（零共享可变状态）。
+  2. **RuntimeContext 承载会话**：新增字段 `Messages / StatePath / Model / ThinkingEffort / ThinkingEnabled`。`session.Session.RuntimeContext()` 从会话一次填满（每轮新建）。**修复了此前 `sample()` 内 `wrapped(ctx, nil, ...)` 丢 rc 的 bug**（onModelCall 中间件拿到 nil rc，读 rc 会解引用错误）。
+  3. **SessionMiddleware 无状态化**：去掉 `Sess` 字段，改从 `rc.StatePath` 读 load / 写 save（rc.State 预置则跳过）。零共享可变状态 → **共享 chain 可被多个 goroutine 并发 Run**（并行 agent 架构可扩展的基石；阶段五落地）。
+  4. **per-call 模型/档位覆盖**：`provider.Request` 增加 `ThinkingEnabled *bool / ThinkingEffort string`（`Model` 字段本就存在但 anthropic 适配器忽略，补上尊重）。三态语义：`nil / 空 = 继承 client 默认`。`AgentState` 增加 `ThinkingEnabled *bool / ThinkingEffort string` 持久化（会话级模型/档位，resume 恢复）。`anthropicClient.Stream` 按 `req.*` 优先、client 默认兜底。
+  5. **配置统一 init（Runtime 惰性单例）**：`loadConfig/configCandidates` 从 cmd 迁入 `provider.LoadConfig`；cmd 层 `Runtime{Config, Resolved}`（Resolved = 默认模型）经 `defaultRuntime()`（sync.Once）惰性加载一次，所有命令复用。惰性而非包 `init()`：version/help/sessions 不需要配置，配置错误须能被命令捕获。
+  6. **REPL 会话注册表 + 命令**：`replCtx{open map[string]*Session, active}`；`/switch <id>|--last`（未开 → proj.Resume 加入，已开 → 复用）、`/model <name>`（Resolve 校验 + 重置 effort 为模型默认）、`/effort <level>`（Resolve 校验 efforts 白名单）。CLI flags（--model/--effort/--thinking/--no-thinking）经 `(*Runtime).resolveFlags` 校验后落到会话 state（随 SessionMiddleware 落盘）。
+- **理由**：无状态 agent 是并行/切换的最简解（无每会话重建开销、无共享可变状态）；会话=运行时隔离单元、模型/档位归 AgentState（持久 + resume 恢复）对齐 AgentScope "状态经 context + AgentState 承载"；Runtime 惰性单例是后续多使用全局变量的统一入口模式。
+- **影响 ADR**：ADR-025 的 StateMiddleware（持 Path）以本 ADR 的无状态 SessionMiddleware（rc 驱动）为准；ADR-021 第 2 点"agent 纯 loop"进一步明确为"完全无状态"。

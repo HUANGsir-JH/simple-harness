@@ -4,65 +4,70 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概览
 
-一个参照 OpenAI Codex CLI（`../codex/codex-rs`，Rust 源码）架构、用 Go 构建的**可真实使用**的极简 agent harness（命令行形式）。定位为通用框架，未来可被其它项目（如 resume-agent）引用。
+一个参照 OpenAI Codex CLI（`../codex/codex-rs`，Rust 源码）+ AgentScope Java v2 架构、用 Go 构建的**可真实使用**的极简 agent harness（命令行形式）。定位为通用框架，未来可被其它项目（如 resume-agent）引用。
 
-**当前状态**：阶段 1 进行中（项目骨架已初始化，核心包尚未实现）。规划文档 `IMPLEMENTATION_PLAN.md` 是权威来源，实现前先读它。
+**当前状态**：阶段 2（工具系统 + 并发执行 + 终端渲染 + middleware 骨架 + 交互式 CLI）✅ 2026-08-07；阶段 2.5（Workspace + AgentState + 会话落盘/resume）✅ 2026-08-08；**架构重构（ADR-026 无状态 agent + 运行时切换 + 配置统一 init）**✅ 2026-08-08。**规划文档 `IMPLEMENTATION_PLAN.md` 是权威来源**（含实施阶段与已确认决策表）；架构决策在 `docs/tasks/DECISIONS.md`（ADR-021~026 为核心）；任务跟踪在 `docs/tasks/{TASKS,PROGRESS}.md`。实现前先读 `IMPLEMENTATION_PLAN.md`。
+
+**实施顺序**：~~阶段 3 审批~~ → **todo 工具**（挂 state）→ 阶段 3 权限（onActing）→ 阶段 4 剩余（AGENTS.md 注入/压缩）→ 阶段 5（子 agent，并行已由无状态 agent 架构支撑）。
 
 ## 常用命令
 
 ```bash
-# 构建（二进制输出到当前目录 ./harness[.exe]）
-go build ./...
+# 构建到当前目录 ./harness[.exe]（gitignore 已忽略）
+go build ./cmd/harness
 
-# 运行
+# ★ 更新全局 harness 命令（go install 到 C:\Users\86131\go\bin，已在 PATH）
+go install ./cmd/harness
+
+# 运行（go run 直接跑最新源码）
 go run ./cmd/harness version
 
-# 测试（全部）
+# 测试（全部 / 单包 / 单用例）
 go test ./...
-
-# 测试（单包）
-go test ./internal/messages/
-
-# 测试（单个用例，-run 接正则）
+go test ./internal/session/ -v
 go test ./internal/messages/ -run TestMessageJSONL
+
+# e2e（进程外，termtest + mock HTTP；用 HARNESS_HOME 隔离 workspace）
+go test ./internal/e2e/ -count=1
 ```
+
+REPL（`harness` 无子命令进入）命令：`/switch <id>|--last` 切换会话（进程内 resume）、`/model <name>` 切模型、`/effort <low|high|max>` 切推理档位。
 
 ## 代码架构
 
-目标目录结构（`IMPLEMENTATION_PLAN.md` 定义，逐步实现）：
-
 ```
-cmd/harness/          # CLI 入口（run / resume / version 子命令）
+cmd/harness/          # CLI：main（dispatch）/ runtime（统一配置 init）/ build（共享无状态 agent）/ commands（run/resume/sessions + REPL）
 internal/
-  agent/              # ★ agent loop：for { stream → tool_call? → 执行 → 回填 }
-  provider/           # Provider 接口 + HTTP 客户端（Responses/chat 两 wire）
-  messages/           # 统一 Message 模型 + JSONL 序列化（核心层唯一消息类型）
-  tools/              # 工具注册表 + shell/file/apply_patch 实现
-  approval/           # 三态审批策略 + 危险命令黑名单 + TTY 交互
-  session/            # JSONL 会话持久化 + resume 重放
-  compact/            # 上下文压缩（TokenBudget 式 v1 → 摘要式 v2）
-  ui/                 # Renderer 接口（simple v1 / tui v2 插拔）
-  hooks/              # PreToolUse/PermissionRequest/Stop 子进程 hook
-  agentsmd/           # AGENTS.md 向上搜索 + 注入 developer 消息
-  config/             # YAML 配置加载 + 环境变量合并
-docs/tasks/           # 任务跟踪（TASKS/PROGRESS/DECISIONS）
+  agent/              # ★ 无状态 ReAct loop（采样→工具→回填，消息序列经 rc.Messages；ADR-026）+ 回合级事件（turn_done 为测试锚点）
+  middleware/         # ★ 6 hook 扩展机制（onAgent/onReasoning/onToolCall/onActing/onModelCall onion + onSystemPrompt 管道）+ RuntimeContext（承载会话）
+  provider/           # 单 anthropic wire（ADR-022）+ 块事件适配 + per-call 覆盖（Request.Model/ThinkingEnabled/Effort，ADR-026）
+  messages/           # 统一 Message 模型（含 Thinking）+ JSONL 序列化
+  tools/              # Tool 接口（Handle 带 rc）+ 注册表 + 6 内置工具
+  agentstate/         # AgentState 快照（模型/thinking 档位/todo/权限/plan/摘要）+ 原子落盘
+  session/            # workspace 项目分桶 + 块级 transcript 异步 writer + 无状态 SessionMiddleware + resume
+  e2e/                # 进程外端到端测试（termtest）
+  # 规划中（未实现）：approval / compact / agentsmd / ui / hooks / config
 ```
 
 ## 核心架构约束（来自 ADR，见 docs/tasks/DECISIONS.md）
 
 这些是已定案的设计，实现时**遵循而非重新讨论**：
 
-1. **统一消息模型**：核心层只操作统一 `Message`（role/content/tool_calls/tool_results），provider 适配层负责 ↔ 原生格式转换。JSONL 会话文件直接存统一模型，换后端零迁移。
-2. **Provider 无多实现**：多后端 = 一个配置结构体（base_url + env_key + wire_api）+ 一个 HTTP 客户端，Anthropic/Ollama 无需独立实现（参照 codex `ConfiguredModelProvider`）。
-3. **错误二分类**：工具错误分 `RespondToModel`（文本回填历史、循环继续）与 `Fatal`（终止 turn）。审批拒绝也是普通错误回填，不中断任务。
-4. **并行工具**：errgroup 并发执行全部 tool_call，结果按 call_id 回填历史。
-5. **子 agent = 独立 session**：fork 时只继承父的 user 消息 + assistant 最终答案（丢弃工具调用细节）；v1 只做 spawn_agent + 主→子单向消息。
-6. **UI 抽象**：`Renderer` 接口（simple v1 / tui v2 插拔）；`--json` 模式是 Renderer 的另一个实现。
-7. **分层审批**：三态策略（UnlessTrusted 默认/OnRequest/Never）+ 黑名单启发式 + TTY 交互 + allowlist；无 OS 沙箱，安全靠策略层。
+1. **统一消息模型 + 事件分层**：核心层只操作统一 `Message`（role/content/thinking/tool_calls/tool_results），provider 适配层负责 ↔ 原生格式。事件分层：provider 采样级（text/thinking delta + **块完成** thinking_done/text_done + tool_call）+ agent 回合级（turn_start/turn_done 等，**带 MsgID** 关联块归属）。
+2. **Provider 单 anthropic wire**（ADR-022）：多后端 = 多 anthropic 兼容端点（base_url 覆盖即可），无多 wire 抽象。
+3. **进程内 middleware**（ADR-021/024/025/026）：6 hook（onion 前四 + onSystemPrompt 管道），贯穿 `ctx` + `*RuntimeContext`。**注入机制**：rc 承载会话（`Messages/State/StatePath/Model/ThinkingEffort`，`Session.RuntimeContext()` 每轮新建）；`session.SessionMiddleware` **无状态**挂 onAgent（从 rc.StatePath 读写，共享链可并发）；**工具 `Handle(ctx, rc, callID, args)` 带 rc**（todo 经 rc.State 读写）。
+4. **错误二分类**：工具错误 `RespondToModel`（结果回填、循环继续）/ `Fatal`（终止 turn）。审批拒绝也是普通错误回填。
+5. **并行工具**：errgroup 并发执行全部 tool_call，结果按 call_id 合并成**一条** tool_result 消息回填（anthropic 紧邻要求，ADR-024）。
+6. **会话双轨**（ADR-025 项目分桶）：`~/.harness/workspaces/<项目转义>/<session-id>/{historys, agentstate.json, plans}`；transcript = **块级事件 + 异步 writer**（单 goroutine FIFO + ordinal，压缩切新文件 `NewSegment`）；AgentState = todo/权限/plan 指针/摘要。resume 只读最大序号文件。
+7. **thinking 存但不重放**（ADR-025）：`Message.Thinking` 存审计，provider 重放 assistant 时忽略（免 anthropic 格式适配）。
+8. **UI 抽象**：`output` 接口（text 渲染器 + `--json` JSONL 事件）；事件回调双转发（渲染 + session 落盘）。
+9. **子 agent = 独立 session**（远期）：fork 只继承 user 消息 + 最终答案。并行已由无状态 agent + 共享 chain 并发安全支撑（ADR-026）。
+10. **无状态 agent + 运行时切换**（ADR-026）：agent 不持有会话，`Run(ctx, rc, onEvent)` 消息序列经 `rc.Messages`；**每 Run 新建 rc**，切换会话 = 换 active（REPL `/switch`）、并行 = 每 goroutine 一个 rc（共享 agent/chain 并发安全）。模型/thinking 档位 per-call 经 `Request.Model/ThinkingEnabled/ThinkingEffort` 覆盖（nil/空 = client 默认），会话级持久化在 AgentState（resume 恢复）；`/model`、`/effort` 运行时切换。配置统一 `defaultRuntime()` 惰性单例（`provider.LoadConfig` + `Runtime{Config, Resolved}`）。
 
 ## 工作流约定
 
-- **沟通用中文**；提交信息用 conventional commits（`chore:`/`feat:`/`docs:` 等）。
-- **任务跟踪**：每个阶段在 `docs/tasks/TASKS.md` 建条目；每个工作单元完成后在 `PROGRESS.md` 记一笔（含日期）；重要设计决策写 `DECISIONS.md`；阶段完成同步更新 `IMPLEMENTATION_PLAN.md` 状态。
+- **沟通用中文**；提交信息用 conventional commits（`chore:`/`feat:`/`docs:` 等），**git 身份必须用用户真实身份**（HUANGsir-JH <huangsirjh2005@gmail.com>）。
+- **任务跟踪**：每阶段在 `docs/tasks/TASKS.md` 建条目；每工作单元完成后 `PROGRESS.md` 记一笔（含日期）；重要设计决策写 `DECISIONS.md`（ADR）；阶段完成同步更新 `IMPLEMENTATION_PLAN.md` 状态。
 - 时间戳统一 `YYYY-MM-DD`；状态变更必须带日期。
-- 规划文档 `IMPLEMENTATION_PLAN.md` 是权威来源，实现前先读它；开发哲学与流程（渐进式、3 次失败即停、决策框架）见全局 `~/.claude/CLAUDE.md`。
+- **测试隔离**：涉及 workspace 的测试/进程用 `HARNESS_HOME=<临时目录>`，避免污染 `~/.harness/`。
+- 真实 API key 只在 `config.local.yaml`（gitignored），**永不写入对话/记忆/提交明文**。

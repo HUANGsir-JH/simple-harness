@@ -102,7 +102,9 @@ func (Base) OnActing(ctx context.Context, rc *RuntimeContext, in ActingInput, ne
 func (Base) OnModelCall(ctx context.Context, rc *RuntimeContext, in ModelCallInput, next ModelCallHandler) error {
 	return next(ctx, rc, in)
 }
-func (Base) OnSystemPrompt(_ context.Context, _ *RuntimeContext, current string) (string, error) { return current, nil }
+func (Base) OnSystemPrompt(_ context.Context, _ *RuntimeContext, current string) (string, error) {
+	return current, nil
+}
 
 // Chain 是 middleware 的有序集合，负责洋葱包裹与 transformer pipeline。
 // 注册顺序：第一个为最外层（before 最先、after 最后）。
@@ -161,7 +163,9 @@ func (c *Chain) WrapAgent(core AgentHandler) AgentHandler {
 	for i := len(c.middlewares) - 1; i >= 0; i-- {
 		m := c.middlewares[i]
 		inner := next
-		next = func(ctx context.Context, rc *RuntimeContext, in AgentInput) error { return m.OnAgent(ctx, rc, in, inner) }
+		next = func(ctx context.Context, rc *RuntimeContext, in AgentInput) error {
+			return m.OnAgent(ctx, rc, in, inner)
+		}
 	}
 	return next
 }
@@ -173,7 +177,9 @@ func (c *Chain) WrapReasoning(core ReasoningHandler) ReasoningHandler {
 	for i := len(c.middlewares) - 1; i >= 0; i-- {
 		m := c.middlewares[i]
 		inner := next
-		next = func(ctx context.Context, rc *RuntimeContext, in ReasoningInput) error { return m.OnReasoning(ctx, rc, in, inner) }
+		next = func(ctx context.Context, rc *RuntimeContext, in ReasoningInput) error {
+			return m.OnReasoning(ctx, rc, in, inner)
+		}
 	}
 	return next
 }
@@ -185,7 +191,9 @@ func (c *Chain) WrapToolCall(core ToolCallHandler) ToolCallHandler {
 	for i := len(c.middlewares) - 1; i >= 0; i-- {
 		m := c.middlewares[i]
 		inner := next
-		next = func(ctx context.Context, rc *RuntimeContext, in ToolCallInput) error { return m.OnToolCall(ctx, rc, in, inner) }
+		next = func(ctx context.Context, rc *RuntimeContext, in ToolCallInput) error {
+			return m.OnToolCall(ctx, rc, in, inner)
+		}
 	}
 	return next
 }
@@ -197,7 +205,9 @@ func (c *Chain) WrapActing(core ActingHandler) ActingHandler {
 	for i := len(c.middlewares) - 1; i >= 0; i-- {
 		m := c.middlewares[i]
 		inner := next
-		next = func(ctx context.Context, rc *RuntimeContext, in ActingInput) error { return m.OnActing(ctx, rc, in, inner) }
+		next = func(ctx context.Context, rc *RuntimeContext, in ActingInput) error {
+			return m.OnActing(ctx, rc, in, inner)
+		}
 	}
 	return next
 }
@@ -208,7 +218,9 @@ func (c *Chain) WrapModelCall(core ModelCallHandler) ModelCallHandler {
 	for i := len(c.middlewares) - 1; i >= 0; i-- {
 		m := c.middlewares[i]
 		inner := next
-		next = func(ctx context.Context, rc *RuntimeContext, in ModelCallInput) error { return m.OnModelCall(ctx, rc, in, inner) }
+		next = func(ctx context.Context, rc *RuntimeContext, in ModelCallInput) error {
+			return m.OnModelCall(ctx, rc, in, inner)
+		}
 	}
 	return next
 }

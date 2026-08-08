@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/agent-project/harness/internal/agent"
+	"github.com/agent-project/harness/internal/agentstate"
 	"github.com/agent-project/harness/internal/messages"
 )
 
@@ -33,9 +34,7 @@ func TestSessionCreateResume(t *testing.T) {
 	}
 
 	// 写 user + agent 块事件。
-	userMsg := messages.NewUserMessage("hello")
-	sess.Thread().Add(userMsg)
-	sess.WriteUser(userMsg)
+	sess.AddUser("hello")
 	sess.OnAgentEvent(agent.Event{Type: agent.EventTurnStart})
 	sess.OnAgentEvent(agent.Event{Type: agent.EventThinkingDone, MsgID: "m2", Text: "think"})
 	sess.OnAgentEvent(agent.Event{Type: agent.EventTextDone, MsgID: "m2", Text: "ans"})
@@ -76,3 +75,73 @@ func TestSessionCreateResume(t *testing.T) {
 		t.Errorf("state 恢复: %+v", rs.State())
 	}
 }
+
+// TestSessionRuntimeContext 验证 RuntimeContext() 从会话填充 per-call 上下文
+// （无状态 agent 对位 ADR-026：agent 不持有会话，一切经 rc 传入）。
+func TestSessionRuntimeContext(t *testing.T) {
+	root := t.TempDir()
+	store := NewAt(root)
+	proj := &Project{Path: filepath.Join(root, "proj"), Dir: store.ProjectDir(filepath.Join(root, "proj"))}
+	sess, err := proj.Create("claude-sonnet-5")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	defer sess.Close()
+
+	rc := sess.RuntimeContext()
+	if rc.SessionID != sess.ID {
+		t.Errorf("SessionID: got %q", rc.SessionID)
+	}
+	if rc.Messages != sess.thread {
+		t.Error("Messages 应指向会话 thread")
+	}
+	if rc.State != sess.state {
+		t.Error("State 应指向会话 state")
+	}
+	if rc.StatePath != sess.statePath {
+		t.Error("StatePath 不匹配")
+	}
+	if rc.Model != "claude-sonnet-5" {
+		t.Errorf("Model: got %q", rc.Model)
+	}
+}
+
+// TestSessionSetModelEffortPersist 验证 SetModel/SetThinkingEffort/SetThinkingEnabled
+// 修改 state 并立即落盘（/model /effort 运行时切换的持久化）。
+func TestSessionSetModelEffortPersist(t *testing.T) {
+	root := t.TempDir()
+	store := NewAt(root)
+	proj := &Project{Path: filepath.Join(root, "proj"), Dir: store.ProjectDir(filepath.Join(root, "proj"))}
+	sess, err := proj.Create("m1")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	defer sess.Close()
+
+	if err := sess.SetModel("m2"); err != nil {
+		t.Fatalf("SetModel: %v", err)
+	}
+	if err := sess.SetThinkingEffort("max"); err != nil {
+		t.Fatalf("SetThinkingEffort: %v", err)
+	}
+	if err := sess.SetThinkingEnabled(testBoolPtr(false)); err != nil {
+		t.Fatalf("SetThinkingEnabled: %v", err)
+	}
+
+	// 重新加载验证已落盘。
+	st, err := agentstate.LoadFile(sess.statePath)
+	if err != nil {
+		t.Fatalf("LoadFile: %v", err)
+	}
+	if st.Model != "m2" || st.ThinkingEffort != "max" || st.ThinkingEnabled == nil || *st.ThinkingEnabled {
+		t.Errorf("落盘 state: %+v", st)
+	}
+	// RuntimeContext 反映新值。
+	rc := sess.RuntimeContext()
+	if rc.Model != "m2" || rc.ThinkingEffort != "max" || rc.ThinkingEnabled == nil || *rc.ThinkingEnabled {
+		t.Errorf("RuntimeContext 未反映新值: %+v", rc)
+	}
+}
+
+// testBoolPtr 测试用指针构造。
+func testBoolPtr(b bool) *bool { return &b }

@@ -79,6 +79,13 @@ func newThread() *messages.Thread {
 	return th
 }
 
+// rcFor 构造带消息序列的 per-call 上下文（无状态 agent Run 测试用，ADR-026）。
+func rcFor(th *messages.Thread) *middleware.RuntimeContext {
+	rc := middleware.NewRuntimeContext()
+	rc.Messages = th
+	return rc
+}
+
 func noToolsAgent(fc *provider.FakeClient) *Agent {
 	a := New(fc, "m")
 	a.SetTools(tools.NewRegistry())
@@ -96,7 +103,7 @@ func TestRunSingleTurn(t *testing.T) {
 	th := newThread()
 	rec := &eventRecorder{}
 
-	if err := a.Run(context.Background(), nil, th, rec.on); err != nil {
+	if err := a.Run(context.Background(), rcFor(th), rec.on); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if rec.events[0].Type != EventTurnStart || rec.events[len(rec.events)-1].Type != EventTurnDone {
@@ -131,7 +138,7 @@ func TestRunToolLoop(t *testing.T) {
 
 	th := newThread()
 	rec := &eventRecorder{}
-	if err := a.Run(context.Background(), nil, th, rec.on); err != nil {
+	if err := a.Run(context.Background(), rcFor(th), rec.on); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	// 事件含工具与回合边界。
@@ -190,7 +197,7 @@ func TestRunParallelToolCalls(t *testing.T) {
 	a.SetTools(reg)
 	th := newThread()
 	rec := &eventRecorder{}
-	if err := a.Run(context.Background(), nil, th, rec.on); err != nil {
+	if err := a.Run(context.Background(), rcFor(th), rec.on); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if max < 2 {
@@ -222,7 +229,7 @@ func TestRunToolRespondToModel(t *testing.T) {
 	a.SetTools(reg)
 	th := newThread()
 	rec := &eventRecorder{}
-	if err := a.Run(context.Background(), nil, th, rec.on); err != nil {
+	if err := a.Run(context.Background(), rcFor(th), rec.on); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	tr := th.Messages[2]
@@ -250,7 +257,7 @@ func TestRunToolFatal(t *testing.T) {
 	a.SetTools(reg)
 	th := newThread()
 	rec := &eventRecorder{}
-	err := a.Run(context.Background(), nil, th, rec.on)
+	err := a.Run(context.Background(), rcFor(th), rec.on)
 	if err == nil || !strings.Contains(err.Error(), "fatal") {
 		t.Fatalf("期望 Fatal 错误终止，got %v", err)
 	}
@@ -274,7 +281,7 @@ func TestRunThinkingDelta(t *testing.T) {
 	a := noToolsAgent(fc)
 	rec := &eventRecorder{}
 	th := newThread()
-	if err := a.Run(context.Background(), nil, th, rec.on); err != nil {
+	if err := a.Run(context.Background(), rcFor(th), rec.on); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	// 块完成事件透传（持久化订阅用）。
@@ -348,7 +355,7 @@ func TestRunMiddlewareChain(t *testing.T) {
 	a.SetTools(reg)
 	a.SetMiddleware(middleware.NewChain(middlewareRecorder{calls: &calls}))
 
-	if err := a.Run(context.Background(), nil, newThread(), nil); err != nil {
+	if err := a.Run(context.Background(), rcFor(newThread()), nil); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	joined := strings.Join(calls, ",")
@@ -390,7 +397,7 @@ func TestRunOnAgentWrapsTurn(t *testing.T) {
 	var seq []string
 	a.SetMiddleware(middleware.NewChain(&agentSpy{seq: &seq}))
 
-	if err := a.Run(context.Background(), nil, newThread(), func(e Event) { seq = append(seq, string(e.Type)) }); err != nil {
+	if err := a.Run(context.Background(), rcFor(newThread()), func(e Event) { seq = append(seq, string(e.Type)) }); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	bi, ti := indexOf(seq, "onAgent:before"), indexOf(seq, "turn_start")
@@ -410,13 +417,79 @@ func TestRunStreamError(t *testing.T) {
 	}}
 	a := noToolsAgent(fc)
 	rec := &eventRecorder{}
-	err := a.Run(context.Background(), nil, newThread(), rec.on)
+	err := a.Run(context.Background(), rcFor(newThread()), rec.on)
 	if err == nil || !strings.Contains(err.Error(), "boom") {
 		t.Errorf("期望 boom 错误，got %v", err)
 	}
 	if !rec.has(EventError) {
 		t.Error("应发出 EventError")
 	}
+}
+
+// TestRunModelFromRC 验证 per-call 覆盖（ADR-026）：rc.Model / rc.ThinkingEffort /
+// rc.ThinkingEnabled 写入 provider.Request（未设置时用 agent 默认）。
+func TestRunModelFromRC(t *testing.T) {
+	fc := &provider.FakeClient{StreamFn: func(ctx context.Context, req provider.Request) (provider.EventStream, error) {
+		return textStream("ok"), nil
+	}}
+	a := New(fc, "default-model") // agent 默认模型
+	rc := rcFor(newThread())
+	rc.Model = "other-model"
+	rc.ThinkingEffort = provider.EffortMax
+	enabled := false
+	rc.ThinkingEnabled = &enabled
+
+	if err := a.Run(context.Background(), rc, nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if fc.LastReq == nil {
+		t.Fatal("no request")
+	}
+	if fc.LastReq.Model != "other-model" {
+		t.Errorf("Request.Model: got %q want other-model", fc.LastReq.Model)
+	}
+	if fc.LastReq.ThinkingEffort != provider.EffortMax {
+		t.Errorf("Request.ThinkingEffort: got %q", fc.LastReq.ThinkingEffort)
+	}
+	if fc.LastReq.ThinkingEnabled == nil || *fc.LastReq.ThinkingEnabled {
+		t.Errorf("Request.ThinkingEnabled: got %v want false", fc.LastReq.ThinkingEnabled)
+	}
+}
+
+// TestRunOnModelCallReceivesRC 验证 onModelCall 中间件收到真实 rc（rc-drop 修复）：
+// 此前 sample 内 wrapped(ctx, nil, ...) 导致 model 层拿 nil rc。
+func TestRunOnModelCallReceivesRC(t *testing.T) {
+	fc := &provider.FakeClient{StreamFn: func(ctx context.Context, req provider.Request) (provider.EventStream, error) {
+		return textStream("ok"), nil
+	}}
+	got := make(chan *middleware.RuntimeContext, 1)
+	mw := &modelCallSpy{got: got}
+	a := New(fc, "m")
+	a.SetTools(tools.NewRegistry())
+	a.SetMiddleware(middleware.NewChain(mw))
+
+	rc := rcFor(newThread())
+	if err := a.Run(context.Background(), rc, nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	seen := <-got
+	if seen == nil {
+		t.Fatal("onModelCall 收到 nil rc")
+	}
+	if seen != rc {
+		t.Error("onModelCall 收到的 rc 与 Run 传入不一致")
+	}
+}
+
+// modelCallSpy 记录 OnModelCall 收到的 rc。
+type modelCallSpy struct {
+	middleware.Base
+	got chan *middleware.RuntimeContext
+}
+
+func (m *modelCallSpy) OnModelCall(ctx context.Context, rc *middleware.RuntimeContext, in middleware.ModelCallInput, next middleware.ModelCallHandler) error {
+	m.got <- rc
+	return next(ctx, rc, in)
 }
 
 func indexOf(ss []string, s string) int {

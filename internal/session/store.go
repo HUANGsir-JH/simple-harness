@@ -58,6 +58,27 @@ func New() (*Store, error) {
 // NewAt 使用显式根目录（测试/定制）。
 func NewAt(root string) *Store { return &Store{root: root} }
 
+// CreateInCWD 在当前工作目录创建会话：建骨架 + 定位项目桶 + 新建会话。
+// CLI 会话创建的入口（运行/REPL 新会话）。
+func CreateInCWD(model string) (*Session, error) {
+	store, err := New()
+	if err != nil {
+		return nil, err
+	}
+	if err := store.EnsureDirs(); err != nil {
+		return nil, err
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil, err
+	}
+	proj, err := store.FindProject(cwd)
+	if err != nil {
+		return nil, err
+	}
+	return proj.Create(model)
+}
+
 // Root 返回 workspace 根。
 func (s *Store) Root() string { return s.root }
 

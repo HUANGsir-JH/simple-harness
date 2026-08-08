@@ -289,6 +289,54 @@ func TestAnthropicStreamThinkingDelta(t *testing.T) {
 	}
 }
 
+// TestAnthropicRequestOverrides 验证 per-call 覆盖（ADR-026）：Request.Model /
+// ThinkingEnabled / ThinkingEffort 优先于 client 配置默认（运行时模型/档位切换）。
+func TestAnthropicRequestOverrides(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		var sb strings.Builder
+		sb.WriteString(anthropicSSE("message_start", `{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"m","content":[],"stop_reason":null,"usage":{"input_tokens":10,"output_tokens":1}}}`))
+		sb.WriteString(anthropicSSE("message_stop", `{"type":"message_stop"}`))
+		w.Write([]byte(sb.String()))
+	}))
+	defer srv.Close()
+
+	// client 默认 thinking 关闭；Request 覆盖为开启 + effort max + 换模型。
+	c := newAnthropicClient(&Resolved{Model: "default-model", BaseURL: srv.URL, APIKey: "test-key", ThinkingEnabled: false})
+	enabled := true
+	req := Request{
+		Messages:        []*messages.Message{NewTestUserMsg("hi")},
+		Model:           "override-model",
+		ThinkingEnabled: &enabled,
+		ThinkingEffort:  EffortMax,
+	}
+	es, err := c.Stream(context.Background(), req)
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	for es.Next() {
+	}
+	if es.Err() != nil {
+		t.Fatalf("stream err: %v", es.Err())
+	}
+	if body["model"] != "override-model" {
+		t.Errorf("model: got %v", body["model"])
+	}
+	oc, ok := body["output_config"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing output_config: %v", body)
+	}
+	if oc["effort"] != EffortMax {
+		t.Errorf("effort: got %v want %q", oc["effort"], EffortMax)
+	}
+	if _, ok := body["thinking"]; ok {
+		t.Error("thinking 参数不应出现（开启时只传 output_config）")
+	}
+}
+
 // TestToAnthropicMessagesSkipsThinkingOnly 验证 thinking-only 的 assistant 消息
 // 在重放时被跳过（内容为空无法表达为合法 anthropic 消息），前后 user 相邻。
 func TestToAnthropicMessagesSkipsThinkingOnly(t *testing.T) {

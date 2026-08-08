@@ -48,20 +48,34 @@ func newAnthropicClient(res *Resolved) *anthropicClient {
 const defaultMaxTokens = 393216
 
 func (a *anthropicClient) Stream(ctx context.Context, req Request) (EventStream, error) {
+	// per-call 覆盖（ADR-026 运行时切换）：req.Model / req.ThinkingEnabled /
+	// req.ThinkingEffort 优先，未设置时用 client 配置默认（来自 Resolved）。
+	model := a.model
+	if req.Model != "" {
+		model = req.Model
+	}
 	params := anthropic.MessageNewParams{
-		Model:     a.model,
+		Model:     model,
 		MaxTokens: defaultMaxTokens,
 		Messages:  toAnthropicMessages(req.Messages),
+	}
+	thinkingEnabled := a.thinkingEnabled
+	if req.ThinkingEnabled != nil {
+		thinkingEnabled = *req.ThinkingEnabled
+	}
+	effort := a.thinkingEffort
+	if req.ThinkingEffort != "" {
+		effort = req.ThinkingEffort
 	}
 	// thinking 参数：默认不传（DeepSeek 等兼容端点默认开启 thinking，且由端点自行
 	// 管理思考长度）。传小的 budget_tokens 反而导致 thinking 截断、text 无输出
 	// （实测 budget=1024 时 effort=high 的 thinking 被 max_tokens 截断）。仅需
 	// 关闭时显式传 disabled（兼容端点默认开启，不传关不掉）。
-	if !a.thinkingEnabled {
+	if !thinkingEnabled {
 		params.Thinking = anthropic.ThinkingConfigParamUnion{OfDisabled: &anthropic.ThinkingConfigDisabledParam{}}
 	} else {
 		// 思考深度档位独立传递（output_config.effort），不与 thinking budget 绑定。
-		params.OutputConfig = anthropic.OutputConfigParam{Effort: anthropic.OutputConfigEffort(a.thinkingEffort)}
+		params.OutputConfig = anthropic.OutputConfigParam{Effort: anthropic.OutputConfigEffort(effort)}
 	}
 	if req.Instructions != "" {
 		params.System = []anthropic.TextBlockParam{{Text: req.Instructions}}

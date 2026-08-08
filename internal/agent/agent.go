@@ -93,15 +93,18 @@ func (a *Agent) SetMiddleware(c *middleware.Chain) {
 func (a *Agent) SetInstructions(s string) { a.instructions = s }
 
 // Run 跑一个完整回合：多轮 采样 → 工具执行 → 回填，直到模型不再请求工具。
+// 消息序列从 rc.Messages 读取并在其上追加（assistant/tool_result）——agent 完全
+// 无状态（ADR-026），不持有会话；每次调用传入独立 rc（切换会话/并行安全）。
 // 事件通过 onEvent 实时回调；thread 被追加助手/工具结果消息（副作用）。
 // 错误二分类：工具错误 RespondToModel → 结果回填、循环继续；Fatal → 终止。
-func (a *Agent) Run(ctx context.Context, rc *middleware.RuntimeContext, thread *messages.Thread, onEvent OnEvent) error {
+func (a *Agent) Run(ctx context.Context, rc *middleware.RuntimeContext, onEvent OnEvent) error {
 	if rc == nil {
 		rc = middleware.NewRuntimeContext()
 	}
-	if thread == nil {
-		return fmt.Errorf("agent: thread is nil")
+	if rc.Messages == nil {
+		return fmt.Errorf("agent: rc.Messages is nil")
 	}
+	thread := rc.Messages
 	emit := func(e Event) {
 		if onEvent != nil {
 			onEvent(e)
@@ -120,7 +123,7 @@ func (a *Agent) Run(ctx context.Context, rc *middleware.RuntimeContext, thread *
 
 		var result sampleResult
 		reasoning := a.mw.WrapReasoning(func(ctx context.Context, rc *middleware.RuntimeContext, in middleware.ReasoningInput) error {
-			r, err := a.sample(ctx, in, sysPrompt, emit)
+			r, err := a.sample(ctx, rc, in, sysPrompt, emit)
 			if err != nil {
 				return err
 			}
@@ -156,7 +159,9 @@ type sampleResult struct {
 }
 
 // sample 执行一次采样：模型调用（onModelCall 包裹）→ 收集 thinking/text/tool_call。
-func (a *Agent) sample(ctx context.Context, in middleware.ReasoningInput, sysPrompt string, emit OnEvent) (*sampleResult, error) {
+// rc 是 per-call 上下文：模型/thinking 档位覆盖读自 rc（ADR-026），并贯穿
+// 到 onModelCall 中间件（此前漏传 nil，中间件读 rc 会解引用错误）。
+func (a *Agent) sample(ctx context.Context, rc *middleware.RuntimeContext, in middleware.ReasoningInput, sysPrompt string, emit OnEvent) (*sampleResult, error) {
 	// 每个采样轮生成一个消息 id，块事件与 assistant 消息共用（transcript 关联）。
 	msgID := fmt.Sprintf("msg_%d", timeNowNanos())
 	// sb/tb 用"块完成"事件（EventTextDone/EventThinkingDone）组装，避免与
@@ -165,12 +170,30 @@ func (a *Agent) sample(ctx context.Context, in middleware.ReasoningInput, sysPro
 	var tb strings.Builder
 	var calls []*messages.ToolCall
 
+	// per-call 覆盖（ADR-026）：rc.Model / rc.ThinkingEnabled / rc.ThinkingEffort
+	// 优先，未设置则用 agent/client 默认。
+	model := a.model
+	if rc != nil && rc.Model != "" {
+		model = rc.Model
+	}
+	var thinkingEnabled *bool
+	if rc != nil && rc.ThinkingEnabled != nil {
+		v := *rc.ThinkingEnabled
+		thinkingEnabled = &v
+	}
+	var thinkingEffort string
+	if rc != nil {
+		thinkingEffort = rc.ThinkingEffort
+	}
+
 	wrapped := a.mw.WrapModelCall(func(ctx context.Context, rc *middleware.RuntimeContext, min middleware.ModelCallInput) error {
 		req := provider.Request{
-			Model:        a.model,
-			Instructions: sysPrompt,
-			Messages:     min.Messages,
-			Tools:        min.Tools,
+			Model:           model,
+			Instructions:    sysPrompt,
+			Messages:        min.Messages,
+			Tools:           min.Tools,
+			ThinkingEnabled: thinkingEnabled,
+			ThinkingEffort:  thinkingEffort,
 		}
 		es, err := a.client.Stream(ctx, req)
 		if err != nil {
@@ -201,7 +224,7 @@ func (a *Agent) sample(ctx context.Context, in middleware.ReasoningInput, sysPro
 		}
 		return es.Err()
 	})
-	if err := wrapped(ctx, nil, middleware.ModelCallInput{Messages: in.Messages, Tools: in.Tools}); err != nil {
+	if err := wrapped(ctx, rc, middleware.ModelCallInput{Messages: in.Messages, Tools: in.Tools}); err != nil {
 		return nil, err
 	}
 

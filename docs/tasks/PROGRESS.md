@@ -4,6 +4,18 @@
 
 ## 2026-08-08
 
+### 架构重构：无状态 agent + 运行时切换（会话/模型/档位）+ 配置统一 init ✅（ADR-026）
+
+- **背景**：用户要求优化代码结构（配置加载重复、main.go 初始化堆积），并明确未来需求——进程内 resume 切换 session、多个 agent 并行、运行时切换模型与推理强度。用户对齐 AgentScope：**无状态 agent，其余全由 RuntimeContext + AgentState 承载**。
+- **架构翻转**：agent 完全无状态（`Run(ctx, rc, onEvent)` 去掉 thread 参数，消息序列从 `rc.Messages` 取）；rc 承载会话（新增 Messages/StatePath/Model/ThinkingEffort/ThinkingEnabled，`Session.RuntimeContext()` 每轮新建）；**一个共享 agent + 共享 chain 可被多 goroutine 并发 Run**（并行架构可扩展的基石）；切换会话 = 换 active，下一轮取新 rc。
+- **配置统一 init**：`loadConfig/configCandidates` 迁入 `provider.LoadConfig`（cmd 去掉 yaml 依赖）；cmd 层 `Runtime{Config, Resolved}` 经 `defaultRuntime()`（sync.Once 惰性单例）复用，Resolved = 默认模型全局。惰性而非包 init()（version/help/sessions 不需配置）。
+- **运行时切换**：`Request` 加 `ThinkingEnabled/ThinkingEffort`（三态覆盖：nil/空 = 继承 client 默认；`Model` 字段本就存在但 anthropic 适配器忽略，补上尊重）；`AgentState` 加同名字段持久化；REPL `/switch <id>|--last`、`/model <name>`、`/effort <level>`（都落会话 state，随 SessionMiddleware 落盘，resume 恢复）。
+- **SessionMiddleware 无状态化**：去掉 Sess 字段，从 rc.StatePath 读写（取代 StateMiddleware）。
+- **修复 rc-drop bug**：`sample()` 内 `wrapped(ctx, nil, ...)` 导致 onModelCall 中间件拿到 nil rc（读 rc 会解引用错误）→ 改 `wrapped(ctx, rc, ...)`。
+- **main.go 拆分**：main（dispatch）/ runtime / build（共享 agent + resolveFlags）/ commands（run/repl/resume/sessions + REPL 命令）。
+- **验证**：全量 go test 绿（agent Run 签名机械改 + 新增 rc→Request 覆盖、rc-drop、RuntimeContext、SessionMiddleware 无状态、/switch 进程内切换等测试）；e2e 三用例重跑绿；**真实 API 冒烟 ✅**（`run` 默认 / `--effort max` 落盘 `thinking_effort=max` / REPL `/model deepseek-v4-pro` 重置 effort high / `/effort max` / `/switch --last` resume / `resume --last` 恢复）。
+- **踩坑**：REPL 测试 `/switch` 预建会话未关 writer 导致 Windows 文件锁（需先 Close 释放再 resume）；`rc.Thread` 命名与并发线程撞词 → 改 `rc.Messages`（用户指出）。
+
 ### bug 修复：max_tokens=4096 + budget=1024 导致 thinking 截断无 text ✅
 
 - **现象**：模型"思考总是中断"——thinking 到一半停住，无 text 回复，回合结束

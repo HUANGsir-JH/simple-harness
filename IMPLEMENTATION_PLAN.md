@@ -288,12 +288,15 @@ type Renderer interface {
 - **待验证**：termtest 驱动 harness 的集成 demo（Windows 下跑通 `SendLine → Expect → ExpectExitCode`）
 
 ### 阶段 2.5：Workspace + AgentState + 会话落盘/resume ✅ 已完成（2026-08-08）
-**目标**：把原阶段四的 workspace + AgentState **提前**（用户决策：todo 挂 state 持久化 + 每次运行记录落盘，ADR-025）。**项目分桶目录**（`~/.harness/workspaces/<项目转义>/<session-id>/{historys, plans, agentstate.json}`，全局 agents.md/config.yaml）；**块级 transcript + 异步 writer**（thinking/text/tool 各一行 + ordinal，单 goroutine FIFO 保序；压缩切新文件 API 预留）；**AgentState 注入机制**（独立 agentstate 包 + `RuntimeContext.State` + `session.StateMiddleware` + 工具 Handle 加 rc）；provider/agent **块完成事件**（thinking_done/text_done，Message.Thinking 存不重放）；CLI `resume --last|<id>` / `sessions`。
+**目标**：把原阶段四的 workspace + AgentState **提前**（用户决策：todo 挂 state 持久化 + 每次运行记录落盘，ADR-025）。**项目分桶目录**（`~/.harness/workspaces/<项目转义>/<session-id>/{historys, plans, agentstate.json}`，全局 agents.md/config.yaml）；**块级 transcript + 异步 writer**（thinking/text/tool 各一行 + ordinal，单 goroutine FIFO 保序；压缩切新文件 API 预留）；**AgentState 注入机制**（独立 agentstate 包 + `RuntimeContext.State` + `session.SessionMiddleware` + 工具 Handle 加 rc）；provider/agent **块完成事件**（thinking_done/text_done，Message.Thinking 存不重放）；CLI `resume --last|<id>` / `sessions`。
 **成功标准**：`harness run` 落盘；`harness resume --last` 恢复；`harness sessions` 列表 —— 全部达成 ✅（真实 API 冒烟 + e2e + 单测）
-**测试**：session 包 13 单测（escape/Store/AgentState/StateMiddleware/writer 顺序并发/切分/重建）+ e2e 3 用例 + 真实冒烟
+**测试**：session 包单测（escape/Store/AgentState/SessionMiddleware/writer 顺序并发/切分/重建）+ e2e 3 用例 + 真实冒烟
+
+### 架构重构（ADR-026，2026-08-08 ✅）：无状态 agent + 运行时切换 + 配置统一 init
+**目标**：对齐 AgentScope 无状态 agent（agent 无状态，会话全由 RuntimeContext + AgentState 承载）；支持运行时切换会话（`/switch`）/模型（`/model`）/推理档位（`/effort`）；配置统一 `provider.LoadConfig` + `defaultRuntime()` 惰性单例。**并行 agent 架构已可扩展**（共享 agent/chain 并发安全，零共享可变状态），实际多 agent 编排留阶段五。
 
 ### todo 工具（单独阶段，待做）
-**目标**：`todo_write` 工具（全量替换语义，AgentScope tasksContext 对位），经 `rc.State.Todos` 读写，StateMiddleware after 落盘；系统提示注入任务提醒。**todo 数据结构与操作已在阶段 2.5 的 agentstate 包就绪**（AddTodo/UpdateTodoStatus）。
+**目标**：`todo_write` 工具（全量替换语义，AgentScope tasksContext 对位），经 `rc.State.Todos` 读写，SessionMiddleware（无状态，rc.StatePath）after 落盘；系统提示注入任务提醒。**todo 数据结构与操作已在阶段 2.5 的 agentstate 包就绪**（AddTodo/UpdateTodoStatus）。
 
 ### 阶段 3：审批（三档，作为 onActing middleware）+ 错误重试
 **目标**：`approval` 包实现三档权限（readonly / acceptedit / bypass）+ 黑白名单 + TTY 交互 + allowlist，**以 onActing middleware 挂载**（拒绝/确认结果回填，拒绝 ≠ Fatal）；规则匹配引擎保留扩展点（复杂匹配不强做）；错误重试完善（429 依赖 SDK，补充流中断恢复）
