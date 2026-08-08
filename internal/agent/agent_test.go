@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -51,12 +52,18 @@ func toolCallStream(name, args string) provider.EventStream {
 	})
 }
 
-// eventRecorder 记录回合事件序列。
+// eventRecorder 记录回合事件序列。runToolBatch 并行工具 goroutine 同时 emit
+// EventToolResult（ADR-024），on 须加锁（写-写 race）。
 type eventRecorder struct {
+	mu     sync.Mutex
 	events []Event
 }
 
-func (r *eventRecorder) on(e Event) { r.events = append(r.events, e) }
+func (r *eventRecorder) on(e Event) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.events = append(r.events, e)
+}
 func (r *eventRecorder) types() []EventType {
 	out := make([]EventType, 0, len(r.events))
 	for _, e := range r.events {

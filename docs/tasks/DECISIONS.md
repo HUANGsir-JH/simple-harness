@@ -205,3 +205,16 @@
   6. **REPL 会话注册表 + 命令**：`replCtx{open map[string]*Session, active}`；`/switch <id>|--last`（未开 → proj.Resume 加入，已开 → 复用）、`/model <name>`（Resolve 校验 + 重置 effort 为模型默认）、`/effort <level>`（Resolve 校验 efforts 白名单）。CLI flags（--model/--effort/--thinking/--no-thinking）经 `(*Runtime).resolveFlags` 校验后落到会话 state（随 SessionMiddleware 落盘）。
 - **理由**：无状态 agent 是并行/切换的最简解（无每会话重建开销、无共享可变状态）；会话=运行时隔离单元、模型/档位归 AgentState（持久 + resume 恢复）对齐 AgentScope "状态经 context + AgentState 承载"；Runtime 惰性单例是后续多使用全局变量的统一入口模式。
 - **影响 ADR**：ADR-025 的 StateMiddleware（持 Path）以本 ADR 的无状态 SessionMiddleware（rc 驱动）为准；ADR-021 第 2 点"agent 纯 loop"进一步明确为"完全无状态"。
+
+## ADR-027：todo 工具（update_todo 全量替换 + 跨轮偏离提醒）（2026-08-08）
+
+- **背景**：进入阶段三（权限）前的第一个功能。用户要求先参考开源实现再定设计。调研三个参照源：codex `update_plan`（事件型，只转发前端展示、零存储；全量替换；explanation 可选）、opencode `todowrite`（持久化 SQLite `(session_id, position)` 主键、无 id；纯工具回填可见性；prompt 引导写最好；权限一等公民）、AgentScope tasksContext（todo 进 AgentState 快照——我们已选路线）。
+- **选择**：
+  1. **全量替换语义**：`update_todo {todos:[{position, description, status}]}`，模型每次传**完整**列表整体重建（对齐 codex/opencode；原子、防漂移、天然支持"删除"）。**不做增量 add/update/remove**。
+  2. **模型显式填 `position`** 维护顺序（对齐"md 有序列表"心智）；`TodoItem` 改 `{Position, Description, Status}`，**删 `ID`**（opencode 同样无 id，位置即身份）。`ReplaceTodos` 按 position 稳定排序。**不做 handler 归一化**（one in_progress 靠 prompt 约束，模型传几个存几个——codex/opencode 都如此）。
+  3. **可见性 = 工具结果回填 + TodoReminderMiddleware**：工具返回渲染后的 checklist 回填历史（基础）；另参照 Claude Code 的 system-reminder，todo 非空但模型连续 ≥10 次 model call 未更新时，在**请求消息尾部**注入提醒段。提醒注入**临时副本**，不写 conversation（不落盘、resume 不重放，一次性注意力拉回）。
+  4. **prompt 引导详尽**：工具 description 抄 opencode `todowrite.txt` 风格（When to use 3+ 步骤 / When NOT / 状态 / Rules：完成即标 completed 不攒、同时一个 in_progress、被阻塞保持 in_progress 并加 follow-up）；系统提示 `ToolInstructionsMiddleware` 追加 `# 任务管理` 引导段。
+  5. **不做**：priority/cancelled 维度（全量替换天然支持删除）；`explanation` 参数（前端面板才有用，无前端即删）；权限（留阶段三 onActing）；handler 归一化。
+  6. **并发**：tools 包级 mutex 保护 `rc.State.Todos` 与 rc.attrs todo 计数键写（并行工具同轮并发 update_todo）。
+- **理由**：全量替换 + position 自维护是三个参照实现里最简单且跑得通的组合（opencode 靠它生产运行）；提醒机制补上"纯回填可见性"防漂移的缺口，且不引入新概念（走 rc.attrs + onReasoning middleware）；todo 挂 rc.State.Todos 随 SessionMiddleware after 无条件落盘（Fatal 也不丢），resume 恢复零新代码。
+- **影响 ADR**：ADR-025 第 4 点"todo 挂 state"落地；ADR-021 挂载映射中 `onReasoning` = 压缩，现补充 TodoReminder 也挂 onReasoning（不同中间件叠加）。

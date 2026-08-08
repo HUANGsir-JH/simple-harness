@@ -11,15 +11,12 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	path := filepath.Join(dir, "agentstate.json")
 
 	a := New("s1", "claude-sonnet-5", "/work")
-	todo := a.AddTodo("实现 transcript")
-	if todo.Status != TodoPending {
-		t.Errorf("AddTodo 初始状态: %s", todo.Status)
-	}
-	if !a.UpdateTodoStatus(todo.ID, TodoCompleted) {
-		t.Error("UpdateTodoStatus 应命中")
-	}
-	if a.UpdateTodoStatus("nope", TodoCompleted) {
-		t.Error("UpdateTodoStatus 不存在的 id 应返回 false")
+	a.ReplaceTodos([]TodoItem{
+		{Position: 1, Description: "实现 transcript", Status: TodoPending},
+		{Position: 2, Description: "写测试", Status: TodoCompleted},
+	})
+	if len(a.Todos) != 2 || a.Todos[1].Status != TodoCompleted {
+		t.Errorf("ReplaceTodos 未生效: %+v", a.Todos)
 	}
 
 	if err := SaveFile(path, a); err != nil {
@@ -32,11 +29,51 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	if got.SessionID != "s1" || got.Model != "claude-sonnet-5" || got.CWD != "/work" {
 		t.Errorf("元数据丢失: %+v", got)
 	}
-	if len(got.Todos) != 1 || got.Todos[0].Description != "实现 transcript" || got.Todos[0].Status != TodoCompleted {
+	if len(got.Todos) != 2 || got.Todos[0].Description != "实现 transcript" || got.Todos[0].Status != TodoPending || got.Todos[1].Position != 2 {
 		t.Errorf("todos 往返错误: %+v", got.Todos)
 	}
 	if got.CreatedAt == "" || got.UpdatedAt == "" {
 		t.Error("时间戳缺失")
+	}
+}
+
+// TestReplaceTodosSortsByPosition 验证按 Position 升序稳定排序（重复 position
+// 保持传入顺序；非 1 基/带洞位置同样成立）。
+func TestReplaceTodosSortsByPosition(t *testing.T) {
+	a := New("s1", "m", ".")
+	a.ReplaceTodos([]TodoItem{
+		{Position: 3, Description: "c"},
+		{Position: 1, Description: "a"},
+		{Position: 2, Description: "b"},
+		{Position: 2, Description: "b2"}, // 与 b 同 position，应保持在 b 之后
+	})
+	want := []string{"a", "b", "b2", "c"}
+	if len(a.Todos) != len(want) {
+		t.Fatalf("数量: got %d want %d", len(a.Todos), len(want))
+	}
+	for i, w := range want {
+		if a.Todos[i].Description != w {
+			t.Errorf("顺序[%d]: got %s want %s（全: %+v）", i, a.Todos[i].Description, w, a.Todos)
+		}
+	}
+}
+
+// TestRenderTodos 验证渲染格式：pending [ ] / in_progress [~] / completed [x]，
+// 重新编号 1..n。
+func TestRenderTodos(t *testing.T) {
+	a := New("s1", "m", ".")
+	a.ReplaceTodos([]TodoItem{
+		{Position: 1, Description: "修复登录 bug", Status: TodoInProgress},
+		{Position: 2, Description: "写测试", Status: TodoPending},
+		{Position: 3, Description: "部署", Status: TodoCompleted},
+	})
+	want := "1. [~] 修复登录 bug\n2. [ ] 写测试\n3. [x] 部署"
+	if got := a.RenderTodos(); got != want {
+		t.Errorf("RenderTodos:\ngot:\n%s\nwant:\n%s", got, want)
+	}
+	empty := New("s1", "m", ".")
+	if got := empty.RenderTodos(); got != "（当前无待办）" {
+		t.Errorf("空列表渲染: %q", got)
 	}
 }
 

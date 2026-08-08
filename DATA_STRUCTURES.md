@@ -224,7 +224,7 @@ classDiagram
         +string Summary
     }
     class TodoItem {
-        +string ID
+        +int Position
         +string Description
         +string Status
     }
@@ -409,6 +409,8 @@ classDiagram
 
 **工具错误二分类**（ADR-003）：`RespondToModel=true` → 结果回填、循环继续；`false`（Fatal）→ 终止回合。
 
+**update_todo 工具**（ADR-027）：全量替换当前会话待办清单（`{todos:[{position, description, status}]}`，模型显式填 position 维护顺序），经 `rc.State.Todos` 读写（`AgentState.ReplaceTodos` 按 position 稳定排序；`RenderTodos` 渲染为 markdown 有序列表 `1. [~] …`），随 SessionMiddleware after 无条件落盘 agentstate.json（resume 恢复）。**TodoReminderMiddleware**（onReasoning）：每轮采样计数存 rc.attrs（per-Run），todo 非空且模型连续 ≥10 次 model call 未更新 → 在**请求消息尾部**注入提醒（注入临时副本，不写 conversation → 不落盘/不重放）。模型可见性 = 工具结果回填（基础）+ 提醒（防偏离兜底）。
+
 ### 4.5 落盘格式
 
 #### workspace 目录树（`$HARNESS_HOME || ~/.harness`）
@@ -511,5 +513,6 @@ classDiagram
 | `Request` ↔ `Model/Thinking` | per-call 覆盖：`Request.Model/ThinkingEnabled/ThinkingEffort`，三态（nil/空 = client 默认） |
 | `Message.Thinking` | 存审计但不重放（provider 重放 assistant 时剥离；thinking-only 空消息跳过） |
 | `transcript` ↔ `AgentState` | 双轨：消息流（块级 Line） vs 非消息状态（JSON 快照），resume 两者重建 |
+| `update_todo` ↔ `rc.State.Todos` | todo 全量替换挂 AgentState（ReplaceTodos/RenderTodos），SessionMiddleware after 落盘；TodoReminder 防偏离（ADR-027） |
 | `App` ↔ `Config/Resolved` | 配置统一入口：惰性单例缓存默认模型，`--config` 显式路径单独加载 |
 | `Conversation` ↔ `Message` ↔ `ToolResult` | 一条 tool_result 消息可合并多块（满足 anthropic 紧邻要求，ADR-024） |

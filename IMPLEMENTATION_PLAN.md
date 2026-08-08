@@ -295,8 +295,8 @@ type Renderer interface {
 ### 架构重构（ADR-026，2026-08-08 ✅）：无状态 agent + 运行时切换 + 配置统一 init
 **目标**：对齐 AgentScope 无状态 agent（agent 无状态，会话全由 RuntimeContext + AgentState 承载）；支持运行时切换会话（`/switch`）/模型（`/model`）/推理档位（`/effort`）；配置统一 `provider.LoadConfig` + `defaultRuntime()` 惰性单例。**并行 agent 架构已可扩展**（共享 agent/chain 并发安全，零共享可变状态），实际多 agent 编排留阶段五。
 
-### todo 工具（单独阶段，待做）
-**目标**：`todo_write` 工具（全量替换语义，AgentScope tasksContext 对位），经 `rc.State.Todos` 读写，SessionMiddleware（无状态，rc.StatePath）after 落盘；系统提示注入任务提醒。**todo 数据结构与操作已在阶段 2.5 的 agentstate 包就绪**（AddTodo/UpdateTodoStatus）。
+### todo 工具（update_todo + 偏离提醒）✅ 已完成（2026-08-08，ADR-027）
+**目标**：`update_todo` 工具（全量替换语义，模型填 position 维护顺序，AgentScope tasksContext 对位），经 `rc.State.Todos` 读写，SessionMiddleware（无状态，rc.StatePath）after 落盘；工具结果回填 + `TodoReminderMiddleware`（onReasoning：todo 非空但模型连续 ≥10 次 model call 未更新 → 请求消息尾部注入提醒临时副本，不污染 conversation）。参考 codex `update_plan`（全量替换）+ opencode `todowrite`（持久化 + 详尽 prompt 引导）。**todo 数据结构已改为 `{Position, Description, Status}`**（删 ID；`ReplaceTodos` 按 position 稳定排序 + `RenderTodos` 渲染，替换原 AddTodo/UpdateTodoStatus）。
 
 ### 阶段 3：审批（三档，作为 onActing middleware）+ 错误重试
 **目标**：`approval` 包实现三档权限（readonly / acceptedit / bypass）+ 黑白名单 + TTY 交互 + allowlist，**以 onActing middleware 挂载**（拒绝/确认结果回填，拒绝 ≠ Fatal）；规则匹配引擎保留扩展点（复杂匹配不强做）；错误重试完善（429 依赖 SDK，补充流中断恢复）

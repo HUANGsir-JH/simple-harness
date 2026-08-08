@@ -20,7 +20,7 @@ func TestSessionMiddlewareLoadSave(t *testing.T) {
 	ran := false
 	next := func(ctx context.Context, rc *middleware.RuntimeContext, in middleware.AgentInput) error {
 		ran = true
-		rc.State.AddTodo("任务 A") // 回合内修改 state（模拟 todo 工具）
+		rc.State.ReplaceTodos([]agentstate.TodoItem{{Position: 1, Description: "任务 A", Status: agentstate.TodoPending}}) // 回合内修改 state（模拟 todo 工具）
 		return nil
 	}
 	if err := mw.OnAgent(context.Background(), rc, middleware.AgentInput{}, next); err != nil {

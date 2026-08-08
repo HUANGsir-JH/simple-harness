@@ -9,5 +9,6 @@ func Builtins() []Tool {
 		WriteFileTool{},
 		ShellCommandTool{},
 		ApplyPatchTool{},
+		UpdateTodoTool{},
 	}
 }

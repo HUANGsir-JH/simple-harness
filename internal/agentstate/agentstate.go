@@ -14,6 +14,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
+	"strings"
 	"time"
 )
 
@@ -32,11 +34,13 @@ type AgentState struct {
 	Summary         string           `json:"summary,omitempty"`    // 压缩摘要，预留
 }
 
-// TodoItem 是单个任务项（AgentScope tasksContext 对位）。
+// TodoItem 是单个任务项（AgentScope tasksContext 对位）。对照 codex/opencode
+// 调研（ADR-027）：无独立 id，Position 即"有序列表第几行"（模型显式维护）；
+// 全量替换语义，工具每次传完整列表整体重建。
 type TodoItem struct {
-	ID          string `json:"id"`
-	Description string `json:"description"`
-	Status      string `json:"status"` // pending | in_progress | completed
+	Position    int    `json:"position"`    // 顺序（模型维护，1 基）
+	Description string `json:"description"` // 任务描述
+	Status      string `json:"status"`      // pending | in_progress | completed
 }
 
 // todo 状态枚举。
@@ -69,26 +73,39 @@ func New(sessionID, model, cwd string) *AgentState {
 	}
 }
 
-// AddTodo 追加一个 pending 任务并返回。
-func (a *AgentState) AddTodo(desc string) TodoItem {
-	t := TodoItem{
-		ID:          fmt.Sprintf("t_%d", time.Now().UnixNano()),
-		Description: desc,
-		Status:      TodoPending,
-	}
-	a.Todos = append(a.Todos, t)
-	return t
+// ReplaceTodos 全量替换 todo 列表（update_todo 工具调用路径）。按 Position
+// 升序稳定排序（重复 position 保持传入顺序），模型传什么存什么，不做任何
+// 归一化（ADR-027：one in_progress 靠 prompt 约束）。
+func (a *AgentState) ReplaceTodos(items []TodoItem) {
+	sorted := make([]TodoItem, len(items))
+	copy(sorted, items)
+	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Position < sorted[j].Position })
+	a.Todos = sorted
 }
 
-// UpdateTodoStatus 更新任务状态；找不到返回 false。
-func (a *AgentState) UpdateTodoStatus(id, status string) bool {
-	for i := range a.Todos {
-		if a.Todos[i].ID == id {
-			a.Todos[i].Status = status
-			return true
-		}
+// statusMark 将状态映射为 checkbox 符号（pending / in_progress / completed）。
+func statusMark(status string) string {
+	switch status {
+	case TodoInProgress:
+		return "[~]"
+	case TodoCompleted:
+		return "[x]"
+	default:
+		return "[ ]"
 	}
-	return false
+}
+
+// RenderTodos 将 todo 列表渲染为 markdown 有序列表（重新编号 1..n）。工具
+// 结果回填与偏离提醒共用（ADR-027）。
+func (a *AgentState) RenderTodos() string {
+	if len(a.Todos) == 0 {
+		return "（当前无待办）"
+	}
+	var sb strings.Builder
+	for i, t := range a.Todos {
+		fmt.Fprintf(&sb, "%d. %s %s\n", i+1, statusMark(t.Status), t.Description)
+	}
+	return strings.TrimRight(sb.String(), "\n")
 }
 
 // SaveFile 将 state 整体 JSON 写入 path（原子写：临时文件 + rename，

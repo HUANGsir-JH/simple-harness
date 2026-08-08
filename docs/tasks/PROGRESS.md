@@ -4,6 +4,17 @@
 
 ## 2026-08-08
 
+### todo 工具（update_todo + 跨轮偏离提醒）✅（ADR-027）
+
+- **背景**：进入阶段三（权限）前第一个功能。用户要求先参考开源实现：调研 codex `update_plan`（事件型只转发前端、全量替换、explanation 可选）+ opencode `todowrite`（持久化 SQLite `(session_id, position)` 无 id、纯工具回填可见性、**prompt 引导写最好**）+ AgentScope tasksContext（todo 进 state，已选路线）。
+- **用户决策**：不做 priority/cancelled；**模型显式填 position** 维护顺序（对齐"md 有序列表"心智）删 `TodoItem.ID`；无 explanation 参数；prompt 详尽引导；可见性 = 工具结果回填 + 提醒机制（非空 todo 连续 ≥10 次 model call 未更新 → 注入提醒）；无权限/无 handler 归一化。
+- **TodoItem 结构**：`{Position, Description, Status}`（删 ID）；`ReplaceTodos`（按 position 稳定排序全量替换）替代 `AddTodo/UpdateTodoStatus`；`RenderTodos`（`1. [~]` / `[ ]` / `[x]` 渲染，工具结果 + 提醒共用）。
+- **update_todo 工具**：`{todos:[{position,description,status}]}` 全量替换 → `rc.State.ReplaceTodos` → 记录 `todo_last_update` 基准 → 返回渲染 checklist 回填。tools 包级 `todoMu` 保护 Todos 与 attrs 写（并行工具同轮并发）。
+- **TodoReminderMiddleware**（onReasoning）：每轮采样计数（rc.attrs per-Run）；todo 非空且 `cnt-last >= 10` 时 **copy 请求消息副本** 在尾部注入提醒 user 消息——不写 conversation（不落盘、resume 不重放，一次性注意力拉回）。
+- **系统提示**：`ToolInstructionsMiddleware` 追加 `# 任务管理` 引导段（含 update_todo 时）；工具 description 抄 opencode 风格（When to use / Rules / 状态）。
+- **验证**：全量 `go test -race ./...` 绿（含并发写锁、提醒注入/重置/不污染 conversation 测试）；e2e 重跑绿；**真实 API 冒烟 ✅**——模型正确建 3 步清单、标记第一步 in_progress、工具结果回填渲染；agentstate.json 落盘 position/description/status。
+- **顺手修**：agent 测试 `eventRecorder` 并行 emit 无锁 race（runToolBatch 并行工具既有设计暴露的测试缺陷）。
+
 ### 架构重构：无状态 agent + 运行时切换（会话/模型/档位）+ 配置统一 init ✅（ADR-026）
 
 - **背景**：用户要求优化代码结构（配置加载重复、main.go 初始化堆积），并明确未来需求——进程内 resume 切换 session、多个 agent 并行、运行时切换模型与推理强度。用户对齐 AgentScope：**无状态 agent，其余全由 RuntimeContext + AgentState 承载**。
