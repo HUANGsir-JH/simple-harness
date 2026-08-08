@@ -1,6 +1,6 @@
 # 数据结构关系图
 
-> 本项目所有核心数据结构的组织与关系一览。用于快速理解"数据从哪来、在哪存、怎么流"。
+> 本项目所有核心数据结构的组织、关系与**设计机制**一览。用于快速理解"数据从哪来、在哪存、怎么流、为什么这样组织"。
 > 配合 `CLAUDE.md`（架构约束）与 `docs/tasks/DECISIONS.md`（ADR）阅读。
 
 ## 一、包依赖分层
@@ -67,9 +67,114 @@ sequenceDiagram
 
 **要点**：agent 完全无状态（ADR-026）——每次 Run 传入独立 `rc`，`rc` 引用会话的 conversation/state；切换会话 = 换 active 再取新 `rc`，并行 = 每 goroutine 一个 `rc`。
 
-## 三、核心数据结构
+## 三、核心设计机制（为什么这样组织）
 
-### 3.1 会话与消息（messages / agentstate / session）
+> 数据结构清单是"是什么"，本节省略"为什么"。以下机制是全项目的骨架，理解它们比记字段更重要。
+
+### 3.1 无状态 agent：一切经 rc（ADR-026 的骨架）
+
+agent 是系统的"心脏"，但它**完全不持有会话状态**——`agent.Run(ctx, rc, onEvent)` 只认 rc，不碰 `Session`：
+
+```
+┌────────────────────────────────────────────┐
+│ agent.Agent（无状态，一个进程共享一个）      │
+│   Run(ctx, rc, onEvent)                    │
+│     ├─ rc.Messages  → 读/追加消息          │
+│     ├─ rc.Model / rc.Thinking* → Request   │
+│     └─ 经 middleware 读写 rc.State         │
+└────────────────────────────────────────────┘
+                     ▲  每轮一个独立 rc
+   ┌─────────────────┴─────────────────────┐
+   │ Session.RuntimeContext() 生成 rc      │
+   │  切换会话 = 换 active → 取新 rc       │
+   │  并行    = 每 goroutine 各取一个 rc   │
+   └───────────────────────────────────────┘
+```
+
+收益：
+- **切换会话**：换 `active` 指针，下一轮取新 rc 即可——agent 核心零改动
+- **并行 agent**（阶段五）：共享 agent + 共享 chain（全部中间件无状态），每 goroutine 一个 rc，零共享可变状态
+- **可测**：agent 只依赖 rc（middleware 类型），测试用 FakeClient + 手填 rc，不碰磁盘
+
+### 3.2 Session ↔ RuntimeContext：引用而非拷贝
+
+`Session.RuntimeContext()` 不是复制数据，而是**新建 rc 并填入指向会话内部对象的指针**：
+
+```go
+rc.Messages == sess.conversation   // 同一个 *messages.Conversation
+rc.State    == sess.state          // 同一个 *agentstate.AgentState
+```
+
+副作用是双向的：
+- 工具 `Handle(ctx, rc, ...)` 里 `rc.State.Todos` 加 todo → 就是改会话的 state
+- agent 里 `rc.Messages.Add(...)` → 就是往会话 conversation 加消息
+- Run 结束后 `SessionMiddleware` 把 `rc.State` 存盘 → 会话持久化
+
+| 维度 | Session | RuntimeContext |
+|---|---|---|
+| 生命周期 | 长：启动创建 → 退出 flush；或 resume 加载 | 短：每轮新建 → 该轮 Run 结束丢弃 |
+| 拥有数据 | **是**（conversation / state / writer / statePath） | **否**（仅指针引用） |
+| 持久化 | 管（transcript writer + agentstate.json） | 不管（经 SessionMiddleware 落盘） |
+| 数量关系 | 1 个 Session | N 个 rc（每轮一个，用完即弃） |
+| 所在包 | `internal/session` | `internal/middleware` |
+
+**为什么这样设计**：
+1. **无状态 agent**：agent 只认 rc，`Request` 从 rc 取模型/档位，核心循环无会话概念
+2. **防环**：`session.go` 引 agent（事件类型）；若 agent 再引 Session 会成环。rc 是中间介质——session 生成 rc（依赖 middleware），agent 消费 rc（依赖 middleware），两者只经 rc 通信，互不依赖
+
+> 类比：Session 是**房间**（长期存在，内放 conversation/state/writer）；rc 是**每次进门发的门禁卡**（写房间号 + 能碰哪些对象，每轮重发）。改卡片指向的东西 = 改房间里的真实物品。
+
+### 3.3 三层会话结构 + SessionManager
+
+workspace 的会话按三层组织（Store → Project → Session），职责逐层收窄：
+
+| 层 | 类型 | 职责 |
+|---|---|---|
+| Store | `session.Store` | 全局目录布局（root 解析、项目桶定位 `FindProject`） |
+| Project | `session.Project` | 某个项目下的会话集合（`Create` / `Resume` / `Sessions` / `Last`） |
+| Session | `session.Session` | 单个会话本体（conversation + state + writer + statePath） |
+
+CLI 侧另有一个**横切**的 `SessionManager`（cmd/harness），它不是第四层，而是 REPL 的"会话注册表 + 当前指针"：
+
+```
+SessionManager
+ ├─ open   map[string]*Session   // 已开会话（进程内 resume 缓存，切回零成本）
+ └─ active *Session              // 当前对话的会话（每轮取 RuntimeContext 起 rc）
+```
+
+**进程内切换** = 换 `active`：`/switch <id>`（未开 → `proj.Resume` 从磁盘重建入 `open`；已开 → 直接复用）。`/model`、`/effort` 也只改 `active` 的 state 并落盘。三个命令全部不触碰 agent 核心。
+
+### 3.4 Request 的粒度：一次 model call
+
+`provider.Request` 的粒度是**一次模型调用（model call）**，不是一次 agent run：
+
+```
+agent.Run（一个回合）
+ └─ for 循环（每遇工具调用就再采一轮，直到模型不再请求工具）
+     └─ 每轮 = 1 个 provider.Request
+         └─ client.Stream(req) = 1 次 HTTP 请求
+```
+
+- `AgentInput`（onAgent）↔ 一整个 `agent.Run`
+- `ModelCallInput`（onModelCall）↔ 1 个 `Request`（`sample()` 从 ModelCallInput 构建）
+
+因此 `Request.Model/ThinkingEnabled/ThinkingEffort` 是"**这一次调用**用哪个模型、什么档位"（ADR-026 per-call 覆盖，三态：nil/空 = client 默认）。同一回合内不同轮理论上可不同（实际会话里每轮从 rc 取，通常一致）。
+
+### 3.5 App（进程级）vs RuntimeContext（调用级）
+
+两个带"运行时"意味但概念完全不同的对象：
+
+| 维度 | `cmd.App` | `middleware.RuntimeContext` |
+|---|---|---|
+| 作用域 | **进程级**：一次进程一份 | **调用级**：每次 Run 一份 |
+| 内容 | 配置（Config）+ 默认模型（Resolved） | 会话引用 + per-call 覆盖 |
+| 用途 | buildAgent / resolveFlags | 承载会话上下文，供 agent / middleware / 工具 |
+| 生命周期 | 惰性单例（defaultApp，进程存活期） | 每轮新建，Run 结束丢弃 |
+| 所在包 | cmd/harness | middleware（被 agent / session / tools 依赖） |
+
+## 四、核心数据结构
+
+### 4.1 会话与消息（messages / agentstate / session）
 
 ```mermaid
 classDiagram
@@ -160,9 +265,9 @@ classDiagram
     Project "1" *-- "many" Session
 ```
 
-**双轨持久化**（ADR-025）：消息流 → `transcript`（块级 Line，见 3.5）；非消息状态（模型/档位/todo/权限/plan/摘要）→ `AgentState`（`agentstate.json`，每次 Run 进出各存一次）。
+**双轨持久化**（ADR-025）：消息流 → `transcript`（块级 Line，见 4.5）；非消息状态（模型/档位/todo/权限/plan/摘要）→ `AgentState`（`agentstate.json`，每次 Run 进出各存一次）。
 
-### 3.2 配置与请求（provider）
+### 4.2 配置与请求（provider）
 
 ```mermaid
 classDiagram
@@ -219,7 +324,7 @@ classDiagram
 
 **配置链路**：`provider.LoadConfig` → `Config` → `Resolve` → `Resolved`（默认模型，`App.Resolved` 缓存）→ `NewClient`。per-call 覆盖（ADR-026）：`Request.Model/ThinkingEnabled/ThinkingEffort`，`nil/空 = 继承 client 默认`。
 
-### 3.3 运行时上下文与中间件（middleware）
+### 4.3 运行时上下文与中间件（middleware）
 
 ```mermaid
 classDiagram
@@ -264,7 +369,7 @@ classDiagram
 
 **注**：`RuntimeContext` 是 per-call 上下文（每 Run 新建），`Chain` 及其中间件全部无状态 → 共享 chain 可被多 goroutine 并发 Run。
 
-### 3.4 agent 与工具（agent / tools）
+### 4.4 agent 与工具（agent / tools）
 
 ```mermaid
 classDiagram
@@ -304,7 +409,7 @@ classDiagram
 
 **工具错误二分类**（ADR-003）：`RespondToModel=true` → 结果回填、循环继续；`false`（Fatal）→ 终止回合。
 
-### 3.5 落盘格式
+### 4.5 落盘格式
 
 #### workspace 目录树（`$HARNESS_HOME || ~/.harness`）
 
@@ -360,7 +465,7 @@ classDiagram
 
 **resume 语义**：只读最大序号文件（`history-<n>.jsonl`），按 ordinal 逐行重建 conversation（thinking 入 `Message.Thinking`，tool_result 合并）；`agentstate.json` 恢复非消息状态（含模型/档位）。
 
-## 四、CLI 层（cmd/harness）
+## 五、CLI 层（cmd/harness）
 
 ```mermaid
 classDiagram
@@ -397,7 +502,7 @@ classDiagram
 
 **REPL 运行时切换**：`/switch <id>|--last`（换 `active`，未开则 Resume 入注册表）、`/model <name>`、`/effort <level>`（都落 `AgentState` 立即持久化）。
 
-## 五、关键关系速查
+## 六、关键关系速查
 
 | 关系 | 说明 |
 |---|---|
