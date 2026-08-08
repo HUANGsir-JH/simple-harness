@@ -38,7 +38,8 @@ func (UpdateTodoTool) Spec() provider.ToolSpec {
 			"纯查询/单一小改动不需要。\n" +
 			"状态：pending（未开始）/ in_progress（进行中）/ completed（已完成）。\n" +
 			"规则：完成一步立刻标记 completed，不要攒着批量标；" +
-			"同时只保持一个 in_progress；被阻塞时保持 in_progress 并追加一条描述阻塞项的 todo。\n" +
+			"同时只保持一个 in_progress；被阻塞时保持 in_progress 并追加一条描述阻塞项的 todo；" +
+			"全部步骤完成后传空列表（todos: []）清空待办，不留已完成项。\n" +
 			"每次调用传**完整**列表（全量替换，非增量），用 position 维护顺序。",
 		Parameters: json.RawMessage(`{
 			"type": "object",

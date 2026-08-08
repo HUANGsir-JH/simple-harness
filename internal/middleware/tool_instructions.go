@@ -40,6 +40,7 @@ const todoGuidance = `# 任务管理
 - 任务需 3+ 个独立步骤时，开工前列出 todos（含验证步骤）
 - 完成一步立刻标记 completed，不要攒着批量标
 - 同时只保持一个 in_progress
+- 全部步骤完成后传空列表清空 todo（不留已完成项）
 - 每次调用传完整列表，用 position 维护顺序`
 
 // ToolInstructionsMiddleware 是 onSystemPrompt middleware：在基础指令后追加
