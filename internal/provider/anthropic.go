@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/agent-project/harness/internal/messages"
@@ -29,7 +30,6 @@ func newAnthropicClient(res *Resolved) *anthropicClient {
 	c := anthropic.NewClient(opts...)
 	return &anthropicClient{
 		providerBase: providerBase{
-			model:           res.Model,
 			baseURL:         res.BaseURL,
 			apiKey:          res.APIKey,
 			contextWindow:   res.ContextWindow,
@@ -48,17 +48,18 @@ func newAnthropicClient(res *Resolved) *anthropicClient {
 const defaultMaxTokens = 393216
 
 func (a *anthropicClient) Stream(ctx context.Context, req Request) (EventStream, error) {
-	// per-call 覆盖（ADR-026 运行时切换）：req.Model / req.ThinkingEnabled /
-	// req.ThinkingEffort 优先，未设置时用 client 配置默认（来自 Resolved）。
-	model := a.model
-	if req.Model != "" {
-		model = req.Model
+	// model 是请求参数（ADR-026）：client 只承载连接不持模型，每次采样由
+	// sample 经 Request.Model 传入（链路：AgentState → rc → sample）。空则报错
+	// 防御（正常路径 agent 默认模型保证非空）。
+	if req.Model == "" {
+		return nil, fmt.Errorf("provider: request model is empty")
 	}
 	params := anthropic.MessageNewParams{
-		Model:     model,
+		Model:     req.Model,
 		MaxTokens: defaultMaxTokens,
 		Messages:  toAnthropicMessages(req.Messages),
 	}
+	// thinking 默认来自 client（Resolved），per-call 可覆盖。
 	thinkingEnabled := a.thinkingEnabled
 	if req.ThinkingEnabled != nil {
 		thinkingEnabled = *req.ThinkingEnabled

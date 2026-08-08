@@ -37,7 +37,7 @@ func TestAnthropicStreamTextDelta(t *testing.T) {
 	defer srv.Close()
 
 	c := newAnthropicClient(&Resolved{Model: "claude-sonnet-5", BaseURL: srv.URL, APIKey: "test-key"})
-	es, err := c.Stream(context.Background(), Request{Messages: []*messages.Message{NewTestUserMsg("hi")}})
+	es, err := c.Stream(context.Background(), Request{Model: "claude-sonnet-5", Messages: []*messages.Message{NewTestUserMsg("hi")}})
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestAnthropicStreamToolUse(t *testing.T) {
 	defer srv.Close()
 
 	c := newAnthropicClient(&Resolved{Model: "claude-sonnet-5", BaseURL: srv.URL, APIKey: "test-key"})
-	es, err := c.Stream(context.Background(), Request{Messages: []*messages.Message{NewTestUserMsg("read it")}})
+	es, err := c.Stream(context.Background(), Request{Model: "claude-sonnet-5", Messages: []*messages.Message{NewTestUserMsg("read it")}})
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
@@ -134,7 +134,7 @@ func TestAnthropicStreamToolCallStreamingArgs(t *testing.T) {
 	defer srv.Close()
 
 	c := newAnthropicClient(&Resolved{Model: "claude-sonnet-5", BaseURL: srv.URL, APIKey: "test-key"})
-	es, err := c.Stream(context.Background(), Request{Messages: []*messages.Message{NewTestUserMsg("create")}})
+	es, err := c.Stream(context.Background(), Request{Model: "claude-sonnet-5", Messages: []*messages.Message{NewTestUserMsg("create")}})
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
@@ -182,7 +182,7 @@ func TestAnthropicStreamThinking(t *testing.T) {
 	defer srv.Close()
 
 	c := newAnthropicClient(&Resolved{Model: "claude-sonnet-5", BaseURL: srv.URL, APIKey: "test-key", ThinkingEnabled: true, ThinkingEffort: EffortMax})
-	es, err := c.Stream(context.Background(), Request{Messages: []*messages.Message{NewTestUserMsg("hi")}})
+	es, err := c.Stream(context.Background(), Request{Model: "claude-sonnet-5", Messages: []*messages.Message{NewTestUserMsg("hi")}})
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
@@ -226,7 +226,7 @@ func TestAnthropicStreamThinkingDisabled(t *testing.T) {
 	defer srv.Close()
 
 	c := newAnthropicClient(&Resolved{Model: "claude-sonnet-5", BaseURL: srv.URL, APIKey: "test-key", ThinkingEnabled: false})
-	es, err := c.Stream(context.Background(), Request{Messages: []*messages.Message{NewTestUserMsg("hi")}})
+	es, err := c.Stream(context.Background(), Request{Model: "claude-sonnet-5", Messages: []*messages.Message{NewTestUserMsg("hi")}})
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
@@ -261,7 +261,7 @@ func TestAnthropicStreamThinkingDelta(t *testing.T) {
 	defer srv.Close()
 
 	c := newAnthropicClient(&Resolved{Model: "claude-sonnet-5", BaseURL: srv.URL, APIKey: "test-key"})
-	es, err := c.Stream(context.Background(), Request{Messages: []*messages.Message{NewTestUserMsg("hi")}})
+	es, err := c.Stream(context.Background(), Request{Model: "claude-sonnet-5", Messages: []*messages.Message{NewTestUserMsg("hi")}})
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
