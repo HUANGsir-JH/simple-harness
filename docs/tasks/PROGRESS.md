@@ -4,6 +4,14 @@
 
 ## 2026-08-08
 
+### bug 修复：max_tokens=4096 + budget=1024 导致 thinking 截断无 text ✅
+
+- **现象**：模型"思考总是中断"——thinking 到一半停住，无 text 回复，回合结束
+- **根因**：硬编码 `max_tokens=4096` + `budget_tokens=1024` 太小。DeepSeek 长思考（15928+ 字符）把 4096 占满 → `stop_reason=max_tokens`，text 无输出（实测：max=4096 → thinking 16597 无 text；max=8192 → thinking 31710 无 text）。且 DeepSeek 对 budget_tokens 的处理与 effort 相关（budget=1024 对 effort=high 太小导致 thinking 无界）
+- **用户方案验证**：DeepSeek 兼容端点**不传 thinking/budget 完全正常**（默认开启 thinking + 自行管理长度，`end_turn` + text）；`max_tokens` 有效范围 `[1, 393216]`，传 0 报错；SDK 强制 max_tokens required（`api:"required"`）不能省略
+- **修复**：`defaultMaxTokens = 393216`（端点允许的最大值——用户约束"不设小上限"，超长任务不截断）；**默认不传 thinking/budget_tokens**（DeepSeek 默认开 thinking 且自行管理，传小 budget 反而截断）；effort 独立传 `output_config`；仅 `--no-thinking` 传 thinking disabled
+- **验证**：provider 单测更新（enabled 时不传 thinking + 传 effort）；真实 API 冒烟：长思考任务 `has_text=1277 + thinking + turn_done` ✅
+
 ### bug 修复：thinking-only 的 assistant 消息重放 400 ✅
 
 - **现象**：真实会话中模型只产出 thinking（无 text、无 tool_call）→ 回合结束无回复；用户发"继续任务" → anthropic 400 `messages.N: all messages must have non-empty content`

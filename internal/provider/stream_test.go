@@ -161,8 +161,9 @@ func TestAnthropicStreamToolCallStreamingArgs(t *testing.T) {
 	}
 }
 
-// TestAnthropicStreamThinking 验证 thinking 启用时，请求体携带 Anthropic
-// 标准 thinking 参数与 SDK output_config.effort 档位。
+// TestAnthropicStreamThinking 验证 thinking 启用时，请求体**不传** thinking
+// 参数（DeepSeek 等兼容端点默认开启 thinking，传小 budget 反而截断），只带
+// output_config.effort 档位。
 func TestAnthropicStreamThinking(t *testing.T) {
 	var body map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -191,12 +192,10 @@ func TestAnthropicStreamThinking(t *testing.T) {
 	if es.Err() != nil {
 		t.Fatalf("stream err: %v", es.Err())
 	}
-	thinking, ok := body["thinking"].(map[string]any)
-	if !ok {
-		t.Fatalf("missing thinking param in body: %v", body)
-	}
-	if thinking["type"] != "enabled" {
-		t.Errorf("thinking.type: got %v want enabled", thinking["type"])
+	// 默认不传 thinking 参数（DeepSeek 等兼容端点默认开启 thinking；传小的
+	// budget_tokens 反而截断，见 defaultMaxTokens 注释）。
+	if _, ok := body["thinking"]; ok {
+		t.Errorf("默认不应传 thinking 参数: %v", body["thinking"])
 	}
 	oc, ok := body["output_config"].(map[string]any)
 	if !ok {

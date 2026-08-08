@@ -40,20 +40,28 @@ func newAnthropicClient(res *Resolved) *anthropicClient {
 	}
 }
 
+// defaultMaxTokens 是未配置时的输出 token 上限，取端点允许的最大值。
+// anthropic 协议要求 max_tokens 必填（SDK api:"required"），但硬编码小值会截断
+// 真实超长任务：DeepSeek 长思考曾把 4096 占满 → thinking 截断（stop_reason=max_tokens）
+// 且 text 无输出。取 DeepSeek 有效范围上限（[1, 393216]），使 harness 不再是输出
+// 长度的限制因素（用户约束：不设小上限）。
+const defaultMaxTokens = 393216
+
 func (a *anthropicClient) Stream(ctx context.Context, req Request) (EventStream, error) {
 	params := anthropic.MessageNewParams{
 		Model:     a.model,
-		MaxTokens: 4096, // 硬默认值；阶段二配置中完善
+		MaxTokens: defaultMaxTokens,
 		Messages:  toAnthropicMessages(req.Messages),
 	}
-	// thinking：按 Anthropic Messages API 标准 thinking 参数开启（budget_tokens
-	// 取最小合法值，兼容端点可忽略）；档位通过 SDK 的 output_config.effort 传递。
-	// 关闭时显式传 thinking disabled —— DeepSeek 等兼容端点默认开启 thinking。
-	if a.thinkingEnabled {
-		params.Thinking = anthropic.ThinkingConfigParamOfEnabled(1024)
-		params.OutputConfig = anthropic.OutputConfigParam{Effort: anthropic.OutputConfigEffort(a.thinkingEffort)}
-	} else {
+	// thinking 参数：默认不传（DeepSeek 等兼容端点默认开启 thinking，且由端点自行
+	// 管理思考长度）。传小的 budget_tokens 反而导致 thinking 截断、text 无输出
+	// （实测 budget=1024 时 effort=high 的 thinking 被 max_tokens 截断）。仅需
+	// 关闭时显式传 disabled（兼容端点默认开启，不传关不掉）。
+	if !a.thinkingEnabled {
 		params.Thinking = anthropic.ThinkingConfigParamUnion{OfDisabled: &anthropic.ThinkingConfigDisabledParam{}}
+	} else {
+		// 思考深度档位独立传递（output_config.effort），不与 thinking budget 绑定。
+		params.OutputConfig = anthropic.OutputConfigParam{Effort: anthropic.OutputConfigEffort(a.thinkingEffort)}
 	}
 	if req.Instructions != "" {
 		params.System = []anthropic.TextBlockParam{{Text: req.Instructions}}
