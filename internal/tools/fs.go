@@ -13,6 +13,12 @@ import (
 	"github.com/agent-project/harness/internal/provider"
 )
 
+// MaxReadFileBytes 是 read_file 一次读取的最大文件字节数（超出且未指定
+// start_line/end_line 时提示分段，防撑爆上下文）。read_file 豁免 evict
+// （ToolOutputMiddleware，ADR-028）：返回完整内容、模型用行范围控制粒度，
+// 本保护兜底"一次读超大文件"。
+const MaxReadFileBytes = 256 * 1024
+
 // ReadFileTool 读取文件内容，可限行范围。路径相对进程工作目录（启动 harness
 // 的目录）或绝对路径。
 type ReadFileTool struct{}
@@ -46,6 +52,13 @@ func (ReadFileTool) Handle(_ context.Context, _ *middleware.RuntimeContext, _ st
 	}
 	if p.Path == "" {
 		return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: "read_file: path 不能为空"}
+	}
+	// 超大文件且未指定行范围 → 提示分段（防一次读爆上下文；指定范围则按需读）。
+	if p.StartLine <= 0 && p.EndLine <= 0 {
+		if fi, err := os.Stat(p.Path); err == nil && fi.Size() > MaxReadFileBytes {
+			return messages.ToolResult{}, &ToolError{RespondToModel: true,
+				Message: fmt.Sprintf("read_file: 文件过大（%d 字节，上限 %d），请用 start_line/end_line 分段读取", fi.Size(), MaxReadFileBytes)}
+		}
 	}
 	content, err := readFileRange(p.Path, p.StartLine, p.EndLine)
 	if err != nil {

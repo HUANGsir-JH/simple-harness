@@ -152,3 +152,48 @@ func TestToolOutputMiddlewareNilMessages(t *testing.T) {
 		t.Fatalf("nil messages: %v", err)
 	}
 }
+
+// TestToolOutputMiddlewareSkipsReadFile 验证 read_file 结果豁免 evict（返回完整，
+// 不截断、不落盘），避免"读 evictions 文件"闭环二次截断（ADR-028）。
+func TestToolOutputMiddlewareSkipsReadFile(t *testing.T) {
+	conv := messages.NewConversation()
+	rc := NewRuntimeContext()
+	rc.Messages = conv
+	rc.State = agentstate.New("s1", "m", t.TempDir())
+	rc.StatePath = filepath.Join(t.TempDir(), "sess", "agentstate.json")
+
+	chain := testChain()
+	before := len(conv.Messages)
+
+	// 模拟一批两个工具调用：read_file（应豁免）+ shell_command（应截断）。
+	calls := []*messages.ToolCall{
+		{ID: "c_read", Name: "read_file"},
+		{ID: "c_shell", Name: "shell_command"},
+	}
+	core := func(ctx context.Context, rc *RuntimeContext, in ToolCallInput) error {
+		conv.Add(messages.NewToolResultsMessage([]messages.ToolResultBlock{
+			{ToolCallID: "c_read", Success: true, Content: longContent("READ", "FULL")},
+			{ToolCallID: "c_shell", Success: true, Content: longContent("SHELL", "EVICT")},
+		}))
+		return nil
+	}
+	wrapped := chain.WrapToolCall(core)
+	if err := wrapped(context.Background(), rc, ToolCallInput{Calls: calls}); err != nil {
+		t.Fatalf("wrapped: %v", err)
+	}
+
+	newMsg := conv.Messages[before]
+	// read_file：完整内容保留（无截断提示、无落盘）。
+	read := newMsg.ToolResults[0].Content
+	if !strings.Contains(read, "READ") || !strings.Contains(read, "FULL") {
+		t.Error("read_file result should keep full content")
+	}
+	if strings.Contains(read, "完整内容已保存到") {
+		t.Error("read_file result should not be evicted")
+	}
+	// shell_command：仍被截断 + 落盘。
+	shell := newMsg.ToolResults[1].Content
+	if !strings.Contains(shell, "完整内容已保存到") {
+		t.Error("shell_command result should be evicted")
+	}
+}
