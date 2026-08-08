@@ -89,6 +89,13 @@ func toAnthropicMessages(msgs []*messages.Message) []anthropic.MessageParam {
 				Content: []anthropic.ContentBlockParamUnion{{OfText: &anthropic.TextBlockParam{Text: m.Content}}},
 			})
 		case messages.RoleAssistant:
+			// thinking-only 的 assistant（content 空且无 tool_calls）：剥离 thinking
+			// 后（ADR-025）无任何内容，anthropic 不接受空 assistant 消息 → 跳过，
+			// 前后 user 消息自然相邻（连续 user 是合法格式，tool_result 即以 user
+			// 发送）。模型看到"两个 user 之间无回复"，语义准确且零污染。
+			if m.Content == "" && len(m.ToolCalls) == 0 {
+				continue
+			}
 			out = append(out, toAnthropicAssistantMessage(m))
 		case messages.RoleTool:
 			out = append(out, toAnthropicToolResult(m))
@@ -98,8 +105,8 @@ func toAnthropicMessages(msgs []*messages.Message) []anthropic.MessageParam {
 }
 
 func toAnthropicAssistantMessage(m *messages.Message) anthropic.MessageParam {
-	// 注意：m.Thinking（推理文本）不重放——resume 重放历史时剥离 thinking，
-	// 避免 anthropic 重放 thinking 块的格式适配（ADR-025，thinking 仅审计）。
+	// 注意：m.Thinking（推理文本）不重放——每次采样请求重放历史时都剥离
+	// thinking（ADR-025：thinking 仅审计，不进模型上下文、免格式适配）。
 	blocks := make([]anthropic.ContentBlockParamUnion, 0, len(m.ToolCalls)+1)
 	if m.Content != "" {
 		blocks = append(blocks, anthropic.ContentBlockParamUnion{OfText: &anthropic.TextBlockParam{Text: m.Content}})

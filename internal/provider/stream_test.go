@@ -289,3 +289,28 @@ func TestAnthropicStreamThinkingDelta(t *testing.T) {
 		t.Errorf("thinking_done: got %q want %q", thinkingDone, "Let me think more")
 	}
 }
+
+// TestToAnthropicMessagesSkipsThinkingOnly 验证 thinking-only 的 assistant 消息
+// 在重放时被跳过（内容为空无法表达为合法 anthropic 消息），前后 user 相邻。
+func TestToAnthropicMessagesSkipsThinkingOnly(t *testing.T) {
+	msgs := []*messages.Message{
+		NewTestUserMsg("hi"),
+		{Role: messages.RoleAssistant, Thinking: "deep", Content: ""}, // thinking-only，无 text 无 tool_calls
+		NewTestUserMsg("继续"),
+	}
+	out := toAnthropicMessages(msgs)
+	if len(out) != 2 {
+		t.Fatalf("应跳过空 assistant，got %d", len(out))
+	}
+	for i, pm := range out {
+		if string(pm.Role) != "user" {
+			t.Errorf("消息 %d 应为 user（跳过后 user 相邻）: %s", i, pm.Role)
+		}
+	}
+	// 正常 assistant 不受影响。
+	msgs[1].Content = "ok"
+	out2 := toAnthropicMessages(msgs)
+	if len(out2) != 3 {
+		t.Fatalf("正常 assistant 不应跳过，got %d", len(out2))
+	}
+}

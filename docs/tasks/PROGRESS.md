@@ -4,6 +4,14 @@
 
 ## 2026-08-08
 
+### bug 修复：thinking-only 的 assistant 消息重放 400 ✅
+
+- **现象**：真实会话中模型只产出 thinking（无 text、无 tool_call）→ 回合结束无回复；用户发"继续任务" → anthropic 400 `messages.N: all messages must have non-empty content`
+- **根因**：ADR-025 决策 thinking 剥离不重放 → thinking-only 的 assistant 消息重放时 `Content=""` + 无 ToolCalls → `toAnthropicAssistantMessage` 生成**空 blocks** → anthropic 要求 assistant 至少一个内容块 → 400
+- **修复**：重放时**跳过空 assistant 消息**（`toAnthropicMessages` 对 content 空 + 无 tool_calls 的 assistant `continue`），前后 user 消息相邻（连续 user 是合法格式，tool_result 即以 user 发送）。**先试占位文本块方案被用户否决**——占位会伪造 assistant 内容污染模型上下文，与 thinking 剥离的初衷（不污染上下文）自相矛盾 → 弃用改跳过
+- **澄清**：thinking 剥离发生在每次采样请求重放历史时（`toAnthropicAssistantMessage`），**不只 resume**——同一回合二次采样/下一轮/resume 全部剥离，thinking 从不进模型上下文
+- **验证**：provider 单测（空 assistant 被跳过、正常消息不受影响）；**真实 API resume 出错会话重放不 400** ✅
+
 ### 阶段四拆出：Workspace + AgentState + 会话落盘/resume ✅（ADR-025，提前）
 
 - **背景**：用户要求把阶段四的 workspace + AgentState 提前到阶段三（权限）之前——todo 工具可挂 state 持久化、每次运行记录落盘。参考 codex + AgentScope + 用户自定义项目分桶结构。
