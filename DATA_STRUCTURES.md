@@ -172,6 +172,61 @@ agent.Run（一个回合）
 | 生命周期 | 惰性单例（defaultApp，进程存活期） | 每轮新建，Run 结束丢弃 |
 | 所在包 | cmd/harness | middleware（被 agent / session / tools 依赖） |
 
+### 3.6 middleware hook 粒度：onAgent / onReasoning / onModelCall（包住什么）
+
+三个最易混淆的 hook，区别只在**包裹的粒度**（洋葱从外到内）：
+
+| hook | 包裹的粒度 | 代码边界 | 例子里的边界 |
+|---|---|---|---|
+| `onAgent` | 一整个回合 | `Run` 的 wrapped 全部 | 轮 1 前 → 最后一轮后（含所有采样 + 工具执行） |
+| `onReasoning` | **一次采样轮** | `WrapReasoning(sample)`，即 `sample()` 全部 | 每轮：组装请求 → assistant 组装完 |
+| `onModelCall` | **一次 HTTP 请求** | `client.Stream(req)` | 请求发出 → 流解码完 |
+
+嵌套关系（一次回合可含多次采样轮，每轮恰一次请求，故 onReasoning 与 onModelCall 目前 1:1）：
+
+```
+agent.Run（一个回合）
+ └─ onAgent 包裹整个回合
+     └─ for 循环（每遇工具调用就再采一轮）
+         └─ reasoning = WrapReasoning(sample)      ← onReasoning，包住一轮 sample
+             └─ sample() 内部：
+                 wrapped = WrapModelCall(Stream)    ← onModelCall，包住一次请求
+                     ├─ 组装 provider.Request（per-call 覆盖在此）
+                     ├─ client.Stream(req)          ← 实际 HTTP 请求
+                     └─ 消费事件流 → 组装 assistant + toolCalls
+```
+
+**think / tool / 普通文本三种内容块**都是同一轮里从流中解码出的并列输出（`agent.go` 流循环三个 case：thinking_delta→tb、text_delta→sb、tool_call→calls），**全部在 onReasoning 包裹之内**，它不单独对应其中任何一种；三种块都在 `onModelCall` 的流解码处产出。
+
+**判断准则**：
+- 想做"这一轮开始前准备/注入什么"或"这一轮结束后收尾什么" → `onReasoning`（比模型调用高一层的边界，能看到输入组装与一轮结果）
+- 想做"这次请求本身怎么发"（参数覆盖/日志/mock/重试） → `onModelCall`（最内层，能看到完整 Request）
+
+**挂载映射**（ADR-021/027）：`onReasoning` = 压缩（阶段四）+ TodoReminder（todo 偏离提醒）；`onModelCall` = per-call 参数覆盖（Request.Model/Effort/ThinkingEnabled）。
+
+**反例**：TodoReminder 为何挂 onReasoning 而非 onModelCall？因为要在"一轮思考开始前"判断是否往消息列表尾部注入提醒——属于采样轮的输入组装，不是请求参数。
+
+### 3.7 提醒注入的请求级机制：为什么不落盘（ADR-027）
+
+TodoReminder 触发时把提醒塞进**请求消息尾部**，但刻意不写 conversation / 不落 transcript：
+
+```go
+// todo_reminder.go（触发时）
+msgs := make([]*messages.Message, len(in.Messages), len(in.Messages)+1)
+copy(msgs, in.Messages)
+msgs = append(msgs, &messages.Message{...提醒 user 消息})
+in.Messages = msgs   // 只影响本次请求，conversation 原封不动
+```
+
+**为什么必须 copy 而非直接 append**（Go 切片共享底层数组）：`in.Messages` 与 `conversation.Messages` 共享同一底层数组——建立点在 `agent.go` 传参 `ReasoningInput{Messages: conversation.Messages}`（切片传值只复制 24 字节描述符 {ptr, len, cap}，数组只有一份）。直接 `append` 若容量够，会写穿到底层数组，等于往会话历史偷塞一条消息。copy 出新切片是隔离层。
+
+**为什么不落盘**：
+1. **resume 不重放**：提醒是一次性注意力拉回，落盘后 resume 会带着历史里所有过时提醒重放（噪音）
+2. **审计干净**：transcript 是人读的对话记录，提醒是 harness 内部干预，不属于用户对话
+3. **前缀缓存稳定**：conversation 是缓存（Anthropic auto-caching / DeepSeek context caching 前缀匹配）的命脉，提醒不进去 → 历史完全由真实对话决定，逐轮追加稳定可缓存
+
+提醒的计数状态（todo_last_activity）在 rc.attrs，per-Run 内存态随 rc 新建清零；跨 Run 持久的是 todo 列表本体（AgentState → agentstate.json），与 transcript 轨互不干扰（双轨持久化，ADR-025）。
+
 ## 四、核心数据结构
 
 ### 4.1 会话与消息（messages / agentstate / session）
