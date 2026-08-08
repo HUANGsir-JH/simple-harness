@@ -16,10 +16,10 @@ type RuntimeContext struct {
 	// SessionID 标识当前会话（交互式/单轮复用）。
 	SessionID string
 
-	// Messages 是当前会话的消息序列（*messages.Thread，替代 Run 的 thread 参数）。
-	// 命名对齐 provider.Request.Messages，避免与并发线程混淆。agent.Run 在此
-	// 读写消息（追加 assistant / tool_result）。
-	Messages *messages.Thread
+	// Messages 是当前会话的消息序列（*messages.Conversation，替代 Run 的消息
+	// 序列参数）。命名对齐 provider.Request.Messages，避免与并发线程混淆。
+	// agent.Run 在此读写消息（追加 assistant / tool_result）。
+	Messages *messages.Conversation
 
 	// State 是当前会话的 AgentState（注入机制 ADR-025）：
 	// session.SessionMiddleware 挂 onAgent，before 加载、after 保存；

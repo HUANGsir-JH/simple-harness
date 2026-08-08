@@ -12,7 +12,7 @@ import (
 // output 是最小渲染器抽象（完整 ui.Renderer 在阶段五引入；
 // 阶段二升级为订阅 agent 回合级事件，含 thinking/turn_done）。
 type output interface {
-	start(t *messages.Thread)
+	start(t *messages.Conversation)
 	event(ev agent.Event)
 }
 
@@ -35,7 +35,7 @@ func newTextRenderer(showThinking bool) *textRenderer {
 	return &textRenderer{showThinking: showThinking}
 }
 
-func (r *textRenderer) start(*messages.Thread) {}
+func (r *textRenderer) start(*messages.Conversation) {}
 
 func (r *textRenderer) event(ev agent.Event) {
 	switch ev.Type {
@@ -82,8 +82,8 @@ func toolResultSummary(s string) string {
 
 type jsonRenderer struct{}
 
-func (jsonRenderer) start(t *messages.Thread) {
-	emitJSON(map[string]any{"type": "thread_start", "thread": t.ID})
+func (jsonRenderer) start(t *messages.Conversation) {
+	emitJSON(map[string]any{"type": "conversation_start", "conversation": t.ID})
 }
 
 func (jsonRenderer) event(ev agent.Event) {

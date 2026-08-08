@@ -40,21 +40,21 @@ func runCmd(args []string, jsonOut bool) error {
 		return fmt.Errorf("run: prompt is required (harness run \"your prompt\"; 不带参数运行 `harness` 进入交互式)")
 	}
 
-	var rt *Runtime
+	var app *App
 	var err error
 	if configPath != "" {
-		rt, err = loadRuntime(configPath)
+		app, err = loadApp(configPath)
 	} else {
-		rt, err = defaultRuntime()
+		app, err = defaultApp()
 	}
 	if err != nil {
 		return err
 	}
-	res, err := rt.resolveFlags(modelFlag, effortFlag, thinkingFlag, noThinkingFlag)
+	res, err := app.resolveFlags(modelFlag, effortFlag, thinkingFlag, noThinkingFlag)
 	if err != nil {
 		return err
 	}
-	a, err := rt.buildAgent()
+	a, err := app.buildAgent()
 	if err != nil {
 		return err
 	}
@@ -93,7 +93,7 @@ func runCmd(args []string, jsonOut bool) error {
 	} else {
 		renderer = newTextRenderer(!noThinkingDisplay)
 	}
-	renderer.start(sess.Thread())
+	renderer.start(sess.Conversation())
 
 	onEvent := func(ev agent.Event) {
 		renderer.event(ev)
@@ -104,11 +104,11 @@ func runCmd(args []string, jsonOut bool) error {
 
 // repl 是交互式模式（`harness` 无子命令）：新会话 + REPL 循环。
 func repl(jsonOut bool) error {
-	rt, err := defaultRuntime()
+	app, err := defaultApp()
 	if err != nil {
 		return err
 	}
-	a, err := rt.buildAgent()
+	a, err := app.buildAgent()
 	if err != nil {
 		return err
 	}
@@ -116,7 +116,7 @@ func repl(jsonOut bool) error {
 	if err != nil {
 		return err
 	}
-	sess, err := session.CreateInCWD(rt.Resolved.Model)
+	sess, err := session.CreateInCWD(app.Resolved.Model)
 	if err != nil {
 		return err
 	}
@@ -124,14 +124,14 @@ func repl(jsonOut bool) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	rcx := &replCtx{
-		rt:     rt,
+	mgr := &SessionManager{
+		app:    app,
 		a:      a,
 		proj:   proj,
 		open:   map[string]*session.Session{sess.ID: sess},
 		active: sess,
 	}
-	defer rcx.closeAll()
+	defer mgr.closeAll()
 
 	var renderer output
 	if jsonOut {
@@ -139,14 +139,14 @@ func repl(jsonOut bool) error {
 	} else {
 		renderer = newTextRenderer(true)
 	}
-	return runREPL(ctx, rcx, renderer)
+	return runREPL(ctx, mgr, renderer)
 }
 
-// replCtx 是 REPL 的会话管理器：开着的会话注册表 + 当前激活会话。
+// SessionManager 是 REPL 的会话管理器：开着的会话注册表 + 当前激活会话。
 // 无状态 agent（ADR-026）：切换会话 = 换 active（下一轮取新 rc 自动生效）；
 // 并行 agent = 每 goroutine 各取一个 rc（阶段五）。
-type replCtx struct {
-	rt     *Runtime
+type SessionManager struct {
+	app    *App
 	a      *agent.Agent
 	proj   *session.Project
 	open   map[string]*session.Session
@@ -154,19 +154,19 @@ type replCtx struct {
 }
 
 // closeAll flush 所有开着的会话 transcript。
-func (c *replCtx) closeAll() {
-	for _, s := range c.open {
+func (m *SessionManager) closeAll() {
+	for _, s := range m.open {
 		_ = s.Close()
 	}
 }
 
 // switchTo 打开（若未开）并切换到指定会话 id（进程内 resume 切换）。
-func (c *replCtx) switchTo(id string) error {
-	if s, ok := c.open[id]; ok {
-		c.active = s
+func (m *SessionManager) switchTo(id string) error {
+	if s, ok := m.open[id]; ok {
+		m.active = s
 		return nil
 	}
-	list, err := c.proj.Sessions()
+	list, err := m.proj.Sessions()
 	if err != nil {
 		return err
 	}
@@ -182,22 +182,22 @@ func (c *replCtx) switchTo(id string) error {
 	if !found {
 		return fmt.Errorf("会话 %q 不存在（`harness sessions` 查看）", id)
 	}
-	s, err := c.proj.Resume(info)
+	s, err := m.proj.Resume(info)
 	if err != nil {
 		return err
 	}
-	c.open[id] = s
-	c.active = s
+	m.open[id] = s
+	m.active = s
 	return nil
 }
 
 // switchLast 打开最新会话并切换。
-func (c *replCtx) switchLast() error {
-	info, ok := c.proj.Last()
+func (m *SessionManager) switchLast() error {
+	info, ok := m.proj.Last()
 	if !ok {
 		return fmt.Errorf("本项目暂无会话（先 `harness run`）")
 	}
-	return c.switchTo(info.ID)
+	return m.switchTo(info.ID)
 }
 
 // replCommand 是一条 REPL 命令（/switch /model /effort）。
@@ -216,29 +216,29 @@ func parseCommand(line string) (replCommand, bool) {
 }
 
 // handleCommand 执行一条 REPL 命令。
-func (c *replCtx) handleCommand(cmd replCommand) error {
+func (m *SessionManager) handleCommand(cmd replCommand) error {
 	switch cmd.name {
 	case "switch":
 		if cmd.arg == "--last" {
-			return c.switchLast()
+			return m.switchLast()
 		}
 		if cmd.arg == "" {
 			return fmt.Errorf("usage: /switch <id> 或 /switch --last（`harness sessions` 查看 id）")
 		}
-		return c.switchTo(cmd.arg)
+		return m.switchTo(cmd.arg)
 	case "model":
 		if cmd.arg == "" {
 			return fmt.Errorf("usage: /model <name>")
 		}
-		res, err := provider.Resolve(c.rt.Config, cmd.arg)
+		res, err := provider.Resolve(m.app.Config, cmd.arg)
 		if err != nil {
 			return err
 		}
-		if err := c.active.SetModel(res.Model); err != nil {
+		if err := m.active.SetModel(res.Model); err != nil {
 			return err
 		}
 		// 新模型重置档位为模型默认（保证 effort 在新模型 efforts 内）。
-		if err := c.active.SetThinkingEffort(res.ThinkingEffort); err != nil {
+		if err := m.active.SetThinkingEffort(res.ThinkingEffort); err != nil {
 			return err
 		}
 		fmt.Printf("已切换模型 %s（effort %s）\n", res.Model, res.ThinkingEffort)
@@ -247,14 +247,14 @@ func (c *replCtx) handleCommand(cmd replCommand) error {
 		if cmd.arg == "" {
 			return fmt.Errorf("usage: /effort <low|high|max>")
 		}
-		cur, err := provider.Resolve(c.rt.Config, c.active.Model())
+		cur, err := provider.Resolve(m.app.Config, m.active.Model())
 		if err != nil {
 			return err
 		}
 		if !slices.Contains(cur.ThinkingEfforts, cmd.arg) {
 			return fmt.Errorf("模型 %q 不支持 effort %q（支持: %v）", cur.Model, cmd.arg, cur.ThinkingEfforts)
 		}
-		if err := c.active.SetThinkingEffort(cmd.arg); err != nil {
+		if err := m.active.SetThinkingEffort(cmd.arg); err != nil {
 			return err
 		}
 		fmt.Printf("已切换 effort %s\n", cmd.arg)
@@ -266,10 +266,10 @@ func (c *replCtx) handleCommand(cmd replCommand) error {
 
 // runREPL 是交互式 REPL 循环（`harness` / resume 复用）：每轮读输入 →
 // 命令处理或 AddUser + agent.Run（渲染 + 落盘双转发）→ 继续。
-func runREPL(ctx context.Context, c *replCtx, renderer output) error {
+func runREPL(ctx context.Context, m *SessionManager, renderer output) error {
 	reader := bufio.NewReader(os.Stdin)
 	fmt.Println("harness 交互式模式（exit/quit 退出；/switch <id> /model <name> /effort <level>）")
-	renderer.start(c.active.Thread())
+	renderer.start(m.active.Conversation())
 	for {
 		fmt.Print("> ")
 		line, err := reader.ReadString('\n')
@@ -285,19 +285,19 @@ func runREPL(ctx context.Context, c *replCtx, renderer output) error {
 			return nil
 		}
 		if cmd, ok := parseCommand(line); ok {
-			if err := c.handleCommand(cmd); err != nil {
+			if err := m.handleCommand(cmd); err != nil {
 				fmt.Fprintf(os.Stderr, "harness: %v\n", err)
 			}
 			continue
 		}
 		// 每轮新建 rc（无状态 agent：会话状态经 rc 传入；切换会话下一轮自动生效）。
-		rc := c.active.RuntimeContext()
-		c.active.AddUser(line)
+		rc := m.active.RuntimeContext()
+		m.active.AddUser(line)
 		onEvent := func(ev agent.Event) {
 			renderer.event(ev)
-			c.active.OnAgentEvent(ev)
+			m.active.OnAgentEvent(ev)
 		}
-		if err := c.a.Run(ctx, rc, onEvent); err != nil {
+		if err := m.a.Run(ctx, rc, onEvent); err != nil {
 			fmt.Fprintf(os.Stderr, "harness: %v\n", err)
 		}
 	}
@@ -346,11 +346,11 @@ func resumeCmd(args []string, jsonOut bool) error {
 		return err
 	}
 
-	rt, err := defaultRuntime()
+	app, err := defaultApp()
 	if err != nil {
 		return err
 	}
-	a, err := rt.buildAgent()
+	a, err := app.buildAgent()
 	if err != nil {
 		return err
 	}
@@ -358,14 +358,14 @@ func resumeCmd(args []string, jsonOut bool) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	rcx := &replCtx{
-		rt:     rt,
+	mgr := &SessionManager{
+		app:    app,
 		a:      a,
 		proj:   proj,
 		open:   map[string]*session.Session{sess.ID: sess},
 		active: sess,
 	}
-	defer rcx.closeAll()
+	defer mgr.closeAll()
 
 	var renderer output
 	if jsonOut {
@@ -373,7 +373,7 @@ func resumeCmd(args []string, jsonOut bool) error {
 	} else {
 		renderer = newTextRenderer(true)
 	}
-	return runREPL(ctx, rcx, renderer)
+	return runREPL(ctx, mgr, renderer)
 }
 
 // sessionsCmd 列出当前项目的会话。

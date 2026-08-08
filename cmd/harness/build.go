@@ -17,8 +17,8 @@ import (
 // agent 完全无状态：不持有会话/模型/档位，per-call 一切经 rc 传入（rc.Messages/
 // rc.Model/rc.ThinkingEffort/rc.ThinkingEnabled）。因此一个 agent 可被多个
 // goroutine 并发 Run（并行 agent 架构可扩展，阶段五落地）。
-func (r *Runtime) buildAgent() (*agent.Agent, error) {
-	client, err := provider.NewClient(r.Resolved)
+func (app *App) buildAgent() (*agent.Agent, error) {
+	client, err := provider.NewClient(app.Resolved)
 	if err != nil {
 		return nil, fmt.Errorf("provider: %w", err)
 	}
@@ -36,7 +36,7 @@ func (r *Runtime) buildAgent() (*agent.Agent, error) {
 		session.SessionMiddleware{},
 	)
 
-	a := agent.New(client, r.Resolved.Model)
+	a := agent.New(client, app.Resolved.Model)
 	a.SetTools(reg)
 	a.SetMiddleware(mw)
 	return a, nil
@@ -44,14 +44,14 @@ func (r *Runtime) buildAgent() (*agent.Agent, error) {
 
 // resolveFlags 校验 CLI 运行时覆盖（--model / --effort / --thinking / --no-thinking），
 // 返回新会话的默认 Resolved（模型 + 默认档位 + efforts）；无 flags 时返回默认。
-func (r *Runtime) resolveFlags(modelFlag, effortFlag string, thinking, noThinking bool) (*provider.Resolved, error) {
+func (app *App) resolveFlags(modelFlag, effortFlag string, thinking, noThinking bool) (*provider.Resolved, error) {
 	if thinking && noThinking {
 		return nil, fmt.Errorf("--thinking and --no-thinking are mutually exclusive")
 	}
-	res := r.Resolved
+	res := app.Resolved
 	if modelFlag != "" {
 		var err error
-		res, err = provider.Resolve(r.Config, modelFlag)
+		res, err = provider.Resolve(app.Config, modelFlag)
 		if err != nil {
 			return nil, fmt.Errorf("resolve: %w", err)
 		}

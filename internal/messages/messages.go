@@ -57,24 +57,24 @@ type ToolResult struct {
 	Content string `json:"content"`
 }
 
-// Thread 是消息序列，也是会话 JSONL 文件的存储单元。
-type Thread struct {
+// Conversation 是消息序列，也是会话 JSONL 文件的存储单元。
+type Conversation struct {
 	ID        string     `json:"id"`
 	CreatedAt string     `json:"created_at"`
 	Messages  []*Message `json:"messages"`
 }
 
-// NewThread 创建一个带新 ID 与当前 UTC 时间戳的 Thread。
-func NewThread() *Thread {
-	return &Thread{
-		ID:        fmt.Sprintf("thr_%d", time.Now().UnixNano()),
+// NewConversation 创建一个带新 ID 与当前 UTC 时间戳的 Conversation。
+func NewConversation() *Conversation {
+	return &Conversation{
+		ID:        fmt.Sprintf("conv_%d", time.Now().UnixNano()),
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 		Messages:  []*Message{},
 	}
 }
 
 // Add 追加一条消息并返回它。
-func (t *Thread) Add(m *Message) *Message {
+func (t *Conversation) Add(m *Message) *Message {
 	t.Messages = append(t.Messages, m)
 	return m
 }

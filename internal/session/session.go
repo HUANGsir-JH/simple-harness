@@ -17,16 +17,16 @@ import (
 // FileAgentState 是会话目录下的 state 文件名。
 const FileAgentState = "agentstate.json"
 
-// Session 是一个会话：thread + AgentState + 异步 transcript writer。
+// Session 是一个会话：conversation + AgentState + 异步 transcript writer。
 // 目录布局见 Store 注释（session 目录下 historys/ + agentstate.json + plans/）。
 type Session struct {
-	ID         string
-	dir        string
-	historyDir string
-	statePath  string
-	thread     *messages.Thread
-	state      *agentstate.AgentState
-	writer     *TranscriptWriter
+	ID           string
+	dir          string
+	historyDir   string
+	statePath    string
+	conversation *messages.Conversation
+	state        *agentstate.AgentState
+	writer       *TranscriptWriter
 }
 
 // Create 新建一个会话：建目录、写 meta 首行、初始化 agentstate.json。
@@ -50,24 +50,24 @@ func (p *Project) Create(model string) (*Session, error) {
 		return nil, err
 	}
 	s := &Session{
-		ID:         sid,
-		dir:        dir,
-		historyDir: historyDir,
-		statePath:  statePath,
-		thread:     messages.NewThread(),
-		state:      st,
-		writer:     w,
+		ID:           sid,
+		dir:          dir,
+		historyDir:   historyDir,
+		statePath:    statePath,
+		conversation: messages.NewConversation(),
+		state:        st,
+		writer:       w,
 	}
 	// meta 首行（会话元数据，resume 可读）。
 	w.Write(Line{Type: "meta", SessionID: sid, CWD: p.Path, Model: model, CreatedAt: st.CreatedAt})
 	return s, nil
 }
 
-// Resume 加载已有会话：重建 thread + 恢复 state + 打开最新 transcript 继续追加。
+// Resume 加载已有会话：重建 conversation + 恢复 state + 打开最新 transcript 继续追加。
 func (p *Project) Resume(info SessionInfo) (*Session, error) {
 	historyDir := filepath.Join(info.Path, DirHistorys)
 	statePath := filepath.Join(info.Path, FileAgentState)
-	th, err := LoadThread(historyDir)
+	conv, err := LoadConversation(historyDir)
 	if err != nil {
 		return nil, err
 	}
@@ -80,21 +80,21 @@ func (p *Project) Resume(info SessionInfo) (*Session, error) {
 		return nil, err
 	}
 	return &Session{
-		ID:         info.ID,
-		dir:        info.Path,
-		historyDir: historyDir,
-		statePath:  statePath,
-		thread:     th,
-		state:      st,
-		writer:     w,
+		ID:           info.ID,
+		dir:          info.Path,
+		historyDir:   historyDir,
+		statePath:    statePath,
+		conversation: conv,
+		state:        st,
+		writer:       w,
 	}, nil
 }
 
 // Dir 返回会话目录。
 func (s *Session) Dir() string { return s.dir }
 
-// Thread 返回会话的消息序列（resume 后含历史）。
-func (s *Session) Thread() *messages.Thread { return s.thread }
+// Conversation 返回会话的消息序列（resume 后含历史）。
+func (s *Session) Conversation() *messages.Conversation { return s.conversation }
 
 // State 返回 AgentState（经 rc.State 注入 agent；SessionMiddleware after 落盘）。
 func (s *Session) State() *agentstate.AgentState { return s.state }
@@ -111,7 +111,7 @@ func (s *Session) Model() string { return s.state.Model }
 func (s *Session) RuntimeContext() *middleware.RuntimeContext {
 	rc := middleware.NewRuntimeContext()
 	rc.SessionID = s.ID
-	rc.Messages = s.thread
+	rc.Messages = s.conversation
 	rc.State = s.state
 	rc.StatePath = s.statePath
 	rc.Model = s.state.Model
@@ -147,17 +147,17 @@ func (s *Session) SetThinkingEffort(effort string) error {
 	return agentstate.SaveFile(s.statePath, s.state)
 }
 
-// AddUser 添加一条用户消息：写入 thread（模型可见）并记录 transcript（user 行）。
+// AddUser 添加一条用户消息：写入 conversation（模型可见）并记录 transcript（user 行）。
 func (s *Session) AddUser(content string) {
 	msg := messages.NewUserMessage(content)
-	s.thread.Add(msg)
+	s.conversation.Add(msg)
 	s.WriteUser(msg)
 }
 
 // Writer 返回 transcript writer（CLI 转发 agent 事件用）。
 func (s *Session) Writer() *TranscriptWriter { return s.writer }
 
-// WriteUser 记录一条用户消息（写 user 行）。msg 须先 Add 进 thread。
+// WriteUser 记录一条用户消息（写 user 行）。msg 须先 Add 进 conversation。
 func (s *Session) WriteUser(msg *messages.Message) {
 	s.writer.Write(Line{Type: "user", MsgID: msg.ID, Content: msg.Content})
 }

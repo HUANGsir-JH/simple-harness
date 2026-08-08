@@ -14,7 +14,7 @@ func main() {
 	}
 }
 
-// run 分发子命令。配置加载不在本层：需要配置的命令经 defaultRuntime/loadRuntime
+// run 分发子命令。配置加载不在本层：需要配置的命令经 defaultApp/loadApp
 // 惰性初始化一次（ADR-026，见 runtime.go）。
 func run(args []string) error {
 	// 在子命令分发前预先扫描全局 --json 参数，使

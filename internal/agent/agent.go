@@ -54,8 +54,8 @@ type Event struct {
 // OnEvent 是回合级事件回调（nil 允许，渲染器/测试订阅）。
 type OnEvent func(Event)
 
-// Agent 驱动一个 thread 的完整 ReAct loop。仅持有不可变配置；
-// per-call 状态在 *middleware.RuntimeContext 与 thread 中。
+// Agent 驱动一个 conversation 的完整 ReAct loop。仅持有不可变配置；
+// per-call 状态在 *middleware.RuntimeContext 与 conversation 中。
 type Agent struct {
 	client       provider.Client
 	model        string
@@ -95,7 +95,7 @@ func (a *Agent) SetInstructions(s string) { a.instructions = s }
 // Run 跑一个完整回合：多轮 采样 → 工具执行 → 回填，直到模型不再请求工具。
 // 消息序列从 rc.Messages 读取并在其上追加（assistant/tool_result）——agent 完全
 // 无状态（ADR-026），不持有会话；每次调用传入独立 rc（切换会话/并行安全）。
-// 事件通过 onEvent 实时回调；thread 被追加助手/工具结果消息（副作用）。
+// 事件通过 onEvent 实时回调；conversation 被追加助手/工具结果消息（副作用）。
 // 错误二分类：工具错误 RespondToModel → 结果回填、循环继续；Fatal → 终止。
 func (a *Agent) Run(ctx context.Context, rc *middleware.RuntimeContext, onEvent OnEvent) error {
 	if rc == nil {
@@ -104,7 +104,7 @@ func (a *Agent) Run(ctx context.Context, rc *middleware.RuntimeContext, onEvent 
 	if rc.Messages == nil {
 		return fmt.Errorf("agent: rc.Messages is nil")
 	}
-	thread := rc.Messages
+	conversation := rc.Messages
 	emit := func(e Event) {
 		if onEvent != nil {
 			onEvent(e)
@@ -133,15 +133,15 @@ func (a *Agent) Run(ctx context.Context, rc *middleware.RuntimeContext, onEvent 
 
 		for {
 			result = sampleResult{}
-			if err := reasoning(ctx, rc, middleware.ReasoningInput{Messages: thread.Messages, Tools: a.tools.Specs()}); err != nil {
+			if err := reasoning(ctx, rc, middleware.ReasoningInput{Messages: conversation.Messages, Tools: a.tools.Specs()}); err != nil {
 				emit(Event{Type: EventError, Err: err})
 				return err
 			}
-			thread.Add(result.assistant)
+			conversation.Add(result.assistant)
 			if len(result.toolCalls) == 0 {
 				break // 无工具调用 → 回合结束
 			}
-			if err := a.runToolBatch(ctx, rc, result.toolCalls, thread, emit); err != nil {
+			if err := a.runToolBatch(ctx, rc, result.toolCalls, conversation, emit); err != nil {
 				emit(Event{Type: EventError, Err: err})
 				return err
 			}
@@ -149,7 +149,7 @@ func (a *Agent) Run(ctx context.Context, rc *middleware.RuntimeContext, onEvent 
 		emit(Event{Type: EventTurnDone})
 		return nil
 	})
-	return wrapped(ctx, rc, middleware.AgentInput{Messages: thread.Messages})
+	return wrapped(ctx, rc, middleware.AgentInput{Messages: conversation.Messages})
 }
 
 // sampleResult 是一次采样轮的结果。
@@ -244,8 +244,8 @@ func (a *Agent) sample(ctx context.Context, rc *middleware.RuntimeContext, in mi
 }
 
 // runToolBatch 并发执行一批工具调用（onToolCall 包裹整批，onActing 包裹单个），
-// 结果按 call 顺序回填 thread。首个 Fatal 错误取消整批并终止。
-func (a *Agent) runToolBatch(ctx context.Context, rc *middleware.RuntimeContext, calls []*messages.ToolCall, thread *messages.Thread, emit OnEvent) error {
+// 结果按 call 顺序回填 conversation。首个 Fatal 错误取消整批并终止。
+func (a *Agent) runToolBatch(ctx context.Context, rc *middleware.RuntimeContext, calls []*messages.ToolCall, conversation *messages.Conversation, emit OnEvent) error {
 	// 结果按 callID 收集（并发安全），回填时按 calls 顺序。
 	var resultsMu sync.Mutex
 	results := map[string]*messages.ToolResult{}
@@ -315,7 +315,7 @@ func (a *Agent) runToolBatch(ctx context.Context, rc *middleware.RuntimeContext,
 			}
 		}
 		if len(blocks) > 0 {
-			thread.Add(messages.NewToolResultsMessage(blocks))
+			conversation.Add(messages.NewToolResultsMessage(blocks))
 		}
 		return firstErr
 	})

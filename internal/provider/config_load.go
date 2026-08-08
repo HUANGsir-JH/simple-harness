@@ -9,7 +9,7 @@ import (
 )
 
 // LoadConfig 从第一个存在的配置文件读取并校验（ADR-026：配置加载统一收敛到
-// provider 包，CLI 各命令经 Runtime 复用一份，不重复读盘）。
+// provider 包，CLI 各命令经 App 复用一份，不重复读盘）。
 //
 // 查找顺序：显式路径（若指定）→ 项目级 config.local.yaml → ~/.harness/config.yaml。
 // API key 可放在配置文件（api_key）或环境变量（env_key / 默认变量名）中。

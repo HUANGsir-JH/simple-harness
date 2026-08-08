@@ -118,18 +118,18 @@ func TestNewSegment(t *testing.T) {
 		t.Fatalf("应有两个文件, got %d", len(entries))
 	}
 	// Load 只读最新（history-2）：user(摘要) + assistant(after)。
-	th, err := LoadThread(dir)
+	conv, err := LoadConversation(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(th.Messages) != 2 {
-		t.Fatalf("thread 消息数=%d", len(th.Messages))
+	if len(conv.Messages) != 2 {
+		t.Fatalf("conversation 消息数=%d", len(conv.Messages))
 	}
-	if th.Messages[0].Content != "摘要" {
-		t.Errorf("seed 摘要缺失: %q", th.Messages[0].Content)
+	if conv.Messages[0].Content != "摘要" {
+		t.Errorf("seed 摘要缺失: %q", conv.Messages[0].Content)
 	}
-	if th.Messages[1].Content != "after" {
-		t.Errorf("新段内容错误: %q", th.Messages[1].Content)
+	if conv.Messages[1].Content != "after" {
+		t.Errorf("新段内容错误: %q", conv.Messages[1].Content)
 	}
 }
 
@@ -151,25 +151,25 @@ func TestLoadReconstruct(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	th, err := LoadThread(dir)
+	conv, err := LoadConversation(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(th.Messages) != 3 {
-		t.Fatalf("消息数=%d, want 3 (user, assistant, tool)", len(th.Messages))
+	if len(conv.Messages) != 3 {
+		t.Fatalf("消息数=%d, want 3 (user, assistant, tool)", len(conv.Messages))
 	}
-	u := th.Messages[0]
+	u := conv.Messages[0]
 	if u.Role != messages.RoleUser || u.Content != "hi" {
 		t.Errorf("user 重建: %+v", u)
 	}
-	a := th.Messages[1]
+	a := conv.Messages[1]
 	if a.Role != messages.RoleAssistant || a.Thinking != "think" || a.Content != "answer" {
 		t.Errorf("assistant 重建: %+v", a)
 	}
 	if len(a.ToolCalls) != 1 || a.ToolCalls[0].ID != "c1" || string(a.ToolCalls[0].Args) != `{"path":"a"}` {
 		t.Errorf("tool_calls 重建: %+v", a.ToolCalls)
 	}
-	tr := th.Messages[2]
+	tr := conv.Messages[2]
 	if tr.Role != messages.RoleTool || len(tr.ToolResults) != 1 || tr.ToolResults[0].ToolCallID != "c1" || tr.ToolResults[0].Content != "file" {
 		t.Errorf("tool 消息重建: %+v", tr.ToolResults)
 	}

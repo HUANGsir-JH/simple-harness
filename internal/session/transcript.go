@@ -187,9 +187,9 @@ func parseHistoryName(name string) (int, bool) {
 	return n, err == nil
 }
 
-// LoadThread 读取 historys 目录下最大序号文件，按 ordinal 逐行重建 thread。
+// LoadConversation 读取 historys 目录下最大序号文件，按 ordinal 逐行重建 conversation。
 // 最新文件即有效历史（压缩切分后新文件以摘要+保留开头；旧文件纯审计）。
-func LoadThread(historyDir string) (*messages.Thread, error) {
+func LoadConversation(historyDir string) (*messages.Conversation, error) {
 	seg := currentSegment(historyDir)
 	if seg == 0 {
 		return nil, fmt.Errorf("session: no transcript found in %s", historyDir)
@@ -197,14 +197,14 @@ func LoadThread(historyDir string) (*messages.Thread, error) {
 	return loadHistoryFile(historyPath(historyDir, seg))
 }
 
-func loadHistoryFile(path string) (*messages.Thread, error) {
+func loadHistoryFile(path string) (*messages.Conversation, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("session: open %s: %w", path, err)
 	}
 	defer f.Close()
 
-	th := messages.NewThread()
+	conv := messages.NewConversation()
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	var cur *messages.Message // 当前 assistant（同 msg_id 累积 thinking/text/tool_use）
@@ -216,19 +216,19 @@ func loadHistoryFile(path string) (*messages.Thread, error) {
 		switch line.Type {
 		case "user":
 			cur = nil
-			th.Add(&messages.Message{ID: line.MsgID, Role: messages.RoleUser, Content: line.Content})
+			conv.Add(&messages.Message{ID: line.MsgID, Role: messages.RoleUser, Content: line.Content})
 		case "thinking":
-			cur = ensureAssistant(th, cur, line.MsgID)
+			cur = ensureAssistant(conv, cur, line.MsgID)
 			cur.Thinking += line.Text
 		case "text":
-			cur = ensureAssistant(th, cur, line.MsgID)
+			cur = ensureAssistant(conv, cur, line.MsgID)
 			cur.Content += line.Text
 		case "tool_use":
-			cur = ensureAssistant(th, cur, line.MsgID)
+			cur = ensureAssistant(conv, cur, line.MsgID)
 			cur.ToolCalls = append(cur.ToolCalls, messages.ToolCall{ID: line.CallID, Name: line.Name, Args: line.Args})
 		case "tool_result":
 			cur = nil
-			appendToolResult(th, line)
+			appendToolResult(conv, line)
 		case "meta", "turn_start", "turn_end", segMarker:
 			// 无消息语义
 		}
@@ -236,29 +236,29 @@ func loadHistoryFile(path string) (*messages.Thread, error) {
 	if err := sc.Err(); err != nil {
 		return nil, err
 	}
-	return th, nil
+	return conv, nil
 }
 
 // ensureAssistant 返回消息 id 对应的 assistant 消息；若无则新建追加。
 // thinking/text/tool_use 同属一个 assistant（同一次采样轮）。
-func ensureAssistant(th *messages.Thread, cur *messages.Message, msgID string) *messages.Message {
+func ensureAssistant(conv *messages.Conversation, cur *messages.Message, msgID string) *messages.Message {
 	if cur != nil && cur.ID == msgID {
 		return cur
 	}
 	cur = &messages.Message{ID: msgID, Role: messages.RoleAssistant}
-	th.Add(cur)
+	conv.Add(cur)
 	return cur
 }
 
 // appendToolResult 追加 tool_result 块：与上一条 tool 消息合并（多块，满足
 // anthropic 紧邻要求），否则新建 tool 消息。
-func appendToolResult(th *messages.Thread, line Line) {
+func appendToolResult(conv *messages.Conversation, line Line) {
 	succ := line.Success != nil && *line.Success
 	block := messages.ToolResultBlock{ToolCallID: line.CallID, Success: succ, Content: line.Content}
-	if n := len(th.Messages); n > 0 && th.Messages[n-1].Role == messages.RoleTool {
-		last := th.Messages[n-1]
+	if n := len(conv.Messages); n > 0 && conv.Messages[n-1].Role == messages.RoleTool {
+		last := conv.Messages[n-1]
 		last.ToolResults = append(last.ToolResults, block)
 		return
 	}
-	th.Add(&messages.Message{Role: messages.RoleTool, ToolResults: []messages.ToolResultBlock{block}})
+	conv.Add(&messages.Message{Role: messages.RoleTool, ToolResults: []messages.ToolResultBlock{block}})
 }

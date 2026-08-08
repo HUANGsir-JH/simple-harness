@@ -7,11 +7,11 @@
 
 ```mermaid
 flowchart TD
-    CMD[cmd/harness<br/>Runtime / replCtx<br/>CLI 装配 + REPL]
+    CMD[cmd/harness<br/>App / SessionManager<br/>CLI 装配 + REPL]
     AG[internal/agent<br/>Agent 无状态 ReAct loop]
     MW[internal/middleware<br/>RuntimeContext / Chain / 6 hook]
     PV[internal/provider<br/>Config / Resolved / Client / Event]
-    MSG[internal/messages<br/>Message / Thread 统一模型]
+    MSG[internal/messages<br/>Message / Conversation 统一模型]
     AST[internal/agentstate<br/>AgentState / TodoItem]
     SES[internal/session<br/>Store / Project / Session / Writer]
     TL[internal/tools<br/>Tool / Registry]
@@ -35,7 +35,7 @@ flowchart TD
 ```mermaid
 sequenceDiagram
     autonumber
-    participant CLI as cmd/harness (Runtime)
+    participant CLI as cmd/harness (App)
     participant SES as session.Session
     participant RC as middleware.RuntimeContext
     participant AG as agent.Agent
@@ -58,14 +58,14 @@ sequenceDiagram
             AG->>MW: WrapToolCall → WrapActing
             MW->>TL: Tool.Handle(ctx, rc, callID, args)
             TL-->>AG: ToolResult（回填 + emit）
-            AG->>RC: thread.Add(assistant / tool_result)
+            AG->>RC: conversation.Add(assistant / tool_result)
         end
     end
     MW->>SES: SessionMiddleware after：SaveFile(rc.State) → agentstate.json
     CLI->>SES: Close() → TranscriptWriter flush
 ```
 
-**要点**：agent 完全无状态（ADR-026）——每次 Run 传入独立 `rc`，`rc` 引用会话的 thread/state；切换会话 = 换 active 再取新 `rc`，并行 = 每 goroutine 一个 `rc`。
+**要点**：agent 完全无状态（ADR-026）——每次 Run 传入独立 `rc`，`rc` 引用会话的 conversation/state；切换会话 = 换 active 再取新 `rc`，并行 = 每 goroutine 一个 `rc`。
 
 ## 三、核心数据结构
 
@@ -74,7 +74,7 @@ sequenceDiagram
 ```mermaid
 classDiagram
     direction LR
-    class Thread {
+    class Conversation {
         +string ID
         +string CreatedAt
         +[]*Message Messages
@@ -128,7 +128,7 @@ classDiagram
         -string dir
         -string historyDir
         -string statePath
-        -*Thread thread
+        -*Conversation conversation
         -*AgentState state
         -*TranscriptWriter writer
         +RuntimeContext()
@@ -149,13 +149,13 @@ classDiagram
         +Sessions()
     }
 
-    Thread "1" *-- "many" Message
+    Conversation "1" *-- "many" Message
     Message "1" *-- "many" ToolCall
     Message "1" *-- "many" ToolResultBlock
     ToolCall "1" o-- "0..1" ToolResult
     AgentState "1" *-- "many" TodoItem
     Session "1" *-- "1" AgentState : 持久化快照
-    Session "1" *-- "1" Thread : 消息流
+    Session "1" *-- "1" Conversation : 消息流
     Store "1" *-- "many" Project
     Project "1" *-- "many" Session
 ```
@@ -217,7 +217,7 @@ classDiagram
     Request ..> Model : per-call 覆盖
 ```
 
-**配置链路**：`provider.LoadConfig` → `Config` → `Resolve` → `Resolved`（默认模型，`Runtime.Resolved` 缓存）→ `NewClient`。per-call 覆盖（ADR-026）：`Request.Model/ThinkingEnabled/ThinkingEffort`，`nil/空 = 继承 client 默认`。
+**配置链路**：`provider.LoadConfig` → `Config` → `Resolve` → `Resolved`（默认模型，`App.Resolved` 缓存）→ `NewClient`。per-call 覆盖（ADR-026）：`Request.Model/ThinkingEnabled/ThinkingEffort`，`nil/空 = 继承 client 默认`。
 
 ### 3.3 运行时上下文与中间件（middleware）
 
@@ -226,7 +226,7 @@ classDiagram
     direction LR
     class RuntimeContext {
         +string SessionID
-        +*Thread Messages
+        +*Conversation Messages
         +*AgentState State
         +string StatePath
         +string Model
@@ -358,20 +358,20 @@ classDiagram
 
 `Line.Type` 取值：`meta | user | thinking | text | tool_use | tool_result | turn_start | turn_end`。`MsgID` 关联 thinking/text/tool_use 归属的 assistant 消息。
 
-**resume 语义**：只读最大序号文件（`history-<n>.jsonl`），按 ordinal 逐行重建 thread（thinking 入 `Message.Thinking`，tool_result 合并）；`agentstate.json` 恢复非消息状态（含模型/档位）。
+**resume 语义**：只读最大序号文件（`history-<n>.jsonl`），按 ordinal 逐行重建 conversation（thinking 入 `Message.Thinking`，tool_result 合并）；`agentstate.json` 恢复非消息状态（含模型/档位）。
 
 ## 四、CLI 层（cmd/harness）
 
 ```mermaid
 classDiagram
-    class Runtime {
+    class App {
         +Config Config
         +*Resolved Resolved
         +buildAgent()
         +resolveFlags(...)
     }
-    class replCtx {
-        -*Runtime rt
+    class SessionManager {
+        -*App app
         -*Agent a
         -*Project proj
         -map[string]*Session open
@@ -386,13 +386,13 @@ classDiagram
         +event(ev)
     }
 
-    Runtime "1" *-- "1" Config
-    Runtime "1" *-- "1" Resolved
-    replCtx "1" *-- "1" Runtime
-    replCtx "1" *-- "1" Agent
-    replCtx "1" *-- "1" Project
-    replCtx "1" *-- "many" Session : open 注册表
-    replCtx "1" *-- "1" Session : active 激活会话
+    App "1" *-- "1" Config
+    App "1" *-- "1" Resolved
+    SessionManager "1" *-- "1" App
+    SessionManager "1" *-- "1" Agent
+    SessionManager "1" *-- "1" Project
+    SessionManager "1" *-- "many" Session : open 注册表
+    SessionManager "1" *-- "1" Session : active 激活会话
 ```
 
 **REPL 运行时切换**：`/switch <id>|--last`（换 `active`，未开则 Resume 入注册表）、`/model <name>`、`/effort <level>`（都落 `AgentState` 立即持久化）。
@@ -401,10 +401,10 @@ classDiagram
 
 | 关系 | 说明 |
 |---|---|
-| `Agent.Run` ↔ `rc` | agent 无状态，每次 Run 一个独立 rc；rc 引用会话的 thread/state（`Session.RuntimeContext()` 每轮新建） |
+| `Agent.Run` ↔ `rc` | agent 无状态，每次 Run 一个独立 rc；rc 引用会话的 conversation/state（`Session.RuntimeContext()` 每轮新建） |
 | `rc` ↔ `SessionMiddleware` | 无状态中间件从 `rc.StatePath` 读 load / 写 save（共享 chain 可并发） |
 | `Request` ↔ `Model/Thinking` | per-call 覆盖：`Request.Model/ThinkingEnabled/ThinkingEffort`，三态（nil/空 = client 默认） |
 | `Message.Thinking` | 存审计但不重放（provider 重放 assistant 时剥离；thinking-only 空消息跳过） |
 | `transcript` ↔ `AgentState` | 双轨：消息流（块级 Line） vs 非消息状态（JSON 快照），resume 两者重建 |
-| `Runtime` ↔ `Config/Resolved` | 配置统一入口：惰性单例缓存默认模型，`--config` 显式路径单独加载 |
-| `Thread` ↔ `Message` ↔ `ToolResult` | 一条 tool_result 消息可合并多块（满足 anthropic 紧邻要求，ADR-024） |
+| `App` ↔ `Config/Resolved` | 配置统一入口：惰性单例缓存默认模型，`--config` 显式路径单独加载 |
+| `Conversation` ↔ `Message` ↔ `ToolResult` | 一条 tool_result 消息可合并多块（满足 anthropic 紧邻要求，ADR-024） |

@@ -73,16 +73,16 @@ func (r *eventRecorder) has(et EventType) bool {
 	return false
 }
 
-func newThread() *messages.Thread {
-	th := messages.NewThread()
-	th.Add(messages.NewUserMessage("hi"))
-	return th
+func newConversation() *messages.Conversation {
+	conv := messages.NewConversation()
+	conv.Add(messages.NewUserMessage("hi"))
+	return conv
 }
 
 // rcFor 构造带消息序列的 per-call 上下文（无状态 agent Run 测试用，ADR-026）。
-func rcFor(th *messages.Thread) *middleware.RuntimeContext {
+func rcFor(conv *messages.Conversation) *middleware.RuntimeContext {
 	rc := middleware.NewRuntimeContext()
-	rc.Messages = th
+	rc.Messages = conv
 	return rc
 }
 
@@ -94,28 +94,28 @@ func noToolsAgent(fc *provider.FakeClient) *Agent {
 
 // --- 测试 -------------------------------------------------------------------
 
-// TestRunSingleTurn 验证无工具单轮：turn_start → text → turn_done，assistant 入 thread。
+// TestRunSingleTurn 验证无工具单轮：turn_start → text → turn_done，assistant 入 conversation。
 func TestRunSingleTurn(t *testing.T) {
 	fc := &provider.FakeClient{StreamFn: func(ctx context.Context, req provider.Request) (provider.EventStream, error) {
 		return textStream("Hel", "lo"), nil
 	}}
 	a := noToolsAgent(fc)
-	th := newThread()
+	conv := newConversation()
 	rec := &eventRecorder{}
 
-	if err := a.Run(context.Background(), rcFor(th), rec.on); err != nil {
+	if err := a.Run(context.Background(), rcFor(conv), rec.on); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if rec.events[0].Type != EventTurnStart || rec.events[len(rec.events)-1].Type != EventTurnDone {
 		t.Errorf("边界事件: got %v", rec.types())
 	}
-	if len(th.Messages) != 2 || th.Messages[1].Role != messages.RoleAssistant {
-		t.Fatalf("thread: got %d messages", len(th.Messages))
+	if len(conv.Messages) != 2 || conv.Messages[1].Role != messages.RoleAssistant {
+		t.Fatalf("conversation: got %d messages", len(conv.Messages))
 	}
-	if th.Messages[1].Content != "Hello" {
-		t.Errorf("assistant content: got %q", th.Messages[1].Content)
+	if conv.Messages[1].Content != "Hello" {
+		t.Errorf("assistant content: got %q", conv.Messages[1].Content)
 	}
-	// 请求携带 thread 消息。
+	// 请求携带 conversation 消息。
 	if fc.LastReq == nil || len(fc.LastReq.Messages) != 1 {
 		t.Fatalf("request messages: %+v", fc.LastReq)
 	}
@@ -136,20 +136,20 @@ func TestRunToolLoop(t *testing.T) {
 	a := New(fc, "m")
 	a.SetTools(reg)
 
-	th := newThread()
+	conv := newConversation()
 	rec := &eventRecorder{}
-	if err := a.Run(context.Background(), rcFor(th), rec.on); err != nil {
+	if err := a.Run(context.Background(), rcFor(conv), rec.on); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	// 事件含工具与回合边界。
 	if !rec.has(EventToolCall) || !rec.has(EventToolResult) || !rec.has(EventTurnDone) {
 		t.Errorf("事件缺失: %v", rec.types())
 	}
-	// thread：user, assistant(tool_calls), tool_result, assistant(text)
-	if len(th.Messages) != 4 {
-		t.Fatalf("thread: got %d messages", len(th.Messages))
+	// conversation：user, assistant(tool_calls), tool_result, assistant(text)
+	if len(conv.Messages) != 4 {
+		t.Fatalf("conversation: got %d messages", len(conv.Messages))
 	}
-	tr := th.Messages[2]
+	tr := conv.Messages[2]
 	if tr.Role != messages.RoleTool || len(tr.ToolResults) != 1 {
 		t.Fatalf("tool result 消息: %+v", tr)
 	}
@@ -195,19 +195,19 @@ func TestRunParallelToolCalls(t *testing.T) {
 	}}
 	a := New(fc, "m")
 	a.SetTools(reg)
-	th := newThread()
+	conv := newConversation()
 	rec := &eventRecorder{}
-	if err := a.Run(context.Background(), rcFor(th), rec.on); err != nil {
+	if err := a.Run(context.Background(), rcFor(conv), rec.on); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if max < 2 {
 		t.Errorf("期望至少 2 个工具并发执行，峰值 %d", max)
 	}
 	// user, assistant, tool_result（合并 2 块）, assistant
-	if len(th.Messages) != 4 {
-		t.Errorf("thread 消息数: %d", len(th.Messages))
+	if len(conv.Messages) != 4 {
+		t.Errorf("conversation 消息数: %d", len(conv.Messages))
 	}
-	tr := th.Messages[2]
+	tr := conv.Messages[2]
 	if tr.Role != messages.RoleTool || len(tr.ToolResults) != 2 {
 		t.Errorf("tool result 应合并 2 块: %+v", tr.ToolResults)
 	}
@@ -227,12 +227,12 @@ func TestRunToolRespondToModel(t *testing.T) {
 	}})
 	a := New(fc, "m")
 	a.SetTools(reg)
-	th := newThread()
+	conv := newConversation()
 	rec := &eventRecorder{}
-	if err := a.Run(context.Background(), rcFor(th), rec.on); err != nil {
+	if err := a.Run(context.Background(), rcFor(conv), rec.on); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	tr := th.Messages[2]
+	tr := conv.Messages[2]
 	if tr.Role != messages.RoleTool || len(tr.ToolResults) != 1 || tr.ToolResults[0].Success {
 		t.Errorf("tool result 应标记失败: %+v", tr.ToolResults)
 	}
@@ -255,9 +255,9 @@ func TestRunToolFatal(t *testing.T) {
 	}})
 	a := New(fc, "m")
 	a.SetTools(reg)
-	th := newThread()
+	conv := newConversation()
 	rec := &eventRecorder{}
-	err := a.Run(context.Background(), rcFor(th), rec.on)
+	err := a.Run(context.Background(), rcFor(conv), rec.on)
 	if err == nil || !strings.Contains(err.Error(), "fatal") {
 		t.Fatalf("期望 Fatal 错误终止，got %v", err)
 	}
@@ -280,8 +280,8 @@ func TestRunThinkingDelta(t *testing.T) {
 	}}
 	a := noToolsAgent(fc)
 	rec := &eventRecorder{}
-	th := newThread()
-	if err := a.Run(context.Background(), rcFor(th), rec.on); err != nil {
+	conv := newConversation()
+	if err := a.Run(context.Background(), rcFor(conv), rec.on); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	// 块完成事件透传（持久化订阅用）。
@@ -305,7 +305,7 @@ func TestRunThinkingDelta(t *testing.T) {
 	}
 	// assistant 消息组装：Content=text、Thinking=thinking（存审计，重放剥离）。
 	var asst *messages.Message
-	for _, m := range th.Messages {
+	for _, m := range conv.Messages {
 		if m.Role == messages.RoleAssistant {
 			asst = m
 		}
@@ -355,7 +355,7 @@ func TestRunMiddlewareChain(t *testing.T) {
 	a.SetTools(reg)
 	a.SetMiddleware(middleware.NewChain(middlewareRecorder{calls: &calls}))
 
-	if err := a.Run(context.Background(), rcFor(newThread()), nil); err != nil {
+	if err := a.Run(context.Background(), rcFor(newConversation()), nil); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	joined := strings.Join(calls, ",")
@@ -397,7 +397,7 @@ func TestRunOnAgentWrapsTurn(t *testing.T) {
 	var seq []string
 	a.SetMiddleware(middleware.NewChain(&agentSpy{seq: &seq}))
 
-	if err := a.Run(context.Background(), rcFor(newThread()), func(e Event) { seq = append(seq, string(e.Type)) }); err != nil {
+	if err := a.Run(context.Background(), rcFor(newConversation()), func(e Event) { seq = append(seq, string(e.Type)) }); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	bi, ti := indexOf(seq, "onAgent:before"), indexOf(seq, "turn_start")
@@ -417,7 +417,7 @@ func TestRunStreamError(t *testing.T) {
 	}}
 	a := noToolsAgent(fc)
 	rec := &eventRecorder{}
-	err := a.Run(context.Background(), rcFor(newThread()), rec.on)
+	err := a.Run(context.Background(), rcFor(newConversation()), rec.on)
 	if err == nil || !strings.Contains(err.Error(), "boom") {
 		t.Errorf("期望 boom 错误，got %v", err)
 	}
@@ -433,7 +433,7 @@ func TestRunModelFromRC(t *testing.T) {
 		return textStream("ok"), nil
 	}}
 	a := New(fc, "default-model") // agent 默认模型
-	rc := rcFor(newThread())
+	rc := rcFor(newConversation())
 	rc.Model = "other-model"
 	rc.ThinkingEffort = provider.EffortMax
 	enabled := false
@@ -468,7 +468,7 @@ func TestRunOnModelCallReceivesRC(t *testing.T) {
 	a.SetTools(tools.NewRegistry())
 	a.SetMiddleware(middleware.NewChain(mw))
 
-	rc := rcFor(newThread())
+	rc := rcFor(newConversation())
 	if err := a.Run(context.Background(), rc, nil); err != nil {
 		t.Fatalf("Run: %v", err)
 	}

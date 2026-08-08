@@ -12,7 +12,7 @@ import (
 )
 
 // TestSessionCreateResume 验证 创建 → 落盘（meta/user/agent 块）→ resume 重建
-// thread + 恢复 state 的全链路。
+// conversation + 恢复 state 的全链路。
 func TestSessionCreateResume(t *testing.T) {
 	root := t.TempDir()
 	store := NewAt(root)
@@ -56,19 +56,19 @@ func TestSessionCreateResume(t *testing.T) {
 	}
 	defer rs.Close()
 
-	th := rs.Thread()
-	if len(th.Messages) != 3 {
-		t.Fatalf("resume thread 消息数=%d, want 3", len(th.Messages))
+	conv := rs.Conversation()
+	if len(conv.Messages) != 3 {
+		t.Fatalf("resume conversation 消息数=%d, want 3", len(conv.Messages))
 	}
-	if th.Messages[0].Role != messages.RoleUser || th.Messages[0].Content != "hello" {
-		t.Errorf("user 恢复: %+v", th.Messages[0])
+	if conv.Messages[0].Role != messages.RoleUser || conv.Messages[0].Content != "hello" {
+		t.Errorf("user 恢复: %+v", conv.Messages[0])
 	}
-	a := th.Messages[1]
+	a := conv.Messages[1]
 	if a.Role != messages.RoleAssistant || a.Thinking != "think" || a.Content != "ans" || len(a.ToolCalls) != 1 {
 		t.Errorf("assistant 恢复: %+v", a)
 	}
-	if th.Messages[2].Role != messages.RoleTool || len(th.Messages[2].ToolResults) != 1 {
-		t.Errorf("tool 恢复: %+v", th.Messages[2])
+	if conv.Messages[2].Role != messages.RoleTool || len(conv.Messages[2].ToolResults) != 1 {
+		t.Errorf("tool 恢复: %+v", conv.Messages[2])
 	}
 	// state 恢复。
 	if rs.State().SessionID != sess.ID || rs.State().Model != "claude-sonnet-5" {
@@ -92,8 +92,8 @@ func TestSessionRuntimeContext(t *testing.T) {
 	if rc.SessionID != sess.ID {
 		t.Errorf("SessionID: got %q", rc.SessionID)
 	}
-	if rc.Messages != sess.thread {
-		t.Error("Messages 应指向会话 thread")
+	if rc.Messages != sess.conversation {
+		t.Error("Messages 应指向会话 conversation")
 	}
 	if rc.State != sess.state {
 		t.Error("State 应指向会话 state")

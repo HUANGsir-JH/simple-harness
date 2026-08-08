@@ -27,40 +27,40 @@ providers:
           efforts: [low, high, max]
 `
 
-// TestLoadRuntime 验证显式配置路径构建运行时：Config + 默认 Resolved。
-func TestLoadRuntime(t *testing.T) {
-	rt, err := loadRuntime(testConfig(t, basicConfig))
+// TestLoadApp 验证显式配置路径构建运行时：Config + 默认 Resolved。
+func TestLoadApp(t *testing.T) {
+	app, err := loadApp(testConfig(t, basicConfig))
 	if err != nil {
-		t.Fatalf("loadRuntime: %v", err)
+		t.Fatalf("loadApp: %v", err)
 	}
-	if rt.Config.DefaultProvider != "p" {
-		t.Errorf("config provider: %q", rt.Config.DefaultProvider)
+	if app.Config.DefaultProvider != "p" {
+		t.Errorf("config provider: %q", app.Config.DefaultProvider)
 	}
-	if rt.Resolved == nil || rt.Resolved.Model != "m" {
-		t.Errorf("resolved: %+v", rt.Resolved)
+	if app.Resolved == nil || app.Resolved.Model != "m" {
+		t.Errorf("resolved: %+v", app.Resolved)
 	}
-	if rt.Resolved.ThinkingEffort != "high" {
-		t.Errorf("default effort: %q", rt.Resolved.ThinkingEffort)
+	if app.Resolved.ThinkingEffort != "high" {
+		t.Errorf("default effort: %q", app.Resolved.ThinkingEffort)
 	}
 }
 
 // TestLoadRuntimeMissing 验证缺失配置报错。
 func TestLoadRuntimeMissing(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nope.yaml")
-	if _, err := loadRuntime(path); err == nil {
+	if _, err := loadApp(path); err == nil {
 		t.Fatal("expected error for missing config")
 	}
 }
 
-// TestDefaultRuntimeCached 验证 defaultRuntime 惰性单例：多次调用返回同一实例。
+// TestDefaultAppCached 验证 defaultApp 惰性单例：多次调用返回同一实例。
 // 同步缓存本身保证 a==b；本测试固化该契约（ADR-026）。
-func TestDefaultRuntimeCached(t *testing.T) {
-	a, ea := defaultRuntime()
-	b, eb := defaultRuntime()
+func TestDefaultAppCached(t *testing.T) {
+	a, ea := defaultApp()
+	b, eb := defaultApp()
 	if ea != eb {
-		t.Fatalf("两次 defaultRuntime 错误不一致: %v vs %v", ea, eb)
+		t.Fatalf("两次 defaultApp 错误不一致: %v vs %v", ea, eb)
 	}
 	if a != b {
-		t.Error("defaultRuntime 应缓存同一实例")
+		t.Error("defaultApp 应缓存同一实例")
 	}
 }
