@@ -5,7 +5,9 @@ import (
 	"os"
 )
 
-const version = "0.1.0"
+// version 是 harness 版本号。每次有用户可见变更（功能 → minor、修复 → patch）
+// 随提交 bump，`harness version` 输出。
+const version = "0.2.0"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
