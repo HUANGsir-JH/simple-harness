@@ -3,12 +3,12 @@ module github.com/agent-project/harness
 go 1.24.2
 
 require (
+	github.com/ActiveState/termtest v0.7.2
 	github.com/anthropics/anthropic-sdk-go v1.61.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
-	github.com/ActiveState/termtest v0.7.2 // indirect
 	github.com/ActiveState/termtest/conpty v0.5.0 // indirect
 	github.com/ActiveState/termtest/expect v0.7.0 // indirect
 	github.com/ActiveState/termtest/xpty v0.6.0 // indirect
@@ -29,4 +29,5 @@ require (
 	go.yaml.in/yaml/v4 v4.0.0-rc.2 // indirect
 	golang.org/x/sync v0.16.0 // indirect
 	golang.org/x/sys v0.35.0 // indirect
+	golang.org/x/term v0.29.0 // indirect
 )

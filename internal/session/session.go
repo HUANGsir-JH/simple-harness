@@ -30,7 +30,10 @@ type Session struct {
 }
 
 // Create 新建一个会话：建目录、写 meta 首行、初始化 agentstate.json。
-func (p *Project) Create(model string) (*Session, error) {
+// cwd 是会话启动的进程工作目录（state.CWD 存它，resume 后模型可知会话
+// 从哪启动，ADR-028）；bucket 归属仍由 Project.Path（FindProject 项目根）
+// 决定——两者解耦：state.CWD = 启动目录，bucket = 项目根。
+func (p *Project) Create(model, cwd string) (*Session, error) {
 	sid := newSessionID()
 	dir := filepath.Join(p.Dir, sid)
 	historyDir := filepath.Join(dir, DirHistorys)
@@ -41,7 +44,7 @@ func (p *Project) Create(model string) (*Session, error) {
 		return nil, fmt.Errorf("session: mkdir plans: %w", err)
 	}
 	statePath := filepath.Join(dir, FileAgentState)
-	st := agentstate.New(sid, model, p.Path)
+	st := agentstate.New(sid, model, cwd)
 	if err := agentstate.SaveFile(statePath, st); err != nil {
 		return nil, err
 	}
@@ -59,7 +62,7 @@ func (p *Project) Create(model string) (*Session, error) {
 		writer:       w,
 	}
 	// meta 首行（会话元数据，resume 可读）。
-	w.Write(Line{Type: "meta", SessionID: sid, CWD: p.Path, Model: model, CreatedAt: st.CreatedAt})
+	w.Write(Line{Type: "meta", SessionID: sid, CWD: cwd, Model: model, CreatedAt: st.CreatedAt})
 	return s, nil
 }
 

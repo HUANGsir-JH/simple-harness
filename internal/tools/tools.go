@@ -37,17 +37,6 @@ type ToolError struct {
 
 func (e *ToolError) Error() string { return e.Message }
 
-// MaxOutputChars 是工具结果文本的最大长度（超出截断，避免撑爆上下文）。
-const MaxOutputChars = 20000
-
-// truncate 将文本截断到 MaxOutputChars，超长加省略号标记。
-func truncate(s string) string {
-	if len(s) <= MaxOutputChars {
-		return s
-	}
-	return s[:MaxOutputChars] + "\n… [truncated]"
-}
-
 // Registry 是工具注册表：保持注册顺序（模型可见顺序稳定），按名查找。
 type Registry struct {
 	order []string

@@ -43,6 +43,18 @@ const todoGuidance = `# 任务管理
 - 全部步骤完成后传空列表清空 todo（不留已完成项）
 - 每次调用传完整列表，用 position 维护顺序`
 
+// shellLongTaskGuidance 是 shell_command 长耗时任务的引导（注入系统提示）。
+// 缓解模型卡在同步阻塞的慢命令上（ADR-028）：引导放后台 + 轮询日志，而非
+// 盲目加大 timeout 干等或重试。参照 opencode shell prompt 的 guidance 风格。
+const shellLongTaskGuidance = `# 长耗时命令
+shell_command 是同步阻塞的：命令运行期间模型无法做任何事，超过 timeout_ms 会超时返回。遇到预计耗时较长的命令（构建、测试、下载、网络调用、服务启动等）：
+- 优先放后台执行并重定向输出到日志文件：
+  - bash:  command > log.txt 2>&1 &   （注意加 2>&1 把 stderr 也写进日志）
+  - PowerShell:  Start-Process 或 Start-Job，输出重定向到文件（如 Start-Process -FilePath cmd -ArgumentList '/c','command > log.txt 2>&1' -WindowStyle Hidden）
+- 然后立即返回（不要 sleep 等待），用 read_file / grep 轮询日志文件判断完成与结果
+- 需要终止后台进程时：bash 用 kill <pid>，PowerShell 用 Stop-Process
+- 不要盲目重试已超时的命令——超时时已收集的输出已保存到 evictions/ 目录（错误信息含完整路径），先用 read_file 读它了解进度与卡点，再决定下一步`
+
 // ToolInstructionsMiddleware 是 onSystemPrompt middleware：在基础指令后追加
 // 工具列表、apply_patch 语法说明与任务管理引导（阶段二系统提示动态拼接的
 // 第一个实现，阶段四 AGENTS.md 等在此追加）。
@@ -67,6 +79,9 @@ func (m ToolInstructionsMiddleware) OnSystemPrompt(_ context.Context, _ *Runtime
 	sb.WriteString(applyPatchSyntax)
 	if hasTool(m.Tools, "update_todo") {
 		sb.WriteString("\n\n" + todoGuidance)
+	}
+	if hasTool(m.Tools, "shell_command") {
+		sb.WriteString("\n\n" + shellLongTaskGuidance)
 	}
 	return sb.String(), nil
 }

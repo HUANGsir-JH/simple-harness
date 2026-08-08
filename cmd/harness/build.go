@@ -32,10 +32,12 @@ func (app *App) buildAgent() (*agent.Agent, error) {
 	// 工具说明注入系统提示（onSystemPrompt middleware；阶段四 AGENTS.md 等在此
 	// 追加）。SessionMiddleware 无状态，从 rc.StatePath 读写 AgentState。
 	// TodoReminderMiddleware 在模型连续多轮不更新 todo 时注入偏离提醒。
+	// ToolOutputMiddleware 统一截断工具结果（超长落盘 evictions/ + head/tail preview，ADR-028）。
 	mw := middleware.NewChain(
 		middleware.ToolInstructionsMiddleware{Tools: reg.Specs()},
 		session.SessionMiddleware{},
 		middleware.TodoReminderMiddleware{},
+		middleware.ToolOutputMiddleware{},
 	)
 
 	a := agent.New(client, app.Resolved.Model)

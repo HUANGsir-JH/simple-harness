@@ -112,21 +112,6 @@ func TestToolErrorSemantics(t *testing.T) {
 	}
 }
 
-// TestTruncate 验证输出截断。
-func TestTruncate(t *testing.T) {
-	long := strings.Repeat("x", MaxOutputChars+100)
-	out := truncate(long)
-	if len(out) > MaxOutputChars+len("\n… [truncated]") {
-		t.Errorf("truncate: output too long (%d)", len(out))
-	}
-	if !strings.Contains(out, "[truncated]") {
-		t.Error("expected truncation marker")
-	}
-	if got := truncate("short"); got != "short" {
-		t.Errorf("short text: got %q", got)
-	}
-}
-
 // TestHandleErrorPath 验证工具 Handle 返回错误时由注册表透传（agent 层处理二分类）。
 func TestHandleErrorPath(t *testing.T) {
 	tool := newFake("boom")

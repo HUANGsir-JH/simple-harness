@@ -218,3 +218,15 @@
   6. **并发**：tools 包级 mutex 保护 `rc.State.Todos` 与 rc.attrs todo 计数键写（并行工具同轮并发 update_todo）。
 - **理由**：全量替换 + position 自维护是三个参照实现里最简单且跑得通的组合（opencode 靠它生产运行）；提醒机制补上"纯回填可见性"防漂移的缺口，且不引入新概念（走 rc.attrs + onReasoning middleware）；todo 挂 rc.State.Todos 随 SessionMiddleware after 无条件落盘（Fatal 也不丢），resume 恢复零新代码。
 - **影响 ADR**：ADR-025 第 4 点"todo 挂 state"落地；ADR-021 挂载映射中 `onReasoning` = 压缩，现补充 TodoReminder 也挂 onReasoning（不同中间件叠加）。
+
+## ADR-028：工具结果截断中间件 + Esc/Ctrl+C 用户中断 + shell 长任务缓解 + state.CWD 修正（2026-08-09）
+
+- **背景**：三个能力缺口（长工具结果模型无法读全量 / 用户无法主动中断 agent / 模型卡在慢 shell 命令），调研 codex（unified_exec HeadTailBuffer / turn_aborted）+ opencode（truncate.ts 落盘 / ctx.abort）+ 现状分析后定案。用户两点反馈：截断**上收为中间件**、中断用 **Esc 键触发**。
+- **选择**：
+  1. **工具结果截断中间件**：新建 `middleware.ToolOutputMiddleware` 挂 onToolCall，after 阶段改写 `rc.Messages` 本批新增 tool_result 消息的 Content。工具返回完整结果（职责纯，删工具内 truncate），截断策略一处定义。截断 = head 前 50% + tail 后 50%（各 10KB）+ 中间省略计数 + 全量落盘 `<会话目录>/evictions/` + 绝对路径 + read_file/grep 提示。rc/StatePath 空退化纯截断（测试/非会话）。**transcript 记完整**（审计全量），conversation（模型上下文）记 preview+路径（resume 重建后模型可见全量历史）。
+  2. **Esc/Ctrl+C 用户中断**：REPL 改**单一读方事件循环**（`readStdinEvents` goroutine 逐 rune 读 stdin → channel，raw mode 下 Esc(0x1b)/Ctrl+C(0x03) 实时捕获）。中断 → cancel 当前回合 runCtx（下一轮新建 ctx 不受影响）+ `AddUser` 系统提示落盘（resume 可见，对齐 Claude Code）。引入 `golang.org/x/term`（raw mode；stdin 非 TTY 降级普通读行）。runCmd 单轮用 `withEscInterrupt`。
+  3. **shell 长任务缓解 A+B**：A = 系统提示追加 `# 长耗时命令` 引导（bash `cmd > log 2>&1 &` / PowerShell `Start-Process` 放后台 + read_file/grep 轮询日志，不盲目重试超时）；B = 超时/非零退出时已收集输出经 `EvictContent` 落盘，错误带路径（模型可读进度）。
+  4. **state.CWD 修正**：`Project.Create(model, cwd)` 存**会话启动的进程 cwd**（此前误存 FindProject 项目根 `p.Path`，可能 ≠ 启动目录）。bucket 归属仍由 `Project.Path` 决定——启动目录与项目根解耦。
+  5. **描述一致性**：文件工具（read/list_dir/glob/write_file/apply_patch）description 改"相对进程工作目录或绝对路径"（诚实描述现状：按 `os.Getwd()` 解析、接受任意绝对路径；路径边界留阶段三 onActing）。
+- **理由**：截断中间件化让工具职责纯、策略一处可插拔（对齐 opencode `Tool.define` wrap 层）；head/tail 双端保留让模型看到输出开头与结尾（日志错误常在尾部），全量落盘供 read_file/grep 读；Esc 中断是 TUI 惯例（Claude Code/opencode），事件循环单一读方避免多 reader 竞争 stdin；transcript 记完整是审计精神（ADR-025），落盘 evictions/ 让"长结果模型自读"（ADR-009 eviction 设计提前落地）。
+- **影响 ADR**：ADR-009/023 的 eviction（>80K 落盘）落地为 20K 阈值 + head/tail；ADR-025 transcript 记完整不因截断丢失；ADR-021 `onToolCall` 挂载点新增 ToolOutputMiddleware；tools 包移除 truncate/MaxOutputChars（迁 middleware）。

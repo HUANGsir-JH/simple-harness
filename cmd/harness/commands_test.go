@@ -110,7 +110,7 @@ func TestSessionManagerSwitch(t *testing.T) {
 
 	// 用项目桶另建一个会话（/switch 目标），关闭其 writer 释放文件（否则与
 	// resume 打开的 writer 同时持有同一文件，Windows 上会锁）。
-	other, err := m.proj.Create("m")
+	other, err := m.proj.Create("m", m.proj.Path)
 	if err != nil {
 		t.Fatalf("create other: %v", err)
 	}

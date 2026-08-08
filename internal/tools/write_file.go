@@ -20,11 +20,11 @@ func (WriteFileTool) Name() string { return "write_file" }
 func (WriteFileTool) Spec() provider.ToolSpec {
 	return provider.ToolSpec{
 		Name:        "write_file",
-		Description: "覆盖写入一个文件的完整内容（创建或覆盖已有文件，自动创建父目录）。用于整文件重写或新建；小改动优先用 apply_patch 做差异编辑。路径相对当前工作目录。",
+		Description: "覆盖写入一个文件的完整内容（创建或覆盖已有文件，自动创建父目录）。用于整文件重写或新建；小改动优先用 apply_patch 做差异编辑。路径相对进程工作目录或绝对路径。",
 		Parameters: json.RawMessage(`{
 			"type": "object",
 			"properties": {
-				"path": {"type": "string", "description": "文件路径（相对 cwd）"},
+				"path": {"type": "string", "description": "文件路径（相对 cwd 或绝对路径）"},
 				"content": {"type": "string", "description": "要写入的完整文件内容"}
 			},
 			"required": ["path", "content"]

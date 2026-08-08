@@ -2,6 +2,19 @@
 
 > 按日期追加，最新在上。记录：进展、阻塞、问题、经验。
 
+## 2026-08-09
+
+### 工具结果截断中间件 + Esc 用户中断 + shell 长任务缓解 + state.CWD 修正 ✅（ADR-028）
+
+- **背景**：用户提出三个能力缺口——长工具结果模型无法读全量（现 `truncate` 保留前 20K 直接丢）；用户无法主动中断 agent（REPL 共用 ctx 一旦 cancel 永久失效）；模型卡在慢 shell 命令（同步阻塞）。调研 codex（unified_exec HeadTailBuffer / turn_aborted）+ opencode（truncate.ts 落盘 / ctx.abort）。用户反馈定案：**截断上收为中间件**、**Esc 键触发中断**。
+- **ToolOutputMiddleware**（onToolCall after）：改写本批 tool_result 消息 Content。工具返回完整结果（删 fs/shell 内 truncate），策略一处定义。截断 = head 前 50% + tail 后 50%（各 10KB）+ 省略计数 + 全量落盘 `<会话>/evictions/tool_<ts>.txt` + 绝对路径 + read_file/grep 提示。rc/StatePath 空退化纯截断。**transcript 记完整**（审计），conversation 记 preview+路径。
+- **Esc/Ctrl+C 中断**：REPL 改单一读方事件循环（`readStdinEvents` goroutine 逐 rune 读 stdin → channel：Esc/Ctrl+C→esc、回车→行、退格→删行尾+回显、Ctrl+D→EOF、中文 ReadRune）。raw mode（`golang.org/x/term`，非 TTY 降级）。中断 → cancel 本轮 runCtx（下一轮不受影响）+ `AddUser` 系统提示落盘（resume 可见）。runCmd 单轮 `withEscInterrupt`。
+- **shell 缓解 A+B**：A = 系统提示 `# 长耗时命令` 引导（放后台 + 日志轮询 + 不盲目重试）；B = 超时/非零退出已收集输出落盘，错误带路径。
+- **state.CWD 修正**：`Project.Create(model, cwd)` 存**会话启动目录**（此前误存 FindProject 项目根，可能 ≠ 启动目录）；bucket 归属与启动目录解耦。
+- **描述一致性**：文件工具描述改"相对进程工作目录或绝对路径"（诚实：按 os.Getwd() 解析、接受任意绝对路径；边界留阶段三 onActing）。
+- **验证**：全量 `go build && go vet && go test ./...` 绿；新增 tool_output_test（head/tail/落盘/退化/仅改写本批）、input_test（readStdinEvents 行/Esc/Ctrl+C/退格/中文/Ctrl+D）、shell 超时落盘、session CWD；**e2e 三用例重跑绿（termtest 真实 TTY + raw mode 兼容性验证通过）**。版本 0.2.0 → 0.3.0。
+- **踩坑**：`go get golang.org/x/term@latest` 把 go directive 升到 1.25 → 降回 1.24.2 并用旧版 x/term v0.29.0 + x/sys v0.30.0（兼容 go 1.18）。shell 超时落盘测试需 >20K 输出触发（PowerShell 冷启动 ~1.5s，用 `("s"*2000)` 长输出 + Start-Sleep 卡住）。
+
 ## 2026-08-08
 
 ### todo 工具（update_todo + 跨轮偏离提醒）✅（ADR-027）

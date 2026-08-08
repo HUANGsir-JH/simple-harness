@@ -20,7 +20,8 @@ import (
 const powershellUTF8Prefix = "try { [Console]::OutputEncoding=[System.Text.Encoding]::UTF8 } catch {}\n"
 
 // ShellCommandTool 在 shell 中执行命令。平台分派：Windows 用 PowerShell，
-// POSIX 用 sh -c。命令非零退出返回错误文本（可重试）。
+// POSIX 用 sh -c。命令非零退出返回错误文本（可重试）；超时把已收集输出
+// 落盘 evictions/（错误带路径，模型可读进度，ADR-028）。
 type ShellCommandTool struct{}
 
 func (ShellCommandTool) Name() string { return "shell_command" }
@@ -28,7 +29,7 @@ func (ShellCommandTool) Name() string { return "shell_command" }
 func (ShellCommandTool) Spec() provider.ToolSpec {
 	return provider.ToolSpec{
 		Name:        "shell_command",
-		Description: "在 shell 中执行命令并返回输出（stdout+stderr 合并，截断 20k 字符）。Windows 用 PowerShell，POSIX 用 sh -c。命令非零退出或超时返回错误文本。",
+		Description: "在 shell 中执行命令并返回输出（stdout+stderr 合并）。Windows 用 PowerShell，POSIX 用 sh -c。命令非零退出或超时返回错误文本（超时输出的完整版会保存到 evictions/ 目录，错误信息含路径）。",
 		Parameters: json.RawMessage(`{
 			"type": "object",
 			"properties": {
@@ -41,7 +42,7 @@ func (ShellCommandTool) Spec() provider.ToolSpec {
 	}
 }
 
-func (ShellCommandTool) Handle(ctx context.Context, _ *middleware.RuntimeContext, _ string, args json.RawMessage) (messages.ToolResult, error) {
+func (ShellCommandTool) Handle(ctx context.Context, rc *middleware.RuntimeContext, _ string, args json.RawMessage) (messages.ToolResult, error) {
 	var p struct {
 		Command   string `json:"command"`
 		Workdir   string `json:"workdir"`
@@ -70,16 +71,21 @@ func (ShellCommandTool) Handle(ctx context.Context, _ *middleware.RuntimeContext
 
 	err = cmd.Run()
 	if ctx.Err() == context.DeadlineExceeded {
-		return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: fmt.Sprintf("shell_command: 命令超时（%v）", timeout)}
+		// 超时：已收集输出落盘（错误带路径，模型可用 read_file 读进度，不盲目重试）。
+		msg := fmt.Sprintf("shell_command: 命令超时（%v）", timeout)
+		if out.Len() > 0 {
+			msg += "\n" + middleware.EvictContent(rc, out.String())
+		}
+		return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: msg}
 	}
 	if err != nil {
 		msg := "shell_command: " + err.Error()
 		if out.Len() > 0 {
-			msg += "\n" + truncate(out.String())
+			msg += "\n" + middleware.EvictContent(rc, out.String())
 		}
 		return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: msg}
 	}
-	return messages.ToolResult{Success: true, Content: truncate(out.String())}, nil
+	return messages.ToolResult{Success: true, Content: out.String()}, nil
 }
 
 // platformShellCommand 按平台构造 shell 命令。

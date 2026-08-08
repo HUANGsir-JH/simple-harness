@@ -19,7 +19,7 @@ func TestSessionCreateResume(t *testing.T) {
 	projPath := filepath.Join(root, "proj")
 	proj := &Project{Path: projPath, Dir: store.ProjectDir(projPath)}
 
-	sess, err := proj.Create("claude-sonnet-5")
+	sess, err := proj.Create("claude-sonnet-5", projPath)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -74,6 +74,10 @@ func TestSessionCreateResume(t *testing.T) {
 	if rs.State().SessionID != sess.ID || rs.State().Model != "claude-sonnet-5" {
 		t.Errorf("state 恢复: %+v", rs.State())
 	}
+	// state.CWD 存会话启动目录（ADR-028），resume 后保留。
+	if rs.State().CWD != projPath {
+		t.Errorf("state.CWD: got %q want %q", rs.State().CWD, projPath)
+	}
 }
 
 // TestSessionRuntimeContext 验证 RuntimeContext() 从会话填充 per-call 上下文
@@ -82,7 +86,7 @@ func TestSessionRuntimeContext(t *testing.T) {
 	root := t.TempDir()
 	store := NewAt(root)
 	proj := &Project{Path: filepath.Join(root, "proj"), Dir: store.ProjectDir(filepath.Join(root, "proj"))}
-	sess, err := proj.Create("claude-sonnet-5")
+	sess, err := proj.Create("claude-sonnet-5", filepath.Join(root, "proj"))
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -112,7 +116,7 @@ func TestSessionSetModelEffortPersist(t *testing.T) {
 	root := t.TempDir()
 	store := NewAt(root)
 	proj := &Project{Path: filepath.Join(root, "proj"), Dir: store.ProjectDir(filepath.Join(root, "proj"))}
-	sess, err := proj.Create("m1")
+	sess, err := proj.Create("m1", filepath.Join(root, "proj"))
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}

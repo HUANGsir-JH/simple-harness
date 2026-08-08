@@ -3,8 +3,10 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -16,6 +18,7 @@ import (
 	"github.com/agent-project/harness/internal/agentstate"
 	"github.com/agent-project/harness/internal/provider"
 	"github.com/agent-project/harness/internal/session"
+	"golang.org/x/term"
 )
 
 // boolPtr 构造 bool 指针（--thinking/--no-thinking 覆盖会话 state 用）。
@@ -99,7 +102,17 @@ func runCmd(args []string, jsonOut bool) error {
 		renderer.event(ev)
 		sess.OnAgentEvent(ev) // 块级实时落盘
 	}
-	return a.Run(ctx, rc, onEvent)
+	// 单轮 run 支持 Esc/Ctrl+C 中断（raw mode 监听；非 TTY 自动降级跳过）。
+	if err := withEscInterrupt(ctx, func(runCtx context.Context) error {
+		return a.Run(runCtx, rc, onEvent)
+	}); err != nil {
+		if errors.Is(err, context.Canceled) {
+			fmt.Println("\n（已中断）")
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 // repl 是交互式模式（`harness` 无子命令）：新会话 + REPL 循环。
@@ -121,7 +134,9 @@ func repl(jsonOut bool) error {
 		return err
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	// SIGTERM 终止进程；SIGINT（Ctrl+C）作为字节由 raw mode 捕获 → 只中断当前
+	// 回合（不终止 REPL）。顶层 ctx 不被 SIGINT cancel，下一轮 Run 不受影响。
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM)
 	defer stop()
 
 	mgr := &SessionManager{
@@ -264,43 +279,180 @@ func (m *SessionManager) handleCommand(cmd replCommand) error {
 	}
 }
 
-// runREPL 是交互式 REPL 循环（`harness` / resume 复用）：每轮读输入 →
-// 命令处理或 AddUser + agent.Run（渲染 + 落盘双转发）→ 继续。
+// runREPL 是交互式 REPL 循环（`harness` / resume 复用）。输入改事件循环：
+// 单一读方 goroutine 逐字节读 stdin（raw mode 下 Esc/Ctrl+C 可实时捕获），
+// 经 channel 分发；主循环 select 输入事件 / 回合完成。
+//
+// 中断语义（ADR-028）：Esc(0x1b)/Ctrl+C(0x03) → cancel 当前回合的 runCtx
+// （只中断本轮，下一轮新建 ctx 不受影响）；中断后 AddUser 一条系统提示落盘，
+// resume 后模型可见"上一轮被中断"。exit/quit 退出。
 func runREPL(ctx context.Context, m *SessionManager, renderer output) error {
-	reader := bufio.NewReader(os.Stdin)
-	fmt.Println("harness 交互式模式（exit/quit 退出；/switch <id> /model <name> /effort <level>）")
+	fmt.Println("harness 交互式模式（exit/quit 退出；Esc/Ctrl+C 中断当前回合；/switch <id> /model <name> /effort <level>）")
 	renderer.start(m.active.Conversation())
-	for {
-		fmt.Print("> ")
-		line, err := reader.ReadString('\n')
-		if err != nil {
-			fmt.Println()
-			return nil // EOF（Ctrl+D）
-		}
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		if line == "exit" || line == "quit" {
-			return nil
-		}
-		if cmd, ok := parseCommand(line); ok {
-			if err := m.handleCommand(cmd); err != nil {
-				fmt.Fprintf(os.Stderr, "harness: %v\n", err)
-			}
-			continue
-		}
-		// 每轮新建 rc（无状态 agent：会话状态经 rc 传入；切换会话下一轮自动生效）。
-		rc := m.active.RuntimeContext()
-		m.active.AddUser(line)
-		onEvent := func(ev agent.Event) {
-			renderer.event(ev)
-			m.active.OnAgentEvent(ev)
-		}
-		if err := m.a.Run(ctx, rc, onEvent); err != nil {
-			fmt.Fprintf(os.Stderr, "harness: %v\n", err)
+
+	// raw mode：让 Esc 作为字节可被实时读取（不依赖行缓冲回车）。非 TTY
+	// （重定向/管道）或 MakeRaw 失败 → 降级普通读行（无 Esc 中断，行为同前）。
+	fd := int(os.Stdin.Fd())
+	var echo io.Writer = io.Discard
+	if term.IsTerminal(fd) {
+		if old, err := term.MakeRaw(fd); err == nil {
+			defer func() { _ = term.Restore(fd, old) }()
+			echo = os.Stdout // raw mode 无回显，需自行回显用户输入
 		}
 	}
+	inputCh := readStdinEvents(os.Stdin, echo)
+
+	var runDone chan error
+	var cancelRun context.CancelFunc
+	running := false
+
+	fmt.Print("> ")
+	for {
+		select {
+		case ev, ok := <-inputCh:
+			if !ok {
+				return nil // stdin EOF（Ctrl+D）
+			}
+			if ev.esc {
+				if running && cancelRun != nil {
+					cancelRun() // 中断当前回合；结果经 runDone 分支处理
+				}
+				continue
+			}
+			line := strings.TrimSpace(ev.line)
+			if line == "" {
+				continue
+			}
+			if line == "exit" || line == "quit" {
+				return nil
+			}
+			if cmd, ok := parseCommand(line); ok {
+				if err := m.handleCommand(cmd); err != nil {
+					fmt.Fprintf(os.Stderr, "harness: %v\n", err)
+				}
+				fmt.Print("> ")
+				continue
+			}
+			if running {
+				fmt.Println("（上一回合仍在运行，按 Esc 中断）")
+				fmt.Print("> ")
+				continue
+			}
+			// 每轮新建 rc（无状态 agent：会话状态经 rc 传入；切换会话下一轮自动生效）。
+			rc := m.active.RuntimeContext()
+			m.active.AddUser(line)
+			runCtx, cancel := context.WithCancel(ctx)
+			cancelRun = cancel
+			running = true
+			runDone = make(chan error, 1)
+			onEvent := func(ev agent.Event) {
+				renderer.event(ev)
+				m.active.OnAgentEvent(ev)
+			}
+			go func() { runDone <- m.a.Run(runCtx, rc, onEvent) }()
+		case err := <-runDone:
+			running = false
+			cancelRun = nil
+			runDone = nil
+			switch {
+			case errors.Is(err, context.Canceled):
+				fmt.Println("\n（已中断本轮）")
+				// 中断提示落盘（ADR-028）：resume 后模型可见，对齐 Claude Code。
+				m.active.AddUser("（系统：上一轮 agent 运行被用户中断。如有未完成的工作，请继续；后台进程可能仍在运行。）")
+			case err != nil:
+				fmt.Fprintf(os.Stderr, "\nharness: %v\n", err)
+			}
+			fmt.Print("> ")
+		}
+	}
+}
+
+// inputEvent 是 REPL 的 stdin 输入事件。
+type inputEvent struct {
+	esc  bool   // Esc/Ctrl+C 按下 → 中断当前回合
+	line string // 提交的一整行（回车触发）
+}
+
+// readStdinEvents 从 reader 逐 rune 读取，产出一致化输入事件（单一读方：REPL
+// 主循环与中断监听共用此 channel，避免多个 goroutine 竞争 stdin）。raw mode
+// 下终端不回显，经 echo 自行回显（普通字符、退格擦除）。规则：
+//
+//	Esc(0x1b) / Ctrl+C(0x03) → esc 事件
+//	\r 或 \n → 行提交（空行忽略）；Ctrl+D(0x04) → 关闭 channel（EOF）
+//	退格(0x7f/0x08) → 删除行尾 + 回显 "\b \b"
+//	其它 → 追加当前行 + 回显
+func readStdinEvents(reader io.Reader, echo io.Writer) <-chan inputEvent {
+	ch := make(chan inputEvent)
+	go func() {
+		defer close(ch)
+		br := bufio.NewReader(reader)
+		var line []rune
+		for {
+			r, _, err := br.ReadRune()
+			if err != nil {
+				return
+			}
+			switch r {
+			case 0x1b, 0x03: // Esc / Ctrl+C
+				line = line[:0]
+				ch <- inputEvent{esc: true}
+			case '\r', '\n':
+				if len(line) > 0 {
+					ch <- inputEvent{line: string(line)}
+					line = line[:0]
+				}
+			case 0x7f, 0x08: // 退格
+				if len(line) > 0 {
+					line = line[:len(line)-1]
+					if echo != nil {
+						io.WriteString(echo, "\b \b")
+					}
+				}
+			case 0x04: // Ctrl+D：非空行先提交（flush），再 EOF（退出）
+				if len(line) > 0 {
+					ch <- inputEvent{line: string(line)}
+					line = line[:0]
+				}
+				return
+			default:
+				line = append(line, r)
+				if echo != nil {
+					fmt.Fprint(echo, string(r))
+				}
+			}
+		}
+	}()
+	return ch
+}
+
+// withEscInterrupt 在 raw mode 下监听 Esc/Ctrl+C → cancel ctx，用于单轮 runCmd
+// 的用户中断。stdin 非 TTY 或 MakeRaw 失败（重定向/管道）→ 跳过监听直接执行。
+func withEscInterrupt(ctx context.Context, fn func(ctx context.Context) error) error {
+	fd := int(os.Stdin.Fd())
+	if !term.IsTerminal(fd) {
+		return fn(ctx)
+	}
+	old, err := term.MakeRaw(fd)
+	if err != nil {
+		return fn(ctx)
+	}
+	defer term.Restore(fd, old)
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go func() {
+		b := make([]byte, 1)
+		for {
+			n, err := os.Stdin.Read(b)
+			if err != nil {
+				return
+			}
+			if n > 0 && (b[0] == 0x1b || b[0] == 0x03) {
+				cancel()
+				return
+			}
+		}
+	}()
+	return fn(runCtx)
 }
 
 // resumeCmd 恢复会话（--last 或 <id>）并进入 REPL 继续。
@@ -355,7 +507,9 @@ func resumeCmd(args []string, jsonOut bool) error {
 		return err
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	// SIGTERM 终止进程；SIGINT（Ctrl+C）作为字节由 raw mode 捕获 → 只中断当前
+	// 回合（不终止 REPL）。顶层 ctx 不被 SIGINT cancel，下一轮 Run 不受影响。
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM)
 	defer stop()
 
 	mgr := &SessionManager{

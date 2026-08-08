@@ -76,7 +76,7 @@ func CreateInCWD(model string) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	return proj.Create(model)
+	return proj.Create(model, cwd)
 }
 
 // Root 返回 workspace 根。

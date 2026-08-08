@@ -227,6 +227,25 @@ in.Messages = msgs   // 只影响本次请求，conversation 原封不动
 
 提醒的计数状态（todo_last_activity）在 rc.attrs，per-Run 内存态随 rc 新建清零；跨 Run 持久的是 todo 列表本体（AgentState → agentstate.json），与 transcript 轨互不干扰（双轨持久化，ADR-025）。
 
+### 3.8 用户中断的回合级机制：cancel runCtx + AddUser 落盘（ADR-028）
+
+REPL 改**单一读方事件循环**：goroutine 逐 rune 读 stdin（raw mode）→ channel 分发；主循环 `select` 输入事件 / 回合完成。Esc(0x1b)/Ctrl+C(0x03) → esc 事件 → `cancel()` **当前回合的 runCtx**：
+
+```
+readStdinEvents (goroutine, raw mode)
+ ├─ 0x1b / 0x03 → esc 事件 → 主循环 cancel() 本轮 runCtx
+ ├─ \r\n       → line 事件 → 提交用户消息 / REPL 命令
+ ├─ 退格        → 删行尾 + 回显 "\b \b"
+ └─ 其它 rune   → 追加行 + 回显（ReadRune 支持中文）
+main select:
+ ├─ ev.line  → AddUser + goroutine 跑 agent.Run（每轮独立 runCtx）
+ └─ runDone  → 返回 context.Canceled → "（已中断本轮）" + AddUser("（系统：上一轮被中断…）")
+```
+
+**为什么每轮独立 runCtx**：信号 `signal.NotifyContext` 的 ctx 一旦 cancel 永久失效，下一轮 Run 立即失败；每轮 `context.WithCancel` 新建 → 中断只停本轮，下一轮正常。**中断提示 AddUser 落盘**：写 conversation + transcript，resume 后模型看到"上一轮被中断"，对齐 Claude Code resume 行为（与 TodoReminder 的不落盘临时注入相反——中断是持久事件，值得落盘）。
+
+runCmd（单轮）用 `withEscInterrupt`（MakeRaw + goroutine 监听 Esc/Ctrl+C → cancel；非 TTY 跳过监听正常跑）。
+
 ## 四、核心数据结构
 
 ### 4.1 会话与消息（messages / agentstate / session）
@@ -270,7 +289,7 @@ classDiagram
         +string Model
         +*bool ThinkingEnabled
         +string ThinkingEffort
-        +string CWD
+        +string CWD // 会话启动的进程 cwd（非项目根，ADR-028）
         +string CreatedAt
         +string UpdatedAt
         +[]TodoItem Todos
@@ -466,6 +485,8 @@ classDiagram
 
 **update_todo 工具**（ADR-027）：全量替换当前会话待办清单（`{todos:[{position, description, status}]}`，模型显式填 position 维护顺序），经 `rc.State.Todos` 读写（`AgentState.ReplaceTodos` 按 position 稳定排序；`RenderTodos` 渲染为 markdown 有序列表 `1. [~] …`），随 SessionMiddleware after 无条件落盘 agentstate.json（resume 恢复）。**TodoReminderMiddleware**（onReasoning）：每轮采样计数存 rc.attrs（per-Run），todo 非空且模型连续 ≥10 次 model call 未更新 → 在**请求消息尾部**注入提醒（注入临时副本，不写 conversation → 不落盘/不重放）。模型可见性 = 工具结果回填（基础）+ 提醒（防偏离兜底）。
 
+**ToolOutputMiddleware**（ADR-028）：挂 onToolCall，after 阶段统一改写本批 tool_result 消息的 Content。工具返回完整结果（职责纯，工具内不截断）；超 `MaxOutputChars`(20K) → **head 前 50% + tail 后 50%**（各 10K）+ 中间省略计数 + 全量落盘 `<会话>/evictions/tool_<ts>.txt` + 绝对路径 + "read_file/grep 读取"提示。`EvictContent`（导出，shell 超时错误分支也用它）。rc/StatePath 空退化纯截断。**transcript 记完整**（审计全量），conversation 记 preview+路径（resume 重建后模型可见全量历史）。
+
 ### 4.5 落盘格式
 
 #### workspace 目录树（`$HARNESS_HOME || ~/.harness`）
@@ -479,6 +500,7 @@ classDiagram
 │       └── <session-id>/      # 目录名即会话 id（时间戳-8hex）
 │           ├── historys/history-<n>.jsonl   # 块级 transcript
 │           ├── agentstate.json              # AgentState 快照（JSON 整体重写）
+│           ├── evictions/                   # 超长工具结果落盘（ADR-028）
 │           └── plans/                        # 计划文件（预留）
 ```
 
@@ -569,5 +591,7 @@ classDiagram
 | `Message.Thinking` | 存审计但不重放（provider 重放 assistant 时剥离；thinking-only 空消息跳过） |
 | `transcript` ↔ `AgentState` | 双轨：消息流（块级 Line） vs 非消息状态（JSON 快照），resume 两者重建 |
 | `update_todo` ↔ `rc.State.Todos` | todo 全量替换挂 AgentState（ReplaceTodos/RenderTodos），SessionMiddleware after 落盘；TodoReminder 防偏离（ADR-027） |
+| `ToolOutputMiddleware` ↔ tool_result | onToolCall after 统一截断（>20K → head/tail + evictions/ 落盘 + 路径），transcript 记完整、conversation 记 preview（ADR-028） |
+| REPL 中断 ↔ runCtx | Esc/Ctrl+C（raw mode 事件循环）→ cancel 本轮 runCtx → AddUser 系统提示落盘，resume 可见（ADR-028） |
 | `App` ↔ `Config/Resolved` | 配置统一入口：惰性单例缓存默认模型，`--config` 显式路径单独加载 |
 | `Conversation` ↔ `Message` ↔ `ToolResult` | 一条 tool_result 消息可合并多块（满足 anthropic 紧邻要求，ADR-024） |

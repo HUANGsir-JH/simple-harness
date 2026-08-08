@@ -13,7 +13,8 @@ import (
 	"github.com/agent-project/harness/internal/provider"
 )
 
-// ReadFileTool 读取文件内容，可限行范围。路径相对当前工作目录。
+// ReadFileTool 读取文件内容，可限行范围。路径相对进程工作目录（启动 harness
+// 的目录）或绝对路径。
 type ReadFileTool struct{}
 
 func (ReadFileTool) Name() string { return "read_file" }
@@ -21,7 +22,7 @@ func (ReadFileTool) Name() string { return "read_file" }
 func (ReadFileTool) Spec() provider.ToolSpec {
 	return provider.ToolSpec{
 		Name:        "read_file",
-		Description: "读取指定文件的文本内容。可传 start_line/end_line 限制行范围（1 起含）。路径相对当前工作目录。",
+		Description: "读取指定文件的文本内容。可传 start_line/end_line 限制行范围（1 起含）。路径相对进程工作目录或绝对路径。",
 		Parameters: json.RawMessage(`{
 			"type": "object",
 			"properties": {
@@ -50,7 +51,7 @@ func (ReadFileTool) Handle(_ context.Context, _ *middleware.RuntimeContext, _ st
 	if err != nil {
 		return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: "read_file: " + err.Error()}
 	}
-	return messages.ToolResult{Success: true, Content: truncate(content)}, nil
+	return messages.ToolResult{Success: true, Content: content}, nil
 }
 
 func readFileRange(path string, start, end int) (string, error) {
@@ -93,7 +94,7 @@ func (ListDirTool) Spec() provider.ToolSpec {
 		Parameters: json.RawMessage(`{
 			"type": "object",
 			"properties": {
-				"path": {"type": "string", "description": "目录路径（相对 cwd，默认当前目录）"}
+				"path": {"type": "string", "description": "目录路径（相对 cwd 或绝对路径，默认当前目录）"}
 			}
 		}`),
 	}
@@ -114,7 +115,7 @@ func (ListDirTool) Handle(_ context.Context, _ *middleware.RuntimeContext, _ str
 	if err != nil {
 		return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: "list_dir: " + err.Error()}
 	}
-	return messages.ToolResult{Success: true, Content: truncate(content)}, nil
+	return messages.ToolResult{Success: true, Content: content}, nil
 }
 
 func listDirContents(path string) (string, error) {
@@ -141,11 +142,11 @@ func (GlobTool) Name() string { return "glob" }
 func (GlobTool) Spec() provider.ToolSpec {
 	return provider.ToolSpec{
 		Name:        "glob",
-		Description: "按 glob 模式（如 *.go、**/*.md）匹配文件路径，返回匹配列表。",
+		Description: "按 glob 模式（如 *.go、**/*.md）匹配文件路径，返回匹配列表。路径相对进程工作目录或绝对路径。",
 		Parameters: json.RawMessage(`{
 			"type": "object",
 			"properties": {
-				"pattern": {"type": "string", "description": "glob 模式（相对 cwd）"}
+				"pattern": {"type": "string", "description": "glob 模式（相对 cwd 或绝对路径）"}
 			},
 			"required": ["pattern"]
 		}`),
@@ -169,5 +170,5 @@ func (GlobTool) Handle(_ context.Context, _ *middleware.RuntimeContext, _ string
 	if len(matches) == 0 {
 		return messages.ToolResult{Success: true, Content: "（无匹配）"}, nil
 	}
-	return messages.ToolResult{Success: true, Content: truncate(strings.Join(matches, "\n"))}, nil
+	return messages.ToolResult{Success: true, Content: strings.Join(matches, "\n")}, nil
 }

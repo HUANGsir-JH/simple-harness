@@ -26,7 +26,7 @@ import (
 //	*** Delete File: path/to/old.txt
 //	*** End Patch
 //
-// 路径相对当前工作目录；更新时逐 hunk 在文件中匹配替换。
+// 路径相对进程工作目录或绝对路径；更新时逐 hunk 在文件中匹配替换。
 type ApplyPatchTool struct{}
 
 func (ApplyPatchTool) Name() string { return "apply_patch" }
@@ -34,7 +34,7 @@ func (ApplyPatchTool) Name() string { return "apply_patch" }
 func (ApplyPatchTool) Spec() provider.ToolSpec {
 	return provider.ToolSpec{
 		Name:        "apply_patch",
-		Description: "应用补丁编辑文件。格式：*** Begin Patch 开头、*** End Patch 结尾；文件操作头 *** Add File / *** Update File / *** Delete File；更新行以 -（删除）/ +（新增）/ 空格（上下文）开头，可用 @@ 分段。路径必须相对 cwd。",
+		Description: "应用补丁编辑文件。格式：*** Begin Patch 开头、*** End Patch 结尾；文件操作头 *** Add File / *** Update File / *** Delete File；更新行以 -（删除）/ +（新增）/ 空格（上下文）开头，可用 @@ 分段。路径相对进程工作目录或绝对路径。",
 		Parameters: json.RawMessage(`{
 			"type": "object",
 			"properties": {
