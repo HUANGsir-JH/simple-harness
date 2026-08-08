@@ -13,9 +13,11 @@ import (
 	"syscall"
 
 	"github.com/agent-project/harness/internal/agent"
+	"github.com/agent-project/harness/internal/agentstate"
 	"github.com/agent-project/harness/internal/messages"
 	"github.com/agent-project/harness/internal/middleware"
 	"github.com/agent-project/harness/internal/provider"
+	"github.com/agent-project/harness/internal/session"
 	"github.com/agent-project/harness/internal/tools"
 	"gopkg.in/yaml.v3"
 )
@@ -51,6 +53,10 @@ func run(args []string) error {
 		return nil
 	case "run":
 		return runCmd(rest[1:], jsonOut)
+	case "resume":
+		return resumeCmd(rest[1:], jsonOut)
+	case "sessions":
+		return sessionsCmd(rest[1:])
 	case "help", "-h", "--help":
 		usage()
 		return nil
@@ -64,6 +70,8 @@ func usage() {
 	fmt.Println("usage:")
 	fmt.Println("  harness                       interactive mode (REPL, multi-turn)")
 	fmt.Println("  harness run <prompt>          run a single turn with the configured model")
+	fmt.Println("  harness resume <id>|--last    resume a session and continue in REPL")
+	fmt.Println("  harness sessions              list sessions for this project")
 	fmt.Println("  harness version               print version")
 	fmt.Println("  harness help                  show this help")
 	fmt.Println()
@@ -80,13 +88,14 @@ func usage() {
 }
 
 // buildAgent 从配置装配完整 agent：工具注册表 + middleware 链（工具说明注入）。
-func buildAgent(cfg provider.Config, modelFlag, effortFlag string, thinking, noThinking bool) (*agent.Agent, error) {
+// 返回 agent、chain（调用方可追加 StateMiddleware 等会话级中间件）与解析出的模型名。
+func buildAgent(cfg provider.Config, modelFlag, effortFlag string, thinking, noThinking bool) (*agent.Agent, *middleware.Chain, string, error) {
 	res, err := provider.Resolve(cfg, modelFlag)
 	if err != nil {
-		return nil, fmt.Errorf("resolve: %w", err)
+		return nil, nil, "", fmt.Errorf("resolve: %w", err)
 	}
 	if thinking && noThinking {
-		return nil, fmt.Errorf("--thinking and --no-thinking are mutually exclusive")
+		return nil, nil, "", fmt.Errorf("--thinking and --no-thinking are mutually exclusive")
 	}
 	if thinking {
 		res.ThinkingEnabled = true
@@ -96,20 +105,20 @@ func buildAgent(cfg provider.Config, modelFlag, effortFlag string, thinking, noT
 	}
 	if effortFlag != "" {
 		if !slices.Contains(res.ThinkingEfforts, effortFlag) {
-			return nil, fmt.Errorf("--effort %q not supported by model %q (supported: %v)", effortFlag, res.Model, res.ThinkingEfforts)
+			return nil, nil, "", fmt.Errorf("--effort %q not supported by model %q (supported: %v)", effortFlag, res.Model, res.ThinkingEfforts)
 		}
 		res.ThinkingEffort = effortFlag
 	}
 
 	client, err := provider.NewClient(res)
 	if err != nil {
-		return nil, fmt.Errorf("provider: %w", err)
+		return nil, nil, "", fmt.Errorf("provider: %w", err)
 	}
 
 	reg := tools.NewRegistry()
 	for _, t := range tools.Builtins() {
 		if err := reg.Register(t); err != nil {
-			return nil, err
+			return nil, nil, "", err
 		}
 	}
 	// 工具说明注入系统提示（onSystemPrompt middleware；阶段四 AGENTS.md 等在此追加）。
@@ -118,7 +127,7 @@ func buildAgent(cfg provider.Config, modelFlag, effortFlag string, thinking, noT
 	a := agent.New(client, res.Model)
 	a.SetTools(reg)
 	a.SetMiddleware(mw)
-	return a, nil
+	return a, mw, res.Model, nil
 }
 
 func runCmd(args []string, jsonOut bool) error {
@@ -143,7 +152,7 @@ func runCmd(args []string, jsonOut bool) error {
 	if err != nil {
 		return err
 	}
-	a, err := buildAgent(cfg, modelFlag, effortFlag, thinkingFlag, noThinkingFlag)
+	a, chain, model, err := buildAgent(cfg, modelFlag, effortFlag, thinkingFlag, noThinkingFlag)
 	if err != nil {
 		return err
 	}
@@ -151,9 +160,22 @@ func runCmd(args []string, jsonOut bool) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	thread := messages.NewThread()
-	thread.Add(messages.NewUserMessage(prompt))
+	// 会话落盘：workspace 项目桶 + transcript + AgentState（ADR-025）。
+	sess, err := newSession(model)
+	if err != nil {
+		return err
+	}
+	defer sess.Close()
+	chain.Add(&session.StateMiddleware{Path: sess.StatePath()})
+	a.SetMiddleware(chain)
+
 	rc := middleware.NewRuntimeContext()
+	rc.SessionID = sess.ID
+	rc.State = sess.State()
+	thread := sess.Thread()
+	userMsg := messages.NewUserMessage(prompt)
+	thread.Add(userMsg)
+	sess.WriteUser(userMsg)
 
 	var renderer output
 	if jsonOut {
@@ -163,29 +185,40 @@ func runCmd(args []string, jsonOut bool) error {
 	}
 	renderer.start(thread)
 
-	if err := a.Run(ctx, rc, thread, renderer.event); err != nil {
+	onEvent := func(ev agent.Event) {
+		renderer.event(ev)
+		sess.OnAgentEvent(ev) // 块级实时落盘
+	}
+	if err := a.Run(ctx, rc, thread, onEvent); err != nil {
 		return err
 	}
 	return nil
 }
 
-// repl 是交互式模式：循环 读输入 → 回合 → 显示，复用同一 thread（会话延续）。
+// repl 是交互式模式（`harness` 无子命令）：新会话 + REPL 循环。
 func repl(jsonOut bool) error {
 	cfg, err := loadConfig("")
 	if err != nil {
 		return err
 	}
-	a, err := buildAgent(cfg, "", "", false, false)
+	a, chain, model, err := buildAgent(cfg, "", "", false, false)
 	if err != nil {
 		return err
 	}
-
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	thread := messages.NewThread()
+	sess, err := newSession(model)
+	if err != nil {
+		return err
+	}
+	defer sess.Close()
+	chain.Add(&session.StateMiddleware{Path: sess.StatePath()})
+	a.SetMiddleware(chain)
+
 	rc := middleware.NewRuntimeContext()
-	rc.SessionID = "interactive"
+	rc.SessionID = sess.ID
+	rc.State = sess.State()
 
 	var renderer output
 	if jsonOut {
@@ -193,10 +226,16 @@ func repl(jsonOut bool) error {
 	} else {
 		renderer = newTextRenderer(true)
 	}
-	renderer.start(thread)
+	return runREPL(ctx, a, sess, rc, renderer)
+}
 
+// runREPL 是共享的 REPL 循环（交互式 / resume 复用）：每轮 读输入 →
+// 写 user 行 → agent.Run（渲染 + 落盘双转发）→ 继续。
+func runREPL(ctx context.Context, a *agent.Agent, sess *session.Session, rc *middleware.RuntimeContext, renderer output) error {
 	reader := bufio.NewReader(os.Stdin)
 	fmt.Println("harness 交互式模式（输入 exit/quit 或 Ctrl+C 退出）")
+	thread := sess.Thread()
+	renderer.start(thread)
 	for {
 		fmt.Print("> ")
 		line, err := reader.ReadString('\n')
@@ -211,11 +250,148 @@ func repl(jsonOut bool) error {
 		if line == "exit" || line == "quit" {
 			return nil
 		}
-		thread.Add(messages.NewUserMessage(line))
-		if err := a.Run(ctx, rc, thread, renderer.event); err != nil {
+		userMsg := messages.NewUserMessage(line)
+		thread.Add(userMsg)
+		sess.WriteUser(userMsg)
+		onEvent := func(ev agent.Event) {
+			renderer.event(ev)
+			sess.OnAgentEvent(ev)
+		}
+		if err := a.Run(ctx, rc, thread, onEvent); err != nil {
 			fmt.Fprintf(os.Stderr, "harness: %v\n", err)
 		}
 	}
+}
+
+// newSession 创建 workspace 骨架 + 定位项目桶 + 新建会话。
+func newSession(model string) (*session.Session, error) {
+	store, err := session.New()
+	if err != nil {
+		return nil, err
+	}
+	if err := store.EnsureDirs(); err != nil {
+		return nil, err
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil, err
+	}
+	proj, err := store.FindProject(cwd)
+	if err != nil {
+		return nil, err
+	}
+	return proj.Create(model)
+}
+
+// resumeCmd 恢复会话（--last 或 <id>）并进入 REPL 继续。
+func resumeCmd(args []string, jsonOut bool) error {
+	fs := flag.NewFlagSet("resume", flag.ContinueOnError)
+	last := fs.Bool("last", false, "resume the most recent session for this project")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	id := strings.Join(fs.Args(), " ")
+
+	store, err := session.New()
+	if err != nil {
+		return err
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	proj, err := store.FindProject(cwd)
+	if err != nil {
+		return err
+	}
+
+	var info session.SessionInfo
+	if *last {
+		var ok bool
+		if info, ok = proj.Last(); !ok {
+			return fmt.Errorf("resume: 本项目暂无会话（先 `harness run`）")
+		}
+	} else {
+		if id == "" {
+			return fmt.Errorf("resume: 需要会话 id 或 --last（`harness sessions` 查看）")
+		}
+		list, _ := proj.Sessions()
+		found := false
+		for _, s := range list {
+			if s.ID == id {
+				info = s
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("resume: 会话 %q 不存在（`harness sessions` 查看）", id)
+		}
+	}
+
+	sess, err := proj.Resume(info)
+	if err != nil {
+		return err
+	}
+	defer sess.Close()
+
+	cfg, err := loadConfig("")
+	if err != nil {
+		return err
+	}
+	a, chain, _, err := buildAgent(cfg, "", "", false, false)
+	if err != nil {
+		return err
+	}
+	chain.Add(&session.StateMiddleware{Path: sess.StatePath()})
+	a.SetMiddleware(chain)
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	rc := middleware.NewRuntimeContext()
+	rc.SessionID = sess.ID
+	rc.State = sess.State()
+
+	var renderer output
+	if jsonOut {
+		renderer = jsonRenderer{}
+	} else {
+		renderer = newTextRenderer(true)
+	}
+	return runREPL(ctx, a, sess, rc, renderer)
+}
+
+// sessionsCmd 列出当前项目的会话。
+func sessionsCmd(args []string) error {
+	store, err := session.New()
+	if err != nil {
+		return err
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	proj, err := store.FindProject(cwd)
+	if err != nil {
+		return err
+	}
+	list, err := proj.Sessions()
+	if err != nil {
+		return err
+	}
+	if len(list) == 0 {
+		fmt.Println("（本项目暂无会话，先 `harness run`）")
+		return nil
+	}
+	for _, s := range list {
+		var model, updated string
+		if st, err := agentstate.LoadFile(filepath.Join(s.Path, session.FileAgentState)); err == nil {
+			model, updated = st.Model, st.UpdatedAt
+		}
+		fmt.Printf("%s  model=%s  updated=%s\n", s.ID, model, updated)
+	}
+	return nil
 }
 
 // --- 配置加载（临时简化版；阶段四做完整 YAML）-------------------------------

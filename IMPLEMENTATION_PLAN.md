@@ -23,7 +23,7 @@
 | 权限审批 | 三档权限（readonly / acceptedit / bypass）+ 规则匹配引擎（保留扩展点）；**复杂规则匹配不强做**——middleware 挂载点天然承载后续演进（2026-08-07 确认） |
 | 系统提示词 | 动态拼接（AGENTS.md 注入 + 组装），作为 middleware 的 **onSystemPrompt** hook 实现 |
 | 会话状态 | JSONL 消息流（追加写，换后端零迁移）+ **轻量 AgentState 快照**（权限/todo/plan 指针/摘要 → 完整 resume）（2026-08-07 AgentScope 调研修订） |
-| Workspace | **~/.harness/ 统一 workspace**：sessions（JSONL+快照）/subagents/*.md/tools.json/memory/plans 收敛一处；AGENTS.md 保持项目级向上搜索（两源拼接注入）（2026-08-07 确认） |
+| Workspace | **~/.harness/ 项目分桶**（ADR-025，2026-08-08 修订）：workspaces/&lt;项目转义&gt;/&lt;session&gt;/{historys 块级 transcript, agentstate.json, plans} + 全局 agents.md/config.yaml；扩展目录三层（全局 subagents/tools.json/memory/logs / 项目 allowlist / 会话 evictions）；AGENTS.md 保持项目级向上搜索 + 全局 agents.md 拼接注入 |
 | Compaction 范围 | TokenBudget v1 保底 + 摘要式 + **大工具结果 eviction**（80K 落盘 + preview + read_file 指针）；**不做 overflow 安全网**（eviction 撑宽度后超限概率低）（2026-08-07 确认） |
 | 工具执行 | 并发执行全部 tool_call，结果按 call_id 回填 |
 | 子 agent | **内置几个子 agent**（general-purpose 等）+ **允许并行** + **状态跟踪**（pending/running/completed）；自定义声明式预留（不实现）；保留 fork 过滤 + 主→子单向（2026-08-07 确认，细节阶段五探讨） |
@@ -287,15 +287,23 @@ type Renderer interface {
 - **后续可选**：录制回放（首次真实 API 录响应，之后回放），兼得真实性与确定性，实现成本高，后续阶段再评估
 - **待验证**：termtest 驱动 harness 的集成 demo（Windows 下跑通 `SendLine → Expect → ExpectExitCode`）
 
+### 阶段 2.5：Workspace + AgentState + 会话落盘/resume ✅ 已完成（2026-08-08）
+**目标**：把原阶段四的 workspace + AgentState **提前**（用户决策：todo 挂 state 持久化 + 每次运行记录落盘，ADR-025）。**项目分桶目录**（`~/.harness/workspaces/<项目转义>/<session-id>/{historys, plans, agentstate.json}`，全局 agents.md/config.yaml）；**块级 transcript + 异步 writer**（thinking/text/tool 各一行 + ordinal，单 goroutine FIFO 保序；压缩切新文件 API 预留）；**AgentState 注入机制**（独立 agentstate 包 + `RuntimeContext.State` + `session.StateMiddleware` + 工具 Handle 加 rc）；provider/agent **块完成事件**（thinking_done/text_done，Message.Thinking 存不重放）；CLI `resume --last|<id>` / `sessions`。
+**成功标准**：`harness run` 落盘；`harness resume --last` 恢复；`harness sessions` 列表 —— 全部达成 ✅（真实 API 冒烟 + e2e + 单测）
+**测试**：session 包 13 单测（escape/Store/AgentState/StateMiddleware/writer 顺序并发/切分/重建）+ e2e 3 用例 + 真实冒烟
+
+### todo 工具（单独阶段，待做）
+**目标**：`todo_write` 工具（全量替换语义，AgentScope tasksContext 对位），经 `rc.State.Todos` 读写，StateMiddleware after 落盘；系统提示注入任务提醒。**todo 数据结构与操作已在阶段 2.5 的 agentstate 包就绪**（AddTodo/UpdateTodoStatus）。
+
 ### 阶段 3：审批（三档，作为 onActing middleware）+ 错误重试
 **目标**：`approval` 包实现三档权限（readonly / acceptedit / bypass）+ 黑白名单 + TTY 交互 + allowlist，**以 onActing middleware 挂载**（拒绝/确认结果回填，拒绝 ≠ Fatal）；规则匹配引擎保留扩展点（复杂匹配不强做）；错误重试完善（429 依赖 SDK，补充流中断恢复）
 **成功标准**：危险命令按权限档位放行/确认/拒绝；middleware 链能拦截工具执行；429 重试生效
 **测试**：审批策略单测（黑白名单匹配）；middleware 链单测；重试单测（mock 429 响应）
 
-### 阶段 4：Workspace（~/.harness/）+ 会话（JSONL + AgentState 快照）+ 系统提示词拼接 + 压缩
-**目标**：**`~/.harness/` 统一 workspace**（sessions/快照、subagents/*.md 预留、tools.json、memory/）；`session` 包（JSONL 消息流 + **轻量 AgentState 快照** + resume，落 workspace）；`agentsmd` 包（**作为 onSystemPrompt middleware** 注入，配合动态系统提示词拼接，AGENTS.md 项目级向上搜索保留）；`compact` 包（TokenBudget v1 + 摘要式 + **大工具结果 eviction**，作为 onReasoning middleware，**不做 overflow 安全网**）
-**成功标准**：`harness resume --last` 能完整恢复（含权限/todo 等非消息状态）；AGENTS.md 注入生效；系统提示词动态组装；长会话自动压缩；超大工具结果落盘 + read_file 指针
-**测试**：session 单测（写读回放 + 快照往返）；agentsmd 单测（临时目录向上搜索）；compact 单测（token 估算超限触发 + eviction 阈值触发）
+### 阶段 4（剩余）：系统提示词拼接 + AGENTS.md + 压缩
+**目标**：`agentsmd` 包（**作为 onSystemPrompt middleware** 注入：项目级 AGENTS.md 向上搜索 + 全局 `agents.md` 拼接，阶段 2.5 已建 agents.md 占位，配合动态系统提示词组装）；`compact` 包（TokenBudget v1 + 摘要式 + **大工具结果 eviction** 落盘会话目录 evictions/，作为 onReasoning middleware；压缩触发时调用 `transcript.NewSegment` 切新文件，seed = 摘要+保留，**不做 overflow 安全网**）
+**成功标准**：AGENTS.md 注入生效；系统提示词动态组装；长会话自动压缩（切新 transcript 段）；超大工具结果落盘 + read_file 指针
+**测试**：agentsmd 单测（临时目录向上搜索 + 全局拼接）；compact 单测（token 估算超限触发 + eviction 阈值触发 + NewSegment 衔接）
 
 ### 阶段 5：子 Agent（内置 + 并行 + 状态）+ CLI 完善 + 文档
 **目标**：**内置几个子 agent**（general-purpose 等）+ **并行执行** + **状态跟踪**（pending/running/completed）+ `send_message` 单向通信（fork 过滤保留）；自定义声明式（subagents/*.md）预留扩展点；Renderer 接口完成（simple 渲染器 + --json 模式）、config 包（YAML 加载）、CLI 子命令完善、docs/ 设计文档

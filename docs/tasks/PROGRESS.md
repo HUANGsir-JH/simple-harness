@@ -2,6 +2,19 @@
 
 > 按日期追加，最新在上。记录：进展、阻塞、问题、经验。
 
+## 2026-08-08
+
+### 阶段四拆出：Workspace + AgentState + 会话落盘/resume ✅（ADR-025，提前）
+
+- **背景**：用户要求把阶段四的 workspace + AgentState 提前到阶段三（权限）之前——todo 工具可挂 state 持久化、每次运行记录落盘。参考 codex + AgentScope + 用户自定义项目分桶结构。
+- **目录结构（项目分桶，ADR-025）**：`~/.harness/workspaces/<项目转义>/<session-id>/{historys, plans, agentstate.json}` + 全局 `agents.md`/`config.yaml`；扩展目录三层（全局/项目/会话）。转义 `D:\a\b → D__a_b`（保留盘符）；session-id = `<时间戳>-<8hex>`（目录名即 id）。
+- **块级 transcript + 异步 writer**：thinking/text/tool_use/tool_result 各一行（每行 ordinal）；单后台 goroutine 消费 channel（FIFO 保序）+ ordinal 在 writer 内自增（resume 按序加载）——解决异步写盘顺序/并发安全；压缩切新文件（`NewSegment` API 预留，触发留 compact 包）；resume 只读最大序号文件。**thinking 存但不重放**（Message.Thinking 存审计，provider 重放剥离）。
+- **AgentState 注入机制**：独立 `agentstate` 包（middleware/session 只依赖它，防环）；`RuntimeContext.State` 字段；`session.StateMiddleware` 挂 onAgent（before 加载/after 保存，AgentScope call() 语义）；**工具 Handle 签名加 rc**（todo 后续挂 rc.State.Todos）。
+- **provider/agent 块完成事件**：anthropicStream 按 block index 追踪类型，content_block_stop 发 `EventThinkingDone/EventTextDone`（完整块文本）+ tool_call；agent 事件加 `MsgID`（块归属 assistant 消息）+ 新增 thinking_done/text_done。
+- **CLI**：run/repl 接入 Session（meta/user 行 + 事件双转发 renderer+writer）；新增 `harness resume --last|<id>`（重建 thread + 恢复 state → REPL 继续）、`harness sessions`（列表）；`buildAgent` 返回 chain + model，runCmd 挂 StateMiddleware。
+- **验证**：全量 go test 绿（新增 session 包 13 测试：escape/Store/FindProject/AgentState/StateMiddleware/writer 顺序+并发/切分/重建/Create-Resume）；e2e 三用例（单轮/交互式/落盘+sessions，HARNESS_HOME 隔离）；**真实 API 冒烟 ✅**（`harness run` 落盘 `~/.harness/workspaces/D__agent-project_harness_simple-harness/<sid>/{historys/history-1.jsonl, agentstate.json, plans/}`，块级行完整：meta/user/turn_start/thinking/text/turn_end）。
+- **踩坑**：EscapePath 测试 `\x00` 用 raw string 是字面非 NUL（改双引号）；sed 插入 import 误加 `t ` 别名（gofmt 解析，sed 修正）；StateMiddleware 需嵌入 `middleware.Base` 补齐 5 个空 hook（否则不满足 Middleware 接口）；tool_use 参数若 start 时 input 写入累积 builder 会与 input_json_delta 分片重复（改 initial 兜底）。
+
 ## 2026-08-07
 
 ### middleware 可读性重构 + onAgent 接线 ✅

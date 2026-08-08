@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/agent-project/harness/internal/messages"
+	"github.com/agent-project/harness/internal/middleware"
 	"github.com/agent-project/harness/internal/provider"
 )
 
@@ -44,7 +45,7 @@ func (ApplyPatchTool) Spec() provider.ToolSpec {
 	}
 }
 
-func (ApplyPatchTool) Handle(_ context.Context, _ string, args json.RawMessage) (messages.ToolResult, error) {
+func (ApplyPatchTool) Handle(_ context.Context, _ *middleware.RuntimeContext, _ string, args json.RawMessage) (messages.ToolResult, error) {
 	var p struct {
 		Patch string `json:"patch"`
 	}

@@ -181,3 +181,14 @@
   - 会话快照解决"消息流无法表达权限/todo/plan 等非消息状态"的 resume 缺口，又保留 JSONL 的零迁移/可读性（换后端无需迁移）。
   - 权限三档符合 simple 定位：复杂规则匹配是增强不是刚需，middleware 机制先行即可，不超前设计。
 - **参考**：AgentScope Java v2 文档（`agent-scope-llms.txt`；重点篇目：architecture / middleware / message-and-event / context / permission-system / workspace / compaction / memory / subagent）。
+
+## ADR-025：Workspace 项目分桶 + AgentState 注入机制 + 块级 transcript（2026-08-08，提前自阶段四）
+
+- **背景**：用户要求把阶段四的 workspace + AgentState 提前到阶段三（权限）之前，理由：todo 工具可挂 AgentState 持久化、每次运行记录可落盘。参考 codex（目录即元数据 + 异步 writer）+ AgentScope（AgentState 独立快照、todo 进 state、双轨 transcript）+ **用户自定义项目分桶结构**，修订 ADR-023 的扁平 `sessions/` 布局。
+- **选择**：
+  1. **目录结构（项目分桶）**：`~/.harness/workspaces/<项目路径转义>/<session-id>/{historys, plans, agentstate.json}` + 全局 `agents.md`（persona，总是加载，阶段四注入）+ `config.yaml`。扩展目录三层：全局（subagents/tools.json/memory/logs）/ 项目（allowlist/subagents）/ 会话（plans/evictions）。转义 `D:\a\b → D__a_b`（保留盘符）；session-id = `<时间戳>-<8hex>`（目录名即 id）。
+  2. **historys 多文件**：`history-<n>.jsonl`，**压缩切新文件**，新文件以"摘要+保留最近"开头；resume 只读**最大序号文件**（最新文件即有效历史），旧文件纯审计。
+  3. **块级 transcript + 异步 writer**：thinking 结束 / text 结束 / 工具调用结束 / 工具结果 各写一行（每行带 ordinal）；**单后台 goroutine 消费 channel（FIFO 保序）+ ordinal 在 writer 内自增**（resume 按序加载兜底）——解决异步写盘的顺序与并发安全；用户消息输入即写、meta 首行。thinking **存但不重放**（`Message.Thinking` 存审计，provider 重放 assistant 时忽略，免 anthropic 格式适配）。
+  4. **AgentState 注入机制**：独立 `internal/agentstate` 包（middleware 与 session 都只依赖它，避免循环引用）；`RuntimeContext.State *agentstate.AgentState` 字段；`session.StateMiddleware` 挂 onAgent（before 加载 / after 保存，对应 AgentScope call() load/save）；**工具 Handle 签名加 `rc *middleware.RuntimeContext`**（todo 等经 rc.State 读写）。
+- **理由**：项目分桶贴合"我在哪个项目用 harness"（resume 从 cwd 定位，FindProject 逐级向上）；块级事件流使中断零丢失、resume 渲染逐块回放；AgentState 独立包解循环依赖；todo 挂 state 是 AgentScope tasksContext 对位，为 todo 工具铺路。
+- **影响 ADR**：ADR-023 的 `sessions/` 扁平布局以本文为准；ADR-021 第 3 点"JSONL + AgentState 快照"细化为块级 transcript + 注入机制。

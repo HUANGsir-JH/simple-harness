@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/agent-project/harness/internal/messages"
+	"github.com/agent-project/harness/internal/middleware"
 	"github.com/agent-project/harness/internal/provider"
 )
 
@@ -40,7 +41,7 @@ func (ShellCommandTool) Spec() provider.ToolSpec {
 	}
 }
 
-func (ShellCommandTool) Handle(ctx context.Context, _ string, args json.RawMessage) (messages.ToolResult, error) {
+func (ShellCommandTool) Handle(ctx context.Context, _ *middleware.RuntimeContext, _ string, args json.RawMessage) (messages.ToolResult, error) {
 	var p struct {
 		Command   string `json:"command"`
 		Workdir   string `json:"workdir"`

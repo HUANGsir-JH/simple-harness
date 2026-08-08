@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/agent-project/harness/internal/messages"
+	"github.com/agent-project/harness/internal/middleware"
 	"github.com/agent-project/harness/internal/provider"
 )
 
@@ -25,7 +26,7 @@ func (f *fakeTool) Spec() provider.ToolSpec {
 	}
 	return provider.ToolSpec{Name: f.name, Description: "test tool", Parameters: json.RawMessage(`{"type":"object"}`)}
 }
-func (f *fakeTool) Handle(_ context.Context, _ string, _ json.RawMessage) (messages.ToolResult, error) {
+func (f *fakeTool) Handle(_ context.Context, _ *middleware.RuntimeContext, _ string, _ json.RawMessage) (messages.ToolResult, error) {
 	if f.err != nil {
 		return messages.ToolResult{}, f.err
 	}
@@ -137,7 +138,7 @@ func TestHandleErrorPath(t *testing.T) {
 	if !ok {
 		t.Fatal("expected boom tool")
 	}
-	_, err := got.Handle(context.Background(), "c1", json.RawMessage(`{}`))
+	_, err := got.Handle(context.Background(), nil, "c1", json.RawMessage(`{}`))
 	var te *ToolError
 	if !errors.As(err, &te) || !te.RespondToModel {
 		t.Errorf("expected RespondToModel ToolError, got %v", err)

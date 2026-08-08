@@ -27,15 +27,17 @@ func (f *fakeTool) Name() string { return f.name }
 func (f *fakeTool) Spec() provider.ToolSpec {
 	return provider.ToolSpec{Name: f.name, Description: "fake", Parameters: json.RawMessage(`{"type":"object"}`)}
 }
-func (f *fakeTool) Handle(ctx context.Context, _ string, args json.RawMessage) (messages.ToolResult, error) {
+func (f *fakeTool) Handle(ctx context.Context, _ *middleware.RuntimeContext, _ string, args json.RawMessage) (messages.ToolResult, error) {
 	return f.handle(ctx, args)
 }
 
-// textStream 构造一个"文本 → done"的事件流。
+// textStream 构造一个"文本 → done"的事件流。每个文本段先发流式 delta
+// （渲染），再发块完成 done（agent 用其组装 assistant Content，ADR-025）。
 func textStream(parts ...string) provider.EventStream {
 	var evs []provider.Event
 	for _, p := range parts {
 		evs = append(evs, provider.Event{Type: provider.EventTextDelta, Text: p})
+		evs = append(evs, provider.Event{Type: provider.EventTextDone, Text: p})
 	}
 	evs = append(evs, provider.Event{Type: provider.EventDone})
 	return provider.NewFakeStream(evs)
@@ -257,28 +259,55 @@ func TestRunToolFatal(t *testing.T) {
 	}
 }
 
-// TestRunThinkingDelta 验证 thinking 增量透传为事件。
+// TestRunThinkingDelta 验证 thinking/text 增量透传事件（渲染），且块完成
+// 事件（thinking_done/text_done）驱动 assistant 消息的 Content/Thinking 组装（ADR-025）。
 func TestRunThinkingDelta(t *testing.T) {
 	fc := &provider.FakeClient{StreamFn: func(ctx context.Context, req provider.Request) (provider.EventStream, error) {
 		return provider.NewFakeStream([]provider.Event{
 			{Type: provider.EventThinkingDelta, Text: "Let me think"},
+			{Type: provider.EventThinkingDone, Text: "Let me think"},
 			{Type: provider.EventTextDelta, Text: "answer"},
+			{Type: provider.EventTextDone, Text: "answer"},
 			{Type: provider.EventDone},
 		}), nil
 	}}
 	a := noToolsAgent(fc)
 	rec := &eventRecorder{}
-	if err := a.Run(context.Background(), nil, newThread(), rec.on); err != nil {
+	th := newThread()
+	if err := a.Run(context.Background(), nil, th, rec.on); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	found := false
+	// 块完成事件透传（持久化订阅用）。
+	gotThinkingDone, gotTextDone := false, false
 	for _, e := range rec.events {
 		if e.Type == EventThinkingDelta && e.Text == "Let me think" {
-			found = true
+			gotThinkingDone = true
+		}
+		if e.Type == EventThinkingDone && e.Text == "Let me think" {
+			gotThinkingDone = true
+		}
+		if e.Type == EventTextDone && e.Text == "answer" {
+			gotTextDone = true
 		}
 	}
-	if !found {
-		t.Errorf("thinking 事件缺失: %v", rec.types())
+	if !gotThinkingDone {
+		t.Errorf("thinking_done 事件缺失: %v", rec.types())
+	}
+	if !gotTextDone {
+		t.Errorf("text_done 事件缺失: %v", rec.types())
+	}
+	// assistant 消息组装：Content=text、Thinking=thinking（存审计，重放剥离）。
+	var asst *messages.Message
+	for _, m := range th.Messages {
+		if m.Role == messages.RoleAssistant {
+			asst = m
+		}
+	}
+	if asst == nil {
+		t.Fatal("无 assistant 消息")
+	}
+	if asst.Content != "answer" || asst.Thinking != "Let me think" {
+		t.Errorf("assistant 组装: content=%q thinking=%q", asst.Content, asst.Thinking)
 	}
 }
 

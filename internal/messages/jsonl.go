@@ -68,6 +68,18 @@ func WriteThreadJSONL(w io.Writer, t *Thread) error {
 	return nil
 }
 
+// WriteMessages 将一组消息写入 w，每行一个 JSON 对象。
+// 用于增量追加（调用方负责 O_APPEND 文件管理），区别于全量的 WriteThreadJSONL。
+func WriteMessages(w io.Writer, msgs []*Message) error {
+	enc := json.NewEncoder(w)
+	for _, m := range msgs {
+		if err := enc.Encode(m); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // ReadThreadJSONL 从 r 读取 thread（每行一个 JSON 对象）。
 func ReadThreadJSONL(r io.Reader) (*Thread, error) {
 	sc := bufio.NewScanner(r)

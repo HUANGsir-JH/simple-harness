@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/ActiveState/termtest"
+	"github.com/agent-project/harness/internal/session"
 )
 
 // harnessExe 是 TestMain 构建的二进制路径。
@@ -111,6 +112,7 @@ func TestRunSingleTurnE2E(t *testing.T) {
 		Args:           []string{"run", "--config", cfg, "--json", "读取当前目录文件列表"},
 		WorkDirectory:  t.TempDir(),
 		DefaultTimeout: 30 * time.Second,
+		Environment:    []string{"HARNESS_HOME=" + filepath.Join(t.TempDir(), ".harness-e2e")},
 	})
 	if err != nil {
 		t.Fatalf("newtest: %v", err)
@@ -142,6 +144,7 @@ func TestInteractiveE2E(t *testing.T) {
 		CmdName:        harnessExe,
 		WorkDirectory:  workDir,
 		DefaultTimeout: 30 * time.Second,
+		Environment:    []string{"HARNESS_HOME=" + filepath.Join(t.TempDir(), ".harness-e2e")},
 	})
 	if err != nil {
 		t.Fatalf("newtest: %v", err)
@@ -155,5 +158,72 @@ func TestInteractiveE2E(t *testing.T) {
 	cp.SendLine("exit")
 	if _, err := cp.ExpectExitCode(0); err != nil {
 		t.Fatalf("expect exit 0: %v", err)
+	}
+}
+
+// TestSessionPersistenceE2E 验证 CLI 全链路落盘：run 后 workspace 下有会话
+// （historys + agentstate.json），`harness sessions` 能列出。
+func TestSessionPersistenceE2E(t *testing.T) {
+	srv := mockLLMServer(t)
+	defer srv.Close()
+	cfg := writeTestConfig(t, srv.URL)
+	workDir := t.TempDir()
+	home := filepath.Join(t.TempDir(), ".harness-e2e")
+
+	// 1) run 落盘。
+	cp, err := termtest.NewTest(t, termtest.Options{
+		CmdName:        harnessExe,
+		Args:           []string{"run", "--config", cfg, "你好"},
+		WorkDirectory:  workDir,
+		DefaultTimeout: 30 * time.Second,
+		Environment:    []string{"HARNESS_HOME=" + home},
+	})
+	if err != nil {
+		t.Fatalf("newtest: %v", err)
+	}
+	defer cp.Close()
+	if _, err := cp.Expect("目录已列出"); err != nil {
+		t.Fatalf("expect reply: %v", err)
+	}
+	if _, err := cp.ExpectExitCode(0); err != nil {
+		t.Fatalf("expect exit 0: %v", err)
+	}
+
+	// 2) sessions 列出会话。
+	cp2, err := termtest.NewTest(t, termtest.Options{
+		CmdName:        harnessExe,
+		Args:           []string{"sessions"},
+		WorkDirectory:  workDir,
+		DefaultTimeout: 30 * time.Second,
+		Environment:    []string{"HARNESS_HOME=" + home},
+	})
+	if err != nil {
+		t.Fatalf("newtest sessions: %v", err)
+	}
+	defer cp2.Close()
+	if _, err := cp2.Expect("model=m"); err != nil {
+		t.Fatalf("expect sessions listing: %v", err)
+	}
+	if _, err := cp2.ExpectExitCode(0); err != nil {
+		t.Fatalf("expect exit 0: %v", err)
+	}
+
+	// 3) workspace 文件存在。
+	store := session.NewAt(home)
+	proj, err := store.FindProject(workDir)
+	if err != nil {
+		t.Fatalf("find project: %v", err)
+	}
+	list, err := proj.Sessions()
+	if err != nil || len(list) != 1 {
+		t.Fatalf("sessions: %v len=%d", err, len(list))
+	}
+	for _, p := range []string{
+		filepath.Join(list[0].Path, "historys", "history-1.jsonl"),
+		filepath.Join(list[0].Path, session.FileAgentState),
+	} {
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("缺文件 %s: %v", p, err)
+		}
 	}
 }

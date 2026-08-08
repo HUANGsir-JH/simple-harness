@@ -18,7 +18,7 @@ func call(t Tool, args map[string]any) (messages.ToolResult, error) {
 	if err != nil {
 		panic(err)
 	}
-	return t.Handle(context.Background(), "c1", b)
+	return t.Handle(context.Background(), nil, "c1", b)
 }
 
 // wantRespondToModel 断言错误是 RespondToModel 的 ToolError。

@@ -106,8 +106,13 @@ type EventType string
 const (
 	// EventTextDelta 是助手回复的文本增量。
 	EventTextDelta EventType = "text_delta"
+	// EventTextDone 是一个 text 内容块完成（Event.Text = 完整块文本；流式
+	// delta 之外的块级信号，供持久化等订阅）。ADR-025。
+	EventTextDone EventType = "text_done"
 	// EventThinkingDelta 是模型的推理文本增量（thinking；阶段二透出供展示）。
 	EventThinkingDelta EventType = "thinking_delta"
+	// EventThinkingDone 是一个 thinking 内容块完成（Event.Text = 完整块文本）。ADR-025。
+	EventThinkingDone EventType = "thinking_done"
 	// EventToolCall 是模型发起的、已完成的函数调用请求（阶段二起）。
 	EventToolCall EventType = "tool_call"
 	// EventDone 标记本次采样回合的结束。

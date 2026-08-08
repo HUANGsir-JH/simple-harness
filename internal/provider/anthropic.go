@@ -98,6 +98,8 @@ func toAnthropicMessages(msgs []*messages.Message) []anthropic.MessageParam {
 }
 
 func toAnthropicAssistantMessage(m *messages.Message) anthropic.MessageParam {
+	// 注意：m.Thinking（推理文本）不重放——resume 重放历史时剥离 thinking，
+	// 避免 anthropic 重放 thinking 块的格式适配（ADR-025，thinking 仅审计）。
 	blocks := make([]anthropic.ContentBlockParamUnion, 0, len(m.ToolCalls)+1)
 	if m.Content != "" {
 		blocks = append(blocks, anthropic.ContentBlockParamUnion{OfText: &anthropic.TextBlockParam{Text: m.Content}})
@@ -209,21 +211,22 @@ type anthropicStream struct {
 	stream *ssestream.Stream[anthropic.MessageStreamEventUnion]
 	cur    Event
 	err    error
-	// pending 跟踪正在流式累积参数的 tool_use 块（按 content block index）。
-	// anthropic 工具参数经 input_json_delta 分片累积，content_block_start
-	// 时 input 可能为空（大参数流式）或已带全（小参数）。
-	pending map[int64]*pendingToolCall
+	// blocks 跟踪所有内容块（按 content block index），content_block_stop 时
+	// 按块类型发出完整块事件（text_done / thinking_done / tool_call）。ADR-025。
+	// text/thinking 累积 delta 文本；tool_use 累积 input_json_delta 参数分片。
+	blocks map[int64]*pendingBlock
 }
 
-// pendingToolCall 是一个正在累积参数的 tool_use 块。
-type pendingToolCall struct {
+// pendingBlock 是一个正在流式累积的内容块。
+type pendingBlock struct {
+	kind    string          // "text" | "thinking" | "tool_use"
+	sb      strings.Builder // 文本 delta；tool_use 的 input_json_delta 分片
+	initial string          // tool_use：content_block_start 时 input（小参数可能带全）
 	call    *messages.ToolCall
-	initial string          // content_block_start 时的 input（JSON 序列化）
-	partial strings.Builder // input_json_delta 累积
 }
 
 func newAnthropicStream(stream *ssestream.Stream[anthropic.MessageStreamEventUnion]) *anthropicStream {
-	return &anthropicStream{stream: stream, pending: map[int64]*pendingToolCall{}}
+	return &anthropicStream{stream: stream, blocks: map[int64]*pendingBlock{}}
 }
 
 func (s *anthropicStream) Next() bool {
@@ -232,48 +235,61 @@ func (s *anthropicStream) Next() bool {
 		switch ev.Type {
 		case "content_block_start":
 			cb := ev.ContentBlock
+			pb := &pendingBlock{kind: cb.Type}
 			if cb.Type == "tool_use" {
-				// 记录工具调用开始；参数在 input_json_delta 或 start 的 input 中。
-				initial := ""
+				// 工具调用开始；参数可能已带全（content_block_start 时 input 非空）
+				// 或经 input_json_delta 流式到达（大参数）。initial 兜底，分片优先。
+				pb.call = &messages.ToolCall{ID: cb.ID, Name: cb.Name}
 				if cb.Input != nil {
 					if data, err := json.Marshal(cb.Input); err == nil {
-						initial = string(data)
+						pb.initial = string(data)
 					}
 				}
-				s.pending[ev.Index] = &pendingToolCall{
-					call: &messages.ToolCall{ID: cb.ID, Name: cb.Name},
-					initial: initial,
-				}
 			}
+			s.blocks[ev.Index] = pb
 			continue
 		case "content_block_delta":
+			pb := s.blocks[ev.Index]
+			if pb == nil {
+				continue
+			}
 			switch ev.Delta.Type {
 			case "text_delta":
+				pb.sb.WriteString(ev.Delta.Text)
 				s.cur = Event{Type: EventTextDelta, Text: ev.Delta.Text}
 				return true
 			case "thinking_delta":
+				pb.sb.WriteString(ev.Delta.Thinking)
 				s.cur = Event{Type: EventThinkingDelta, Text: ev.Delta.Thinking}
 				return true
 			case "input_json_delta":
-				if p := s.pending[ev.Index]; p != nil {
-					p.partial.WriteString(ev.Delta.PartialJSON)
-				}
-				continue
+				pb.sb.WriteString(ev.Delta.PartialJSON)
 			}
 			continue
 		case "content_block_stop":
-			if p := s.pending[ev.Index]; p != nil {
-				// 完成工具调用：优先用流式累积的参数，其次 start 自带 input，最后空对象。
-				args := p.partial.String()
+			pb := s.blocks[ev.Index]
+			if pb == nil {
+				continue
+			}
+			delete(s.blocks, ev.Index)
+			switch pb.kind {
+			case "tool_use":
+				// 参数：优先 input_json_delta 分片累积，其次 start 自带 input，最后空对象。
+				args := pb.sb.String()
 				if args == "" {
-					args = p.initial
+					args = pb.initial
 				}
 				if args == "" {
 					args = "{}"
 				}
-				p.call.Args = json.RawMessage(args)
-				s.cur = Event{Type: EventToolCall, ToolCall: p.call}
-				delete(s.pending, ev.Index)
+				pb.call.Args = json.RawMessage(args)
+				s.cur = Event{Type: EventToolCall, ToolCall: pb.call}
+				return true
+			case "thinking":
+				s.cur = Event{Type: EventThinkingDone, Text: pb.sb.String()}
+				return true
+			case "text":
+				s.cur = Event{Type: EventTextDone, Text: pb.sb.String()}
 				return true
 			}
 			continue

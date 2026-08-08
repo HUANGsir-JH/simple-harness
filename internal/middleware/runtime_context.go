@@ -1,11 +1,18 @@
 package middleware
 
+import "github.com/agent-project/harness/internal/agentstate"
+
 // RuntimeContext 是一次 call 的 per-call 上下文（参照 AgentScope 的 RuntimeContext）。
 // 单用户 CLI 无 UserID；阶段二最小实现：SessionID + 自由键值 attrs。
 // 各 middleware hook 与工具共享同一实例，用于在调用内传递状态（不持久化）。
 type RuntimeContext struct {
 	// SessionID 标识当前会话（交互式/单轮复用）。
 	SessionID string
+
+	// State 是当前会话的 AgentState（注入机制 ADR-025）：
+	// session.StateMiddleware 挂 onAgent，before 加载、after 保存；
+	// 工具经 Handle 的 rc 参数读写（如 todo 挂 rc.State.Todos）。
+	State *agentstate.AgentState
 
 	attrs map[string]any
 }

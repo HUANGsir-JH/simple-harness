@@ -44,12 +44,16 @@ func TestAnthropicStreamTextDelta(t *testing.T) {
 	defer es.Close()
 
 	var got strings.Builder
+	var doneText string
 	done := false
 	for es.Next() {
 		ev := es.Current()
 		switch ev.Type {
 		case EventTextDelta:
 			got.WriteString(ev.Text)
+		case EventTextDone:
+			// 块完成事件（ADR-025）：完整块文本，供持久化订阅。
+			doneText = ev.Text
 		case EventDone:
 			done = true
 		default:
@@ -64,6 +68,9 @@ func TestAnthropicStreamTextDelta(t *testing.T) {
 	}
 	if got.String() != "Hello" {
 		t.Errorf("text: got %q want %q", got.String(), "Hello")
+	}
+	if doneText != "Hello" {
+		t.Errorf("text_done: got %q want %q", doneText, "Hello")
 	}
 }
 
@@ -262,9 +269,14 @@ func TestAnthropicStreamThinkingDelta(t *testing.T) {
 	defer es.Close()
 
 	var thinking strings.Builder
+	var thinkingDone string
 	for es.Next() {
-		if ev := es.Current(); ev.Type == EventThinkingDelta {
+		switch ev := es.Current(); ev.Type {
+		case EventThinkingDelta:
 			thinking.WriteString(ev.Text)
+		case EventThinkingDone:
+			// 块完成事件（ADR-025）：完整 thinking 块文本，供持久化订阅。
+			thinkingDone = ev.Text
 		}
 	}
 	if err := es.Err(); err != nil {
@@ -272,5 +284,8 @@ func TestAnthropicStreamThinkingDelta(t *testing.T) {
 	}
 	if thinking.String() != "Let me think more" {
 		t.Errorf("thinking: got %q", thinking.String())
+	}
+	if thinkingDone != "Let me think more" {
+		t.Errorf("thinking_done: got %q want %q", thinkingDone, "Let me think more")
 	}
 }

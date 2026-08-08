@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/agent-project/harness/internal/messages"
+	"github.com/agent-project/harness/internal/middleware"
 	"github.com/agent-project/harness/internal/provider"
 )
 
@@ -33,7 +34,7 @@ func (ReadFileTool) Spec() provider.ToolSpec {
 	}
 }
 
-func (ReadFileTool) Handle(_ context.Context, _ string, args json.RawMessage) (messages.ToolResult, error) {
+func (ReadFileTool) Handle(_ context.Context, _ *middleware.RuntimeContext, _ string, args json.RawMessage) (messages.ToolResult, error) {
 	var p struct {
 		Path      string `json:"path"`
 		StartLine int    `json:"start_line"`
@@ -98,7 +99,7 @@ func (ListDirTool) Spec() provider.ToolSpec {
 	}
 }
 
-func (ListDirTool) Handle(_ context.Context, _ string, args json.RawMessage) (messages.ToolResult, error) {
+func (ListDirTool) Handle(_ context.Context, _ *middleware.RuntimeContext, _ string, args json.RawMessage) (messages.ToolResult, error) {
 	var p struct {
 		Path string `json:"path"`
 	}
@@ -151,7 +152,7 @@ func (GlobTool) Spec() provider.ToolSpec {
 	}
 }
 
-func (GlobTool) Handle(_ context.Context, _ string, args json.RawMessage) (messages.ToolResult, error) {
+func (GlobTool) Handle(_ context.Context, _ *middleware.RuntimeContext, _ string, args json.RawMessage) (messages.ToolResult, error) {
 	var p struct {
 		Pattern string `json:"pattern"`
 	}

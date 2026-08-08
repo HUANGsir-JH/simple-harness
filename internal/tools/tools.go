@@ -9,6 +9,7 @@ import (
 	"fmt"
 
 	"github.com/agent-project/harness/internal/messages"
+	"github.com/agent-project/harness/internal/middleware"
 	"github.com/agent-project/harness/internal/provider"
 )
 
@@ -20,9 +21,10 @@ type Tool interface {
 	// Spec 返回工具定义（name + description + parameters JSON Schema），
 	// 采样时传给模型。
 	Spec() provider.ToolSpec
-	// Handle 执行一次工具调用。callID 用于关联（结果回填历史）。
+	// Handle 执行一次工具调用。rc 是 per-call 上下文（工具经其读写
+	// AgentState 等，ADR-025）；callID 用于关联（结果回填历史）。
 	// 返回统一 ToolResult；执行失败时返回 error（*ToolError 携带二分类语义）。
-	Handle(ctx context.Context, callID string, args json.RawMessage) (messages.ToolResult, error)
+	Handle(ctx context.Context, rc *middleware.RuntimeContext, callID string, args json.RawMessage) (messages.ToolResult, error)
 }
 
 // ToolError 是工具错误的二分类容器。

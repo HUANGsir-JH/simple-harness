@@ -29,6 +29,7 @@ type Message struct {
 	ID          string            `json:"id,omitempty"`
 	Role        Role              `json:"role"`
 	Content     string            `json:"content,omitempty"`
+	Thinking    string            `json:"thinking,omitempty"`     // assistant 推理文本（存审计；重放时剥离，见 ADR-025）
 	ToolCalls   []ToolCall        `json:"tool_calls,omitempty"`   // 助手消息携带这些
 	ToolCallID  string            `json:"tool_call_id,omitempty"` // tool results reference a call
 	ToolResults []ToolResultBlock `json:"tool_results,omitempty"` // tool result 消息携带（多块合并，满足 anthropic 紧邻要求）

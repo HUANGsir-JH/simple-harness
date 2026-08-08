@@ -25,8 +25,12 @@ const (
 	EventTurnStart EventType = "turn_start"
 	// EventThinkingDelta 是模型推理文本增量（thinking 展示）。
 	EventThinkingDelta EventType = "thinking_delta"
+	// EventThinkingDone 是一个 thinking 内容块完成（Text = 完整块文本；持久化用）。ADR-025。
+	EventThinkingDone EventType = "thinking_done"
 	// EventTextDelta 是助手回复文本增量。
 	EventTextDelta EventType = "text_delta"
+	// EventTextDone 是一个 text 内容块完成（Text = 完整块文本；持久化用）。ADR-025。
+	EventTextDone EventType = "text_done"
 	// EventToolCall 是模型发起的一个工具调用。
 	EventToolCall EventType = "tool_call"
 	// EventToolResult 是单个工具的执行结果。
@@ -40,6 +44,7 @@ const (
 // Event 是单个回合级事件。
 type Event struct {
 	Type       EventType
+	MsgID      string // 事件所属消息 id（assistant 块事件；tool_result 为空）
 	Text       string
 	ToolCall   *messages.ToolCall
 	ToolResult *messages.ToolResult
@@ -152,7 +157,12 @@ type sampleResult struct {
 
 // sample 执行一次采样：模型调用（onModelCall 包裹）→ 收集 thinking/text/tool_call。
 func (a *Agent) sample(ctx context.Context, in middleware.ReasoningInput, sysPrompt string, emit OnEvent) (*sampleResult, error) {
+	// 每个采样轮生成一个消息 id，块事件与 assistant 消息共用（transcript 关联）。
+	msgID := fmt.Sprintf("msg_%d", timeNowNanos())
+	// sb/tb 用"块完成"事件（EventTextDone/EventThinkingDone）组装，避免与
+	// 流式 delta 重复；delta 事件照发供渲染器流式展示。ADR-025。
 	var sb strings.Builder
+	var tb strings.Builder
 	var calls []*messages.ToolCall
 
 	wrapped := a.mw.WrapModelCall(func(ctx context.Context, rc *middleware.RuntimeContext, min middleware.ModelCallInput) error {
@@ -171,13 +181,18 @@ func (a *Agent) sample(ctx context.Context, in middleware.ReasoningInput, sysPro
 			ev := es.Current()
 			switch ev.Type {
 			case provider.EventTextDelta:
-				sb.WriteString(ev.Text)
 				emit(Event{Type: EventTextDelta, Text: ev.Text})
+			case provider.EventTextDone:
+				sb.WriteString(ev.Text)
+				emit(Event{Type: EventTextDone, Text: ev.Text, MsgID: msgID})
 			case provider.EventThinkingDelta:
 				emit(Event{Type: EventThinkingDelta, Text: ev.Text})
+			case provider.EventThinkingDone:
+				tb.WriteString(ev.Text)
+				emit(Event{Type: EventThinkingDone, Text: ev.Text, MsgID: msgID})
 			case provider.EventToolCall:
 				calls = append(calls, ev.ToolCall)
-				emit(Event{Type: EventToolCall, ToolCall: ev.ToolCall})
+				emit(Event{Type: EventToolCall, ToolCall: ev.ToolCall, MsgID: msgID})
 			case provider.EventDone:
 				return nil
 			case provider.EventError:
@@ -196,9 +211,10 @@ func (a *Agent) sample(ctx context.Context, in middleware.ReasoningInput, sysPro
 		toolCallValues = append(toolCallValues, *c)
 	}
 	assistant := &messages.Message{
-		ID:        fmt.Sprintf("msg_%d", timeNowNanos()),
+		ID:        msgID,
 		Role:      messages.RoleAssistant,
 		Content:   sb.String(),
+		Thinking:  tb.String(),
 		ToolCalls: toolCallValues,
 	}
 	return &sampleResult{assistant: assistant, toolCalls: calls}, nil
@@ -221,7 +237,7 @@ func (a *Agent) runToolBatch(ctx context.Context, rc *middleware.RuntimeContext,
 			emit(Event{Type: EventToolResult, ToolCall: in.Call, ToolResult: res})
 			return nil
 		}
-		r, err := tool.Handle(ctx, in.Call.ID, in.Call.Args)
+		r, err := tool.Handle(ctx, rc, in.Call.ID, in.Call.Args)
 		if err != nil {
 			var te *tools.ToolError
 			if errors.As(err, &te) && te.RespondToModel {
