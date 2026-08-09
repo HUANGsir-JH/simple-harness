@@ -32,6 +32,19 @@ func TestToolStateMachine(t *testing.T) {
 	}
 }
 
+func TestReadFileToolCanExpand(t *testing.T) {
+	m := New(nil)
+	tc := &messages.ToolCall{ID: "read-expand", Name: "read_file", Args: []byte(`{"path":"README.md"}`)}
+	m.onToolCall(tc)
+	m.onToolResult(agent.Event{ToolCall: tc, ToolResult: &messages.ToolResult{Success: true, Content: "first\nsecond\nthird"}})
+	if !m.tools[0].Expandable() {
+		t.Fatal("read_file should retain full output for expansion")
+	}
+	if !strings.Contains(m.tools[0].Full, "second") {
+		t.Fatalf("read_file full output = %q", m.tools[0].Full)
+	}
+}
+
 // TestToolDispatchReadFile read_file 仅元信息（不渲染内容）。
 func TestToolDispatchReadFile(t *testing.T) {
 	ts := &ToolStatus{Name: "read_file", Args: []byte(`{"path":"a.txt"}`), Collapsed: true}

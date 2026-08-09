@@ -171,7 +171,9 @@ func renderTodoBar(m *Model) string {
 		return ""
 	}
 	var done, doing, pending int
-	labels := make([]string, 0, 5)
+	lines := []string{styleRunning.Render("TODO")}
+	const maxVisible = 5
+	visible := 0
 	for _, todo := range m.status.Todos {
 		switch todo.Status {
 		case agentstate.TodoCompleted:
@@ -181,17 +183,28 @@ func renderTodoBar(m *Model) string {
 		default:
 			pending++
 		}
-		if len(labels) < 5 {
-			labels = append(labels, todoMark(todo)+" "+todo.Description)
+		if visible < maxVisible {
+			description := strings.ReplaceAll(strings.TrimSpace(todo.Description), "\n", " ")
+			prefix := "  " + todoMark(todo) + " "
+			bodyWidth := maxInt(8, m.width-lipgloss.Width(prefix)-2)
+			wrapped := ansi.Hardwrap(description, bodyWidth, true)
+			wrappedLines := strings.Split(wrapped, "\n")
+			for i, line := range wrappedLines {
+				if i == 0 {
+					lines = append(lines, styleText.Render(prefix+line))
+				} else {
+					lines = append(lines, styleText.Render(strings.Repeat(" ", lipgloss.Width(prefix))+line))
+				}
+			}
+			visible++
 		}
 	}
-	line := "  TODO  " + strings.Join(labels, "  |  ")
-	if extra := len(m.status.Todos) - len(labels); extra > 0 {
-		line += fmt.Sprintf("  ... +%d", extra)
+	if extra := len(m.status.Todos) - visible; extra > 0 {
+		lines = append(lines, styleMuted.Render(fmt.Sprintf("  ... +%d more", extra)))
 	}
 	stats := fmt.Sprintf("%d active  %d pending  %d done", doing, pending, done)
-	return styleRunning.Render(ansi.Truncate(line, maxInt(1, m.width), "...")) + "\n" +
-		alignRow("", styleMuted.Render(stats), m.width, 0)
+	lines = append(lines, styleMuted.Render("  "+stats))
+	return strings.Join(lines, "\n")
 }
 
 func renderQueueBar(m *Model) string {
@@ -244,22 +257,31 @@ func (m Model) modalArea() string {
 }
 
 func renderApproval(appr *approvalPopup, width int) string {
-	panelWidth := clamp(width-8, 34, 76)
-	bodyWidth := maxInt(20, panelWidth-4)
+	panelWidth := modalPanelWidth(width, 34, 76)
+	bodyWidth := modalInnerWidth(panelWidth)
 	summary := ansi.Hardwrap(appr.req.Summary, bodyWidth, true)
 	if summary == "" {
 		summary = appr.req.ToolName
 	}
+	hints := []string{
+		styleSuccess.Render("[Y] Allow once"),
+		styleRunning.Render("[S] Allow for session"),
+		styleError.Render("[N] Deny"),
+	}
+	// 一行放不下三个提示时改为竖排，避免被边框截断或折行。
+	hintLine := strings.Join(hints, "   ")
+	if lipgloss.Width(ansi.Strip(hintLine)) > bodyWidth {
+		hintLine = strings.Join(hints, "\n")
+	}
 	content := styleRunning.Render("PERMISSION REQUIRED") + "\n\n" +
-		styleText.Render(appr.req.ToolName) + "\n" + styleMuted.Render(summary) + "\n\n" +
-		styleSuccess.Render("[Y] Allow once") + "   " +
-		styleRunning.Render("[S] Allow for session") + "   " +
-		styleError.Render("[N] Deny")
+		styleText.Render(ansi.Truncate(appr.req.ToolName, bodyWidth, "...")) + "\n" +
+		styleMuted.Render(summary) + "\n\n" + hintLine
 	return modalStyle(panelWidth).Render(content)
 }
 
 func renderHelp(width int) string {
-	panelWidth := clamp(width-8, 38, 78)
+	panelWidth := modalPanelWidth(width, 38, 78)
+	innerWidth := modalInnerWidth(panelWidth)
 	left := strings.Join([]string{
 		styleAssistant.Render("COMMANDS"),
 		"/switch      change session",
@@ -271,24 +293,49 @@ func renderHelp(width int) string {
 	right := strings.Join([]string{
 		styleAssistant.Render("KEYS"),
 		"Tab          change focus",
+		"Enter/Space  toggle block",
 		"PgUp/PgDn    scroll",
 		"Shift+Enter  new line",
 		"Ctrl+C       copy composer",
 		"Esc          interrupt turn",
 	}, "\n")
-	content := left
-	if panelWidth >= 66 {
+	content := left + "\n\n" + right
+	// 两列并排需要能同时容纳最宽的命令行和按键行，否则退化为单列竖排。
+	leftWidth := blockWidth(left) + 2
+	if innerWidth >= leftWidth+blockWidth(right) {
 		content = lipgloss.JoinHorizontal(lipgloss.Top,
-			lipgloss.NewStyle().Width(panelWidth/2-2).Render(left), right)
-	} else {
-		content += "\n\n" + right
+			lipgloss.NewStyle().Width(leftWidth).Render(left), right)
 	}
 	return modalStyle(panelWidth).Render(content)
 }
 
-func modalStyle(width int) lipgloss.Style {
+const (
+	modalBorderWidth  = 2 // 左右各一列 ASCII 边框
+	modalPaddingWidth = 4 // Padding(1, 2) 的左右内边距
+)
+
+// modalPanelWidth 把期望宽度收敛到 [minWidth, maxWidth] 且不超出屏幕。
+// 返回值是弹窗的外框总宽（含边框）。
+func modalPanelWidth(screenWidth, minWidth, maxWidth int) int {
+	limit := maxInt(modalBorderWidth+modalPaddingWidth+1, screenWidth)
+	if maxWidth > limit {
+		maxWidth = limit
+	}
+	if minWidth > maxWidth {
+		minWidth = maxWidth
+	}
+	return clamp(screenWidth-8, minWidth, maxWidth)
+}
+
+// modalInnerWidth 是 modalStyle 渲染后真正可用的文本宽度。
+// lipgloss 的 Width 包含 padding 但不含 border，所以两者都要扣掉。
+func modalInnerWidth(panelWidth int) int {
+	return maxInt(1, panelWidth-modalBorderWidth-modalPaddingWidth)
+}
+
+func modalStyle(panelWidth int) lipgloss.Style {
 	return lipgloss.NewStyle().
-		Width(maxInt(20, width-4)).
+		Width(modalInnerWidth(panelWidth) + modalPaddingWidth).
 		Padding(1, 2).
 		Background(colorPanel).
 		Foreground(colorText).
@@ -301,40 +348,51 @@ func renderTimeline(m *Model) (string, []hitTarget) {
 	var sb strings.Builder
 	var hits []hitTarget
 	line := 0
-	appendCell := func(cell string, hit *hitTarget) {
+	// appendCell writes one timeline cell followed by a single blank separator
+	// line. localStart/localEnd are line offsets inside the cell that the hit
+	// target covers; localEnd < 0 means "the whole cell".
+	appendCell := func(cell string, hit *hitTarget, localStart, localEnd int) {
 		cell = strings.TrimRight(cell, "\n")
 		if cell == "" {
 			return
 		}
 		height := lipgloss.Height(cell)
 		if hit != nil {
-			hit.start = line
-			hit.end = line + height - 1
+			if localEnd < 0 {
+				localEnd = height - 1
+			}
+			hit.start = line + clamp(localStart, 0, height-1)
+			hit.end = line + clamp(localEnd, 0, height-1)
 			hits = append(hits, *hit)
 		}
 		sb.WriteString(cell)
 		sb.WriteString("\n\n")
-		line += height + 2
+		// cell occupies `height` lines plus the one blank separator line.
+		line += height + 1
 	}
 
 	for _, item := range m.items {
 		switch item.kind {
 		case itemMessage:
-			cell := renderMessageItem(item.msg, m.contentWidth, m.showThinking)
+			cell := renderMessageItem(item.msg, m.contentWidth, m.showThinking, m.isThinkingSelected(item.msg))
 			var hit *hitTarget
-			if m.showThinking && item.msg.Thinking != "" {
-				h := hitTarget{kind: hitThinking, id: item.msg.ID}
+			if cell.thinkingStart >= 0 {
+				h := hitTarget{kind: hitThinking, message: item.msg}
 				hit = &h
 			}
-			appendCell(cell, hit)
+			appendCell(cell.body, hit, cell.thinkingStart, cell.thinkingEnd)
 		case itemTool:
-			cell := renderToolBlock(item.tool, m.contentWidth, m.isSelected(hitTool, item.tool.ID))
-			hit := hitTarget{kind: hitTool, id: item.tool.ID}
-			appendCell(cell, &hit)
+			cell := renderToolBlock(item.tool, m.contentWidth, m.isToolSelected(item.tool))
+			var hit *hitTarget
+			if item.tool.Expandable() {
+				h := hitTarget{kind: hitTool, tool: item.tool}
+				hit = &h
+			}
+			appendCell(cell, hit, 0, -1)
 		}
 	}
 	if m.stream != nil && (m.stream.Text != "" || (m.showThinking && m.stream.Thinking != "")) {
-		appendCell(renderStream(m.stream, m.contentWidth, m.showThinking), nil)
+		appendCell(renderStream(m.stream, m.contentWidth, m.showThinking), nil, 0, -1)
 	}
 	if sb.Len() == 0 {
 		empty := lipgloss.PlaceHorizontal(m.width, lipgloss.Center,
@@ -350,7 +408,15 @@ func renderMessages(m *Model) string {
 	return content
 }
 
-func renderMessageItem(item *MessageItem, width int, showThinking bool) string {
+// messageCell is a rendered message plus the line range (relative to the cell)
+// occupied by its thinking block. thinkingStart < 0 means there is none.
+type messageCell struct {
+	body          string
+	thinkingStart int
+	thinkingEnd   int
+}
+
+func renderMessageItem(item *MessageItem, width int, showThinking, thinkingSelected bool) messageCell {
 	width = maxInt(16, width)
 	if item.Role == "" {
 		label := "SYSTEM"
@@ -359,7 +425,11 @@ func renderMessageItem(item *MessageItem, width int, showThinking bool) string {
 			label = "ERROR"
 			style = styleError
 		}
-		return style.Render(label+"  ") + styleMuted.Render(ansi.Hardwrap(item.Content, width-9, true))
+		return messageCell{
+			body:          style.Render(label+"  ") + styleMuted.Render(ansi.Hardwrap(item.Content, width-9, true)),
+			thinkingStart: -1,
+			thinkingEnd:   -1,
+		}
 	}
 	content := item.Content
 	if item.Done && item.Rendered != "" {
@@ -374,23 +444,44 @@ func renderMessageItem(item *MessageItem, width int, showThinking bool) string {
 			BorderForeground(colorCyan).
 			PaddingLeft(1).
 			Render(content)
-		return styleUser.Render("YOU") + "\n" + body
+		return messageCell{
+			body:          styleUser.Render("YOU") + "\n" + body,
+			thinkingStart: -1,
+			thinkingEnd:   -1,
+		}
 	}
 
 	var parts []string
+	thinkingStart, thinkingEnd := -1, -1
 	parts = append(parts, styleAssistant.Render("ASSISTANT"))
 	if showThinking && item.Thinking != "" {
+		thinkingLabel := fmt.Sprintf("THINKING  [collapsed]  %d chars", len([]rune(item.Thinking)))
+		if item.ThinkingExpanded {
+			thinkingLabel = "THINKING  [expanded]"
+		}
+		if thinkingSelected {
+			thinkingLabel = styleSelected.Render("> ") + styleMuted.Render(thinkingLabel)
+		} else {
+			thinkingLabel = styleMuted.Render(thinkingLabel)
+		}
+		block := thinkingLabel
 		if item.ThinkingExpanded {
 			thinking := ansi.Hardwrap(strings.TrimSpace(item.Thinking), width-2, true)
-			parts = append(parts, styleMuted.Render("THINKING  [expanded]")+"\n"+styleMuted.Render(thinking))
-		} else {
-			parts = append(parts, styleMuted.Render(fmt.Sprintf("THINKING  [collapsed]  %d chars", len([]rune(item.Thinking)))))
+			block = thinkingLabel + "\n" + styleMuted.Render(thinking)
 		}
+		// 前面已有的部分（ASSISTANT 标题）决定 thinking 块的起始行。
+		thinkingStart = lipgloss.Height(strings.Join(parts, "\n"))
+		thinkingEnd = thinkingStart + lipgloss.Height(block) - 1
+		parts = append(parts, block)
 	}
 	if content != "" {
 		parts = append(parts, content)
 	}
-	return strings.Join(parts, "\n")
+	return messageCell{
+		body:          strings.Join(parts, "\n"),
+		thinkingStart: thinkingStart,
+		thinkingEnd:   thinkingEnd,
+	}
 }
 
 func renderStream(stream *StreamState, width int, showThinking bool) string {
@@ -464,9 +555,30 @@ func colorDiffLine(line string) string {
 	}
 }
 
-func (m Model) isSelected(kind hitKind, id string) bool {
-	return m.focus == focusTimeline && m.selectedHit >= 0 && m.selectedHit < len(m.hits) &&
-		m.hits[m.selectedHit].kind == kind && m.hits[m.selectedHit].id == id
+func (m Model) selectedTarget() *hitTarget {
+	if m.focus != focusTimeline || m.selectedHit < 0 || m.selectedHit >= len(m.hits) {
+		return nil
+	}
+	return &m.hits[m.selectedHit]
+}
+
+func (m Model) isThinkingSelected(message *MessageItem) bool {
+	selected := m.selectedTarget()
+	return selected != nil && selected.kind == hitThinking && selected.message == message
+}
+
+func (m Model) isToolSelected(tool *ToolStatus) bool {
+	selected := m.selectedTarget()
+	return selected != nil && selected.kind == hitTool && selected.tool == tool
+}
+
+// blockWidth 返回多行文本中最宽一行的显示宽度。
+func blockWidth(block string) int {
+	width := 0
+	for _, line := range strings.Split(block, "\n") {
+		width = maxInt(width, lipgloss.Width(line))
+	}
+	return width
 }
 
 func alignRow(left, right string, width, padding int) string {

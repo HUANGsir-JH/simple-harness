@@ -32,7 +32,7 @@ type ToolStatus struct {
 
 // Expandable reports whether the block has detail beyond its compact view.
 func (t *ToolStatus) Expandable() bool {
-	if t == nil || t.Name == "read_file" || t.Full == "" {
+	if t == nil || t.Full == "" {
 		return false
 	}
 	return t.Full != t.Content || len(strings.Split(strings.TrimSpace(t.Full), "\n")) > 6
@@ -94,6 +94,7 @@ func applyToolResult(ts *ToolStatus, res *messages.ToolResult) {
 		// 元信息单行（不渲染内容）：行数 + 大小。
 		lines := lineCount(res.Content)
 		ts.Content = fmt.Sprintf("%s  |  %d lines  |  %s", readFilePath(ts.Args), lines, humanSize(len(res.Content)))
+		ts.Full = res.Content
 	case "write_file":
 		ts.writeResult(res)
 	case "apply_patch":
@@ -130,6 +131,7 @@ func (ts *ToolStatus) writeResult(res *messages.ToolResult) {
 	lines := strings.Count(newContent, "\n")
 	if !ts.oldExists && ts.oldContent == "" {
 		ts.Content = fmt.Sprintf("created %s  |  %d lines  |  %s", path, lines, humanSize(len(newContent)))
+		ts.Full = newContent
 		return
 	}
 	edits := myers.ComputeEdits(span.URIFromPath(path), ts.oldContent, newContent)

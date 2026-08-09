@@ -23,7 +23,6 @@ const (
 
 type popupItem struct {
 	label string
-	desc  string
 	value string
 }
 
@@ -205,8 +204,8 @@ func (m *Model) reloadSession() {
 }
 
 func renderPopup(sel *selectPopup, screenWidth, availableHeight int) string {
-	panelWidth := clamp(screenWidth-8, 38, 82)
-	maxRows := maxInt(3, availableHeight-8)
+	panelWidth := modalPanelWidth(screenWidth, 34, 64)
+	maxRows := maxInt(3, availableHeight-6)
 	start := 0
 	if len(sel.items) > maxRows {
 		start = sel.cursor - maxRows/2
@@ -221,17 +220,14 @@ func renderPopup(sel *selectPopup, screenWidth, availableHeight int) string {
 	if end > len(sel.items) {
 		end = len(sel.items)
 	}
-	listWidth := panelWidth
-	if panelWidth >= 64 {
-		listWidth = panelWidth/2 - 2
-	}
+	listWidth := modalInnerWidth(panelWidth)
 	var rows []string
 	for i := start; i < end; i++ {
 		prefix := "  "
 		if i == sel.cursor {
 			prefix = "> "
 		}
-		row := ansi.Truncate(prefix+sel.items[i].label, listWidth-2, "...")
+		row := ansi.Truncate(prefix+sel.items[i].label, maxInt(1, listWidth), "...")
 		if i == sel.cursor {
 			row = styleSelected.Width(listWidth).Render(row)
 		} else {
@@ -239,15 +235,7 @@ func renderPopup(sel *selectPopup, screenWidth, availableHeight int) string {
 		}
 		rows = append(rows, row)
 	}
-	list := strings.Join(rows, "\n")
-	description := styleMuted.Render(sel.items[sel.cursor].desc)
-	body := list + "\n\n" + description
-	if panelWidth >= 64 {
-		detailWidth := panelWidth - listWidth - 4
-		detail := styleMuted.Width(detailWidth).Render(ansi.Hardwrap(sel.items[sel.cursor].desc, detailWidth, true))
-		body = lipgloss.JoinHorizontal(lipgloss.Top, list, "  ", detail)
-	}
-	content := styleAssistant.Render(sel.title) + "\n\n" + body
+	content := styleAssistant.Render(sel.title) + "\n\n" + strings.Join(rows, "\n")
 	return modalStyle(panelWidth).Render(content)
 }
 
@@ -255,7 +243,7 @@ func switchItems(sessions []session.SessionInfo) []popupItem {
 	items := make([]popupItem, 0, len(sessions))
 	for i := len(sessions) - 1; i >= 0; i-- {
 		s := sessions[i]
-		items = append(items, popupItem{label: s.ID, value: s.ID, desc: "Resume this session and replace the current timeline."})
+		items = append(items, popupItem{label: s.ID, value: s.ID})
 	}
 	return items
 }
@@ -263,33 +251,23 @@ func switchItems(sessions []session.SessionInfo) []popupItem {
 func modelItems(models []string) []popupItem {
 	items := make([]popupItem, 0, len(models))
 	for _, name := range models {
-		items = append(items, popupItem{label: name, value: name, desc: "Use this model for future turns in the active session."})
+		items = append(items, popupItem{label: name, value: name})
 	}
 	return items
 }
 
 func effortItems(efforts []string) []popupItem {
-	descriptions := map[string]string{
-		"low":  "Faster reasoning with a smaller token budget.",
-		"high": "Balanced reasoning for most coding tasks.",
-		"max":  "Use the model's largest available reasoning budget.",
-	}
 	items := make([]popupItem, 0, len(efforts))
 	for _, effort := range efforts {
-		items = append(items, popupItem{label: effort, value: effort, desc: descriptions[effort]})
+		items = append(items, popupItem{label: effort, value: effort})
 	}
 	return items
 }
 
 func permissionItems(modes []string) []popupItem {
-	descriptions := map[string]string{
-		"readonly":   "Read operations proceed. Writes and shell commands require approval.",
-		"acceptedit": "Reads and file edits proceed. Shell commands require approval.",
-		"bypass":     "All tool calls proceed without interactive approval.",
-	}
 	items := make([]popupItem, 0, len(modes))
 	for _, mode := range modes {
-		items = append(items, popupItem{label: mode, value: mode, desc: descriptions[mode]})
+		items = append(items, popupItem{label: mode, value: mode})
 	}
 	return items
 }

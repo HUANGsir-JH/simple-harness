@@ -73,10 +73,11 @@ type timelineItem struct {
 }
 
 type hitTarget struct {
-	kind  hitKind
-	id    string
-	start int
-	end   int
+	kind    hitKind
+	message *MessageItem
+	tool    *ToolStatus
+	start   int
+	end     int
 }
 
 type approvalPopup struct {
@@ -293,6 +294,10 @@ func (m Model) handleComposerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if msg.Type == tea.KeyEnter && !msg.Alt {
+		if m.completionVisible() {
+			m.acceptCompletion()
+			return m, nil
+		}
 		return m.submit()
 	}
 
@@ -308,15 +313,32 @@ func (m Model) handleComposerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) handleTimelineKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "up", "k":
-		m.viewport.LineUp(1)
-		m.autoScroll = false
+		m.moveSelectedHit(-1)
 	case "down", "j":
-		m.viewport.LineDown(1)
-		m.autoScroll = m.viewport.AtBottom()
-	case "enter":
+		m.moveSelectedHit(1)
+	case "enter", "space":
 		m.toggleSelectedHit()
 	}
 	return m, nil
+}
+
+func (m *Model) moveSelectedHit(delta int) {
+	if len(m.hits) == 0 {
+		return
+	}
+	if m.selectedHit < 0 || m.selectedHit >= len(m.hits) {
+		m.selectedHit = 0
+	}
+	m.selectedHit = (m.selectedHit + delta + len(m.hits)) % len(m.hits)
+	hit := m.hits[m.selectedHit]
+	if hit.start < m.viewport.YOffset {
+		m.viewport.SetYOffset(hit.start)
+		m.autoScroll = false
+	} else if hit.end >= m.viewport.YOffset+m.viewport.Height {
+		m.viewport.SetYOffset(hit.end - m.viewport.Height + 1)
+		m.autoScroll = m.viewport.AtBottom()
+	}
+	m.refresh(false)
 }
 
 func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
@@ -648,18 +670,12 @@ func (m *Model) toggleSelectedHit() {
 func (m *Model) toggleHit(hit hitTarget) {
 	switch hit.kind {
 	case hitTool:
-		for _, tool := range m.tools {
-			if tool.ID == hit.id && tool.Expandable() {
-				tool.Collapsed = !tool.Collapsed
-				return
-			}
+		if hit.tool != nil && hit.tool.Expandable() {
+			hit.tool.Collapsed = !hit.tool.Collapsed
 		}
 	case hitThinking:
-		for _, msg := range m.msgs {
-			if msg.ID == hit.id {
-				msg.ThinkingExpanded = !msg.ThinkingExpanded
-				return
-			}
+		if hit.message != nil {
+			hit.message.ThinkingExpanded = !hit.message.ThinkingExpanded
 		}
 	}
 }

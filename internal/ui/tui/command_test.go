@@ -6,9 +6,12 @@ import (
 	"testing"
 
 	"github.com/agent-project/harness/internal/agentstate"
+	"github.com/agent-project/harness/internal/middleware"
 	"github.com/agent-project/harness/internal/middleware/impl"
 	"github.com/agent-project/harness/internal/provider"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // cfgWithModels 构造带模型的配置（弹窗数据源测试；APIKey 供 Resolve）。
@@ -141,7 +144,9 @@ func TestTodoBarRender(t *testing.T) {
 		{Position: 3, Description: "提交", Status: "completed"},
 	})
 	v := m.View()
-	if !strings.Contains(v, "TODO  [>] 写代码") || !strings.Contains(v, "[ ] 测试") {
+	todoAt := strings.Index(v, "TODO")
+	activeAt := strings.Index(v, "[>] 写代码")
+	if todoAt < 0 || activeAt < 0 || !strings.Contains(v[todoAt:activeAt], "\n") || !strings.Contains(v, "[ ] 测试") {
 		t.Fatalf("todo 条应含进行中项，got:\n%s", v)
 	}
 	if !strings.Contains(v, "1 active  1 pending  1 done") {
@@ -189,5 +194,55 @@ func TestPopupRender(t *testing.T) {
 	v := m.View()
 	if !strings.Contains(v, "切换模型") || !strings.Contains(v, "> m1") {
 		t.Fatalf("弹窗应含标题与光标项，got:\n%s", v)
+	}
+}
+
+// 弹窗内容宽度必须与外框一致：任何一行超过外框宽度都会在真实终端折行，
+// 导致选项被拆成两行（modalStyle 的 Width 含 padding 但不含 border）。
+func TestModalsFitPanelWidth(t *testing.T) {
+	longLabel := "deepseek-v4-flash-preview-extra-long-model-name"
+	cases := []struct {
+		name  string
+		lines int // 期望的外框总行数（含边框与上下 padding），折行会让它变大
+		build func(screenWidth int) (panel string, width int)
+	}{
+		{"select", 8, func(w int) (string, int) {
+			sel := &selectPopup{title: "MODELS", items: []popupItem{
+				{label: "deepseek-v4-flash", value: "deepseek-v4-flash"},
+				{label: longLabel, value: longLabel},
+			}}
+			return renderPopup(sel, w, 20), modalPanelWidth(w, 34, 64)
+		}},
+		// approval/help 的行数随宽度变化（提示竖排、帮助单列），这里只校验宽度。
+		{"approval", 0, func(w int) (string, int) {
+			appr := &approvalPopup{req: middleware.ApprovalRequest{
+				ToolName: "shell_command",
+				Summary:  "运行一个相当长的命令用于验证换行行为 " + longLabel,
+			}}
+			return renderApproval(appr, w), modalPanelWidth(w, 34, 76)
+		}},
+		{"help", 0, func(w int) (string, int) {
+			return renderHelp(w), modalPanelWidth(w, 38, 78)
+		}},
+	}
+	for _, screenWidth := range []int{30, 40, 56, 80, 120, 200} {
+		for _, tc := range cases {
+			panel, panelWidth := tc.build(screenWidth)
+			if tc.lines > 0 {
+				if got := lipgloss.Height(panel); got != tc.lines {
+					t.Fatalf("%s@%d 弹窗 %d 行，期望 %d 行（多出的行说明内容被折行）：\n%s",
+						tc.name, screenWidth, got, tc.lines, ansi.Strip(panel))
+				}
+			}
+			for i, line := range strings.Split(panel, "\n") {
+				if got := lipgloss.Width(line); got != panelWidth {
+					t.Fatalf("%s@%d 第 %d 行宽度 %d，期望 %d：%q",
+						tc.name, screenWidth, i, got, panelWidth, ansi.Strip(line))
+				}
+			}
+			if panelWidth > maxInt(screenWidth, modalBorderWidth+modalPaddingWidth+1) {
+				t.Fatalf("%s@%d 弹窗宽度 %d 超出屏幕", tc.name, screenWidth, panelWidth)
+			}
+		}
 	}
 }

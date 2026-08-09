@@ -48,7 +48,23 @@ func (m Model) completionVisible() bool {
 		return false
 	}
 	value := strings.TrimSpace(m.input.Value())
-	return strings.HasPrefix(value, "/") && !strings.Contains(strings.TrimPrefix(value, "/"), " ") && len(completionItems(value)) > 0
+	if !strings.HasPrefix(value, "/") {
+		return false
+	}
+	prefix := strings.TrimPrefix(value, "/")
+	if strings.Contains(prefix, " ") {
+		return false
+	}
+	items := completionItems(value)
+	if len(items) == 0 {
+		return false
+	}
+	for _, item := range items {
+		if item.name == prefix {
+			return false
+		}
+	}
+	return true
 }
 
 func normalizeCompletion(value string, current int) int {

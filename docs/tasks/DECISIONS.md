@@ -252,9 +252,9 @@
   1. **技术栈**：`charmbracelet/bubbletea` v1.3（elm 架构 Model/Update/Msg，Update/View 纯函数可测）+ `bubbles` v1.0（viewport/textarea/spinner）+ `lipgloss`（排版）+ `glamour` v1.0（markdown→ANSI）+ `hexops/gotextdiff`（write_file 覆盖 diff）。bubbletea 自研终端层（x/term + termenv，无 tcell 重依赖），Windows 支持完善（conpty）。
   2. **入口**：`harness`（无子命令）与 `resume` 进 TUI；**REPL 删除**（runREPL 逻辑删，`repl()` 留薄壳调 `tui.RunTUI`）；`run` **保留**流式非交互（脚本/CI）；非 TTY 下 `harness` 无子命令报错提示用 `run`；`--json` 仅 `run` 支持（TUI 全屏不兼容）。
   3. **队列**：run 期间 textarea 可编辑，Enter → `pending []string` 队列（**不落盘**，队列条显示输入框上方，多行可滚）；`turn_done` 逐条自动连跑；Esc 中断保留队列；审批弹窗与队列互斥；`/exit` 丢弃队列。
-  4. **斜杠命令**：`/switch` `/model` `/permission` `/effort` **弹窗选择器**（↑/↓ + Enter + Esc，复用审批弹窗框架），选项列表**实时从配置获取**（provider config / 模型 thinking.efforts），弹窗右侧显示选中项说明；**自动补全首版做**；执行反馈用**系统行**；**命令统一进队列**（消费按 `/` 前缀分派命令 / 普通文本发 agent，运行中切换天然解耦）；**命令落盘**（transcript 新增 `command` 行）**但 load 时不进 conversation**（模型不可见），resume 渲染系统行（对齐 thinking 存但不重放，ADR-025）。
+  4. **斜杠命令**：`/switch` `/model` `/permission` `/effort` **弹窗选择器**（↑/↓ + Enter + Esc，复用审批弹窗框架），选项列表**实时从配置获取**（provider config / 模型 thinking.efforts），弹窗只显示选项，不显示描述栏；**自动补全首版做**；执行反馈用**系统行**；**命令统一进队列**（消费按 `/` 前缀分派命令 / 普通文本发 agent，运行中切换天然解耦）；**命令落盘**（transcript 新增 `command` 行）**但 load 时不进 conversation**（模型不可见），resume 渲染系统行（对齐 thinking 存但不重放，ADR-025）。
   5. **键鼠**：单焦点 + Tab 切换（输入区↔消息区）；**Ctrl+C = 复制**（textarea 选中，x/exp/clipboard，不可用 no-op）；Esc = 中断回合（ADR-028 保留）；退出 = 仅 `/exit`；输入历史（空输入 ↑，进程内内存）；鼠标首版 = 点击工具块展开/收起 + 滚轮消息滚动 + 点击输入聚焦（WithMouseCellMotion，行号反查 UI 元素）。
-  6. **工具展示 = 折叠块 + 按工具分派**（对齐 opencode ToolPart + collapse-tool-output / codex HistoryCell）：消息流内插；默认高 6 行超出折叠、点击/Enter 撑开滚动；失败态红 `[ERR]` + 错误 + 已收集输出。分派表：read_file 单行元信息（不渲染内容）；write_file 元信息 + **覆盖时 gotextdiff**（新建无 diff）；apply_patch 从 args.patch 提取 +/- 行 diff（无库）+ 文件列表；list_dir/glob 前 5 枚举 + 计数（纯名称）；update_todo 完整 checklist；shell_command 完整 command + 输出折叠块（超长落盘提示）。
+  6. **工具展示 = 折叠块 + 按工具分派**（对齐 opencode ToolPart + collapse-tool-output / codex HistoryCell）：消息流内插；默认高 6 行超出折叠、点击/Enter 撑开滚动；失败态红 `[ERR]` + 错误 + 已收集输出。分派表：read_file 折叠态显示单行元信息、展开态显示文件内容；write_file 元信息 + **覆盖时 gotextdiff**（新建可展开内容）；apply_patch 从 args.patch 提取 +/- 行 diff（无库）+ 文件列表；list_dir/glob 前 5 枚举 + 计数（纯名称）；update_todo 完整 checklist；shell_command 完整 command + 输出折叠块（超长落盘提示）。
   7. **thinking**：流式灰显 + 块完成折叠 `[thinking]` 一行，点击展开；历史 thinking 折叠展示（resume 可见）。
   8. **切换 session**：消息区**全量替换**为新 session 历史（重建首屏，非 REPL 增量）；工具区/stream/审批清空、状态栏会话 id/todo 更新；切换时队列清空、输入历史跨 session 共享。
   9. **风格约束**：全程不用 emoji/彩色图标——状态用纯文本或 ASCII + 颜色（成功绿 / 失败红 / 进行中黄），如 `[OK]`/`[ERR]`/`[RUN]`。
@@ -262,6 +262,16 @@
   11. **测试策略**：单测为主 + e2e 尽量全面——T1 Model.Update 无 TTY 单测（消息流/工具状态机/审批/队列/切换/历史/命令消费）；T2 View 关键内容包含断言（非整串快照）；T3 事件桥 + T4 审批桥单测；T5 e2e termtest 尽量全面（prompt→回复/审批 y/n/exit/resume 首屏/switch/队列连跑/thinking/工具块展开/非 TTY 报错/run 保留）；**人工测试清单**（鼠标点击/中文 IME/Ctrl+C 复制/resize/长输出性能）完成后用户实测；T6 既有测试零回归（agent 核心不改）。
 - **理由**：TUI 对症 REPL 测试痛点（elm 纯函数可测，无 TTY）；bubbletea 是 Go agent CLI 主流、依赖树小、Windows 完善；删 REPL 避免双交互入口维护、TUI 成唯一交互形态；run 保留脚本化能力；队列/命令统一进队列使"运行中切换"天然解耦（无需禁止/中断/后台三选一）；工具分派对齐两参考项目已验证形态；md 渲染是模型输出刚需（glamour 与 bubbletea 同生态）；无 emoji 是用户明确风格。
 - **影响 ADR**：ADR-008 修订——`Output`/Renderer 接口保留给 `run`（TextRenderer/JSONRenderer 流式），TUI 是独立交互 UI 层（`internal/ui/tui`）而非 renderer 插拔实现；ADR-028 Esc 中断语义保留；ADR-025 transcript 增 `command` 行类型（命令落盘，load 不进 conversation）；ADR-026 无状态 agent 是 TUI 换壳零冲击的前提。
+
+## ADR-032：TUI 行号与弹窗宽度的单一来源（2026-08-09）
+
+- **背景**：ADR-031 的两个"由渲染时记录反查"的量各自算了一遍，真实终端出现两类偏移。其一，折叠块点击错配：`renderTimeline` 每个 cell 后只多出一个空分隔行，却按 `+2` 累加行号，第 N 个块整体下移 N-1 行；同时 assistant 消息的点击区间覆盖整个 cell（标题 + thinking + 正文），点正文会切 thinking，thinking 标题行反而落进上一块区间。其二，弹窗选项折行：`modalStyle` 用 `Width(panelWidth-4)` 叠加 `Padding(1,2)`，lipgloss 的 `Width` 含 padding 不含 border，真实内容宽只有 `panelWidth-8`，而调用方按 `panelWidth-4` 排版，每个弹窗正文都宽 4 列。
+- **选择**：
+  1. 行号会计只在 `appendCell` 一处推进（`line += height + 1`）；hit 区间支持 cell 内局部范围，`renderMessageItem` 返回 `messageCell{body, thinkingStart, thinkingEnd}`，只把 thinking 块本身注册为可点击区间，工具块仍整块可点。
+  2. 弹窗几何收敛到 `modalPanelWidth`（外框总宽，按屏宽收敛且不超屏）+ `modalInnerWidth`（可用文本宽 = 外框 - border - padding）两个函数，`modalStyle` 与全部调用方（选择器/审批/帮助）都从它们取值，不再各自算偏移量。
+  3. 内容按可用宽度自适应而非硬编码阈值：审批提示一行放不下就竖排；帮助面板按左右两列实际最宽行决定是否并排。
+  4. 回归测试断言"渲染结果"而非"内部字段"：`TestHitRangesAlignWithRenderedLines` 断言每个 `hit.start` 行就是该块标题行（`THINKING` / `[OK]`）且相邻区间不重叠；`TestModalsFitPanelWidth` 在 30/40/56/80/120/200 屏宽下断言弹窗每行宽度等于外框宽、且行数不因折行增加。
+- **理由**：这两处 bug 同源——同一个几何量在两个地方各算一次，单测又只用内部字段互相验证（旧测试甚至写了 `row++` 去补偿 off-by-one，把 bug 固化成了期望）。把量收敛成一个函数、把断言挪到渲染输出上，才能让"真实终端才复现"的偏移在无 TTY 单测里暴露。已验证：把任一处改回旧算法，两个测试分别失败。
 
 ## ADR-031：TUI timeline 与窄屏交互收敛（2026-08-09）
 
