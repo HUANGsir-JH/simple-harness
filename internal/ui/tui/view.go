@@ -21,7 +21,7 @@ var (
 	styleHdr   = lipgloss.NewStyle().Foreground(lipgloss.Color("178")).Bold(true) // 工具块头黄
 )
 
-// View 渲染整个屏幕（纯函数）：消息区 + 状态栏 + 输入区。
+// View 渲染整个屏幕（纯函数）：消息区 + 状态栏 + 审批条 + 输入区。
 func (m Model) View() string {
 	var sb strings.Builder
 	if v := m.viewport.View(); v != "" {
@@ -30,8 +30,22 @@ func (m Model) View() string {
 	}
 	sb.WriteString(m.statusLine())
 	sb.WriteString("\n")
+	if m.appr != nil {
+		sb.WriteString(renderApproval(m.appr))
+		sb.WriteString("\n")
+	}
 	sb.WriteString(m.input.View())
 	return sb.String()
+}
+
+// renderApproval 渲染审批弹窗条（输入区上方；无 emoji，纯文本 + 颜色）。
+func renderApproval(appr *approvalPopup) string {
+	req := appr.req
+	line := styleHdr.Render("[审批] " + req.ToolName)
+	if req.Summary != "" {
+		line += " " + req.Summary
+	}
+	return line + "\n" + styleDim.Render("  模式 "+req.Mode+" | 允许(y) / 本会话记住(s) / 拒绝(n) / Esc 拒绝并中断")
 }
 
 // statusLine 渲染底部状态栏（模型 | 权限 | todo | spinner）。

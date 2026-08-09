@@ -1,6 +1,9 @@
 package tui
 
-import "github.com/agent-project/harness/internal/agent"
+import (
+	"github.com/agent-project/harness/internal/agent"
+	"github.com/agent-project/harness/internal/middleware"
+)
 
 // 内部消息类型（bubbletea Msg；跨 goroutine 经 program.Send 传入 Update）。
 type (
@@ -12,4 +15,11 @@ type (
 
 	// submitMsg 是用户提交的一行输入（Enter；run 期间进队列，W4 扩展）。
 	submitMsg struct{ line string }
+
+	// approvalRequestMsg 是审批请求桥（tuiApprover.Request → program.Send）。
+	// Update 弹窗 + y/s/n 按键后经 respCh 回送决策。
+	approvalRequestMsg struct {
+		req    middleware.ApprovalRequest
+		respCh chan middleware.Decision
+	}
 )

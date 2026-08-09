@@ -77,5 +77,11 @@ func (c *Controller) onEvent(ev agent.Event) {
 	c.active.OnAgentEvent(ev)
 }
 
-// approver 返回当前审批交互器（W4 前 nil → ApprovalMiddleware 自动拒绝）。
-func (c *Controller) approver() middleware.Approver { return nil }
+// approver 返回当前审批交互器（W4 起：TUI 弹窗桥；send 未注入（纯 UI 测试）
+// 时返回 nil → ApprovalMiddleware 自动拒绝）。
+func (c *Controller) approver() middleware.Approver {
+	if c.send == nil {
+		return nil
+	}
+	return &tuiApprover{send: c.send}
+}
