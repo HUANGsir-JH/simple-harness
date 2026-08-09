@@ -1,49 +1,64 @@
-// Package tui 是 harness 的 bubbletea 全屏交互 UI（替代 REPL，ADR-030）。
-// elm 架构：Model.Update(msg) (Model, Cmd) + Model.View() string 均为纯函数，
-// 可无 TTY 单测（对症 REPL 测试痛点）。
-//
-// 目录布局：
-//
-//	model.go    根 Model + UI state（W2 起：msgs/stream/tools/queue/status）
-//	update.go   Update 主 switch（W2 起扩展：agent 事件/按键/审批/命令）
-//	view.go     View 布局（lipgloss：消息区/输入区/队列条/todo 条/状态栏）
-//	events.go   agent 事件桥（onEvent → program.Send）与内部 Msg 类型
-//	approver.go TUIApprover（审批弹窗桥）
-//	run.go      RunTUI 入口
 package tui
 
 import (
+	"strings"
+
+	"github.com/agent-project/harness/internal/agent"
+	"github.com/agent-project/harness/internal/messages"
 	"github.com/charmbracelet/bubbles/textarea"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// Model 是 TUI 根组件（bubbletea elm）。字段为纯 UI state。
-// W1 骨架：仅输入区 + 终端尺寸 + /exit 退出；W2 起扩展。
-type Model struct {
-	input  textarea.Model // 底部多行输入区
-	width  int            // 终端宽
-	height int            // 终端高
-	// W2：msgs []*MessageItem  历史 + 增量消息
-	// W2：stream *StreamState  当前流式块
-	// W3：tools []ToolStatus   本批工具折叠块
-	// W3：status StatusBar     模型/会话/权限/todo
-	// W4：queue []string       用户输入队列（prompt + /命令）
-	// W4：appr  *ApprovalPrompt 审批弹窗
+// MessageItem 是消息区的一个渲染项。
+type MessageItem struct {
+	Role     messages.Role
+	Content  string // 原始文本（assistant = markdown）
+	Rendered string // md 渲染后 ANSI（Done 后；流式中 = Content）
+	Thinking string // 关联 thinking（块完成折叠，W3 展开）
+	Done     bool
+	Err      bool
 }
 
-// New 构造根 Model。
-func New() Model {
+// StreamState 是当前流式块（delta 累积，块完成 flush 成 MessageItem）。
+type StreamState struct {
+	Text     string
+	Thinking string
+}
+
+// Model 是 TUI 根组件（bubbletea elm：Update/View 纯函数）。
+// W2：消息区 + 输入区 + md 渲染 + 回合启动/中断 + 队列基础版。
+// W3 起：tools（工具折叠块）/ status（状态栏）；W4：queue 条 UI / 审批 / 命令。
+type Model struct {
+	c       *Controller
+	input   textarea.Model
+	msgs    []*MessageItem
+	stream  *StreamState
+	queue   []string // 用户输入队列（prompt；斜杠命令 W4 统一进队列）
+	running bool     // 是否有回合在跑
+
+	viewport viewport.Model // 消息区（滚动）
+	width    int
+	height   int
+}
+
+// New 构造根 Model。c 为 agent 桥（RunTUI 注入；nil 时仅 UI 壳，供测试）。
+func New(c *Controller) Model {
 	ta := textarea.New()
-	ta.Placeholder = "输入消息…（Enter 提交 · Shift+Enter 换行）   /help 查看命令"
+	ta.Placeholder = "输入消息…（Enter 提交 · Alt+Enter 换行）   /help 查看命令"
 	ta.ShowLineNumbers = false
 	ta.CharLimit = 0
 	ta.SetWidth(80)
 	ta.SetHeight(3)
 	ta.Focus()
-	return Model{input: ta}
+	return Model{
+		c:        c,
+		input:    ta,
+		viewport: viewport.New(0, 0),
+	}
 }
 
-// Init 返回初始 Cmd（首版无）。
+// Init 返回初始 Cmd。
 func (m Model) Init() tea.Cmd { return nil }
 
 // Update 是纯函数 reducer：消息 → 新 state + 副作用 Cmd。
@@ -52,49 +67,160 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.input.SetWidth(msg.Width - 4)
+		m.viewport.Width = msg.Width - 4
+		m.viewport.Height = msg.Height - 6
+		m.refresh()
 		return m, nil
 
 	case tea.KeyMsg:
 		return m.handleKey(msg)
+
+	case agentEventMsg:
+		return m.handleAgentEvent(msg.ev)
+
+	case runDoneMsg:
+		return m.handleRunDone(msg.err)
 
 	default:
 		return m, nil
 	}
 }
 
-// handleKey 处理键盘事件。
+// handleKey 处理键盘事件（焦点模型 W3 扩展：弹窗/消息区）。
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c":
 		// Ctrl+C = 复制语义（ADR-030）；剪贴板接入前 no-op。
 		return m, nil
 	case "esc":
-		// Esc = 中断当前回合（ADR-028）；无回合时 no-op（W3 接回合）。
+		if m.running && m.c != nil {
+			m.c.cancelRun() // 中断当前回合；中断提示 W3 加
+		}
 		return m, nil
 	}
 
 	if msg.Type == tea.KeyEnter && !msg.Alt {
-		// Enter（非 Alt）= 提交。W1 仅支持 /exit 退出，其余待 W2 接 agent。
-		line := m.input.Value()
-		m.input.Reset()
-		switch line {
-		case "/exit":
-			return m, tea.Quit
-		default:
-			return m, nil
-		}
+		return m.submit()
 	}
 
-	// 其余按键交给 textarea（换行键：bubbletea v1.3 无 Shift+Enter 区分，
-	// 换行走 Alt+Enter —— W2 在提交分支里 InsertString("\n") 实现）。
+	// 其余按键交给 textarea（Alt+Enter 换行、退格、光标移动）。
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	return m, cmd
 }
 
-// View 渲染整个屏幕（纯函数，可对输出断言）。
-func (m Model) View() string {
-	s := "harness TUI（W1 骨架）\n\n"
-	s += m.input.View()
-	return s
+// submit 处理 Enter 提交：/exit 退出；/命令走命令处理（W4）；其余进队列或启动回合。
+func (m Model) submit() (tea.Model, tea.Cmd) {
+	line := m.input.Value()
+	m.input.Reset()
+	if strings.TrimSpace(line) == "" {
+		return m, nil
+	}
+	switch line {
+	case "/exit":
+		return m, tea.Quit
+	case "/help":
+		m.msgs = append(m.msgs, &MessageItem{Role: messages.RoleUser, Content: line, Rendered: line, Done: true})
+		m.msgs = append(m.msgs, &MessageItem{Role: "", Content: "命令: /switch /model /effort /permission /help /exit（W4 弹窗选择器）", Rendered: "命令: /switch /model /effort /permission /help /exit", Done: true})
+		m.refresh()
+		return m, nil
+	}
+
+	// 回合中 → 进队列（队列条 UI W4）；空闲 → 启动回合。
+	if m.running {
+		m.queue = append(m.queue, line)
+		m.refresh()
+		return m, nil
+	}
+	return m.startRun(line)
+}
+
+// startRun 启动一个回合。
+func (m Model) startRun(line string) (tea.Model, tea.Cmd) {
+	m.running = true
+	m.refresh()
+	if m.c == nil {
+		return m, nil // 纯 UI 壳（测试）
+	}
+	return m, m.c.Run(line)
+}
+
+// handleAgentEvent 处理 agent 事件（消息增量 reducer，对齐 opencode data.tsx）。
+func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
+	switch ev.Type {
+	case agent.EventTurnStart:
+		m.running = true
+		if m.stream == nil {
+			m.stream = &StreamState{}
+		}
+	case agent.EventThinkingDelta:
+		if m.stream == nil {
+			m.stream = &StreamState{}
+		}
+		m.stream.Thinking += ev.Text
+	case agent.EventTextDelta:
+		if m.stream == nil {
+			m.stream = &StreamState{}
+		}
+		m.stream.Text += ev.Text
+	case agent.EventThinkingDone:
+		if m.stream == nil {
+			m.stream = &StreamState{}
+		}
+		m.stream.Thinking = ev.Text
+	case agent.EventTextDone:
+		m.flushStream()
+	case agent.EventToolCall:
+		// 工具折叠块 W3 实现；此处仅显示调用行占位。
+		m.msgs = append(m.msgs, &MessageItem{Role: messages.RoleAssistant, Content: "[工具] " + toolCallSummary(ev.ToolCall), Rendered: "[工具] " + toolCallSummary(ev.ToolCall), Done: true})
+	case agent.EventToolResult:
+		// W3 工具块填充。
+	case agent.EventTurnDone:
+		m.flushStream()
+		m.running = false
+		// 队列逐条连跑（ADR-030）：回合完成自动发下一条。
+		if len(m.queue) > 0 && m.c != nil {
+			next := m.queue[0]
+			m.queue = m.queue[1:]
+			m.refresh()
+			return m, m.c.Run(next)
+		}
+	case agent.EventError:
+		m.running = false
+		if ev.Err != nil {
+			m.msgs = append(m.msgs, &MessageItem{Role: "", Content: "[错误] " + ev.Err.Error(), Rendered: "[错误] " + ev.Err.Error(), Done: true, Err: true})
+		}
+	}
+	m.refresh()
+	return m, nil
+}
+
+// handleRunDone 回合结束（含中断/错误）。
+func (m Model) handleRunDone(err error) (tea.Model, tea.Cmd) {
+	m.running = false
+	return m, nil
+}
+
+// flushStream 把流式块收尾成完整消息（text_done 时 md 渲染；ADR-030 块完成渲染）。
+func (m *Model) flushStream() {
+	if m.stream == nil {
+		return
+	}
+	if m.stream.Text != "" || m.stream.Thinking != "" {
+		rendered := renderMarkdown(m.stream.Text, m.width)
+		m.msgs = append(m.msgs, &MessageItem{
+			Role:     messages.RoleAssistant,
+			Content:  m.stream.Text,
+			Rendered: rendered,
+			Thinking: m.stream.Thinking,
+			Done:     true,
+		})
+	}
+	m.stream = nil
+}
+
+// refresh 重建消息区内容并滚到底（Update 内调用；View 只读 viewport）。
+func (m *Model) refresh() {
+	m.viewport.SetContent(renderMessages(m))
+	m.viewport.GotoBottom()
 }

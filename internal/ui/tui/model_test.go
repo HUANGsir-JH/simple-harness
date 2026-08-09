@@ -9,7 +9,7 @@ import (
 
 // TestUpdateExit 提交 /exit 应返回 Quit。
 func TestUpdateExit(t *testing.T) {
-	m := New()
+	m := New(nil)
 	m.input.SetValue("/exit")
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
@@ -22,7 +22,7 @@ func TestUpdateExit(t *testing.T) {
 
 // TestUpdateEnterClearsInput Enter 提交后输入区应清空。
 func TestUpdateEnterClearsInput(t *testing.T) {
-	m := New()
+	m := New(nil)
 	m.input.SetValue("hello")
 	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if v := nm.(Model).input.Value(); v != "" {
@@ -32,7 +32,7 @@ func TestUpdateEnterClearsInput(t *testing.T) {
 
 // TestUpdateAltEnterKeepsInput Alt+Enter（换行）不清空输入区。
 func TestUpdateAltEnterKeepsInput(t *testing.T) {
-	m := New()
+	m := New(nil)
 	m.input.SetValue("line1")
 	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter, Alt: true})
 	if v := nm.(Model).input.Value(); v != "line1" {
@@ -42,7 +42,7 @@ func TestUpdateAltEnterKeepsInput(t *testing.T) {
 
 // TestViewContainsInput View 应渲染输入区（含占位符）。
 func TestViewContainsInput(t *testing.T) {
-	m := New()
+	m := New(nil)
 	if !strings.Contains(m.View(), "输入消息") {
 		t.Fatalf("View 应包含输入区占位符")
 	}

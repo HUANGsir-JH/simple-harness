@@ -162,11 +162,16 @@ func TestInteractiveE2E(t *testing.T) {
 	}
 }
 
-// TestTUIExitsE2E 验证 TUI 骨架能起 + /exit 退出（W1；W5 扩展交互场景）。
+// TestTUIExitsE2E 验证 TUI 能起 + /exit 退出（W2：需有效 config + 输入区渲染）。
 func TestTUIExitsE2E(t *testing.T) {
+	srv := mockLLMServer(t)
+	defer srv.Close()
+	workDir := t.TempDir()
+	writeConfigTo(t, srv.URL, filepath.Join(workDir, "config.local.yaml"))
+
 	cp, err := termtest.NewTest(t, termtest.Options{
 		CmdName:        harnessExe,
-		WorkDirectory:  t.TempDir(),
+		WorkDirectory:  workDir,
 		DefaultTimeout: 15 * time.Second,
 		Environment:    []string{"HARNESS_HOME=" + filepath.Join(t.TempDir(), ".harness-e2e")},
 	})
@@ -175,9 +180,9 @@ func TestTUIExitsE2E(t *testing.T) {
 	}
 	defer cp.Close()
 
-	// TUI 骨架显示后，/exit 退出（退出仅此命令，ADR-030）。
-	if _, err := cp.Expect("harness TUI"); err != nil {
-		t.Fatalf("expect TUI 骨架: %v", err)
+	// TUI 输入区占位符渲染后，/exit 退出（退出仅此命令，ADR-030）。
+	if _, err := cp.Expect("输入消息"); err != nil {
+		t.Fatalf("expect TUI 输入区: %v", err)
 	}
 	cp.SendLine("/exit")
 	if _, err := cp.ExpectExitCode(0); err != nil {
