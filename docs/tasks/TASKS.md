@@ -72,18 +72,18 @@
 - **目标**：bubbletea + bubbles 全屏聊天式 TUI **替代 REPL**（消息列表流式 + md 渲染、底部多行输入 + 队列、工具折叠块 + diff、审批弹窗、斜杠命令弹窗选择器 + 自动补全、thinking 折叠、todo 常驻条、切换全量替换、命令落盘）；TUI 上线后 **REPL 删除**（`repl()` 留薄壳调 `tui.RunTUI`）；`run` 保留流式非交互。
 - **成功标准**：`harness` 进 TUI 完整交互（流式回复 / 工具展示 / 审批 y/s/n / 队列连跑 / 斜杠命令 / 切换）；`resume` 历史首屏 + 历史 thinking 折叠；TUI 交互全部无 TTY 单测覆盖；termtest e2e 全面覆盖；版本 0.6.0。
 - **测试**：T1 Model.Update 无 TTY 单测（消息流/工具状态机/审批/队列/切换/历史/命令消费）；T2 View 关键内容断言；T3 事件桥 + T4 审批桥单测；T5 termtest e2e 尽量全面 + 人工测试清单（鼠标/IME/剪贴板/resize）。
-- **状态**：**进行中（2026-08-09，决策落盘 ADR-030）**
+- **状态**：✅ **已完成（2026-08-09，ADR-030）**——bubbletea TUI 替代 REPL（消息流式 + md 渲染 + 工具折叠块 + 审批弹窗 + 斜杠命令弹窗 + 队列 + todo 常驻条 + 切换全量替换 + 命令落盘 command 行）；REPL 删除（runREPL + SessionManager 移除）；`run` 保留流式非交互；版本 0.6.0。
 
 ### 任务单元
 
 | # | 单元 | 状态 |
 |---|---|---|
-| W0 | 决策落盘（ADR-030 + TASKS 条目 + 任务拆分） | 🔨 进行中 2026-08-09 |
-| W1 | 依赖 + TUI 骨架（bubbletea/bubbles/lipgloss/glamour/gotextdiff + `internal/ui/tui` 空 Model + RunTUI） | 未开始 |
-| W2 | 消息区 + 输入区 + md 渲染（glamour 块完成渲染；textarea + 提交 + 启动回合） | 未开始 |
-| W3 | 回合生命周期（Esc 中断）+ 工具折叠块（分派表 + write/apply diff）+ 状态栏 | 未开始 |
-| W4 | 审批弹窗 + 斜杠命令弹窗选择器 + 自动补全 + 队列 + 命令落盘 command 行 | 未开始 |
-| W5 | 删 REPL + run 整理 + e2e 全面覆盖 + 收尾（版本 0.6.0 + 人工测试清单交付） | 未开始 |
+| W0 | 决策落盘（ADR-030 + TASKS 条目 + 任务拆分） | ✅ 2026-08-09 |
+| W1 | 依赖 + TUI 骨架（bubbletea/bubbles/lipgloss/glamour/gotextdiff + `internal/ui/tui` 空 Model + RunTUI） | ✅ 2026-08-09 |
+| W2 | 消息区 + 输入区 + md 渲染（glamour 块完成渲染；textarea + 提交 + 启动回合） | ✅ 2026-08-09 |
+| W3 | 回合生命周期（Esc 中断）+ 工具折叠块（分派表 + write/apply diff）+ 状态栏 | ✅ 2026-08-09 |
+| W4 | 审批弹窗 + 斜杠命令弹窗选择器 + 自动补全 + 队列 + 命令落盘 command 行 | ✅ 2026-08-09 |
+| W5 | 删 REPL + run 整理 + e2e 全面覆盖 + 收尾（版本 0.6.0 + 人工测试清单交付） | ✅ 2026-08-09 |
 
 ## 阶段 6（TUI 后后续可选）：摘要式压缩 / grep 工具 / 双向通信
 

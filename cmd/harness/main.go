@@ -7,7 +7,7 @@ import (
 
 // version 是 harness 版本号。每次有用户可见变更（功能 → minor、修复 → patch）
 // 随提交 bump，`harness version` 输出。
-const version = "0.5.0"
+const version = "0.6.0"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -55,25 +55,24 @@ func run(args []string) error {
 func usage() {
 	fmt.Println("harness: minimal agent harness")
 	fmt.Println("usage:")
-	fmt.Println("  harness                       interactive mode (REPL, multi-turn)")
+	fmt.Println("  harness                       interactive mode (TUI, multi-turn)")
 	fmt.Println("  harness run <prompt>          run a single turn with the configured model")
-	fmt.Println("  harness resume <id>|--last    resume a session and continue in REPL")
+	fmt.Println("  harness resume <id>|--last    resume a session and continue in TUI")
 	fmt.Println("  harness sessions              list sessions for this project")
 	fmt.Println("  harness version               print version")
 	fmt.Println("  harness help                  show this help")
 	fmt.Println()
 	fmt.Println("flags:")
-	fmt.Println("  --json                       emit machine-readable events as JSONL")
+	fmt.Println("  --json                       emit machine-readable events as JSONL (run only)")
 	fmt.Println("  --model <name>               model to use (default: first model of default provider)")
 	fmt.Println("  --effort <low|high|max>      reasoning effort override (must be in the model's thinking.efforts)")
 	fmt.Println("  --thinking                   force enable thinking (default: model config)")
 	fmt.Println("  --no-thinking                force disable thinking (default: model config)")
 	fmt.Println("  --no-thinking-display        do not show thinking text (only affects text renderer)")
 	fmt.Println()
-	fmt.Println("REPL commands:")
-	fmt.Println("  /switch <id>|--last          switch to another session (in-process resume)")
-	fmt.Println("  /model <name>                switch model for the active session")
-	fmt.Println("  /effort <low|high|max>       switch reasoning effort for the active session")
+	fmt.Println("TUI commands:")
+	fmt.Println("  /switch /model /effort /permission    popup pickers (real-time config lists)")
+	fmt.Println("  /help /exit")
 	fmt.Println()
 	fmt.Println("config: project config.local.yaml or ~/.harness/config.yaml")
 	fmt.Println("  default_provider + providers.<name>.{base_url, api_key, models} (anthropic wire)")
