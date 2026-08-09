@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/agent-project/harness/internal/messages"
@@ -9,29 +10,61 @@ import (
 
 // lipgloss 样式（无 emoji/图标，纯文本 + 颜色，ADR-030 风格约束）。
 var (
-	styleUser = lipgloss.NewStyle().Foreground(lipgloss.Color("33")).Bold(true) // 蓝
-	styleAsst = lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Bold(true) // 绿
-	styleSys  = lipgloss.NewStyle().Foreground(lipgloss.Color("246"))           // 灰
-	styleDim  = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))           // thinking 灰
-	styleErr  = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))           // 红
+	styleUser  = lipgloss.NewStyle().Foreground(lipgloss.Color("33")).Bold(true) // 蓝
+	styleAsst  = lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Bold(true) // 绿
+	styleSys   = lipgloss.NewStyle().Foreground(lipgloss.Color("246"))           // 灰
+	styleDim   = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))           // thinking/次级灰
+	styleErr   = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))           // 红
+	styleOK    = lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Bold(true) // 成功绿
+	styleAdd   = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))            // diff + 绿
+	styleDel   = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))           // diff - 红
+	styleHdr   = lipgloss.NewStyle().Foreground(lipgloss.Color("178")).Bold(true) // 工具块头黄
 )
 
-// View 渲染整个屏幕（纯函数）：消息区（viewport）+ 输入区。
+// View 渲染整个屏幕（纯函数）：消息区 + 状态栏 + 输入区。
 func (m Model) View() string {
 	var sb strings.Builder
-	sb.WriteString(m.viewport.View())
-	if m.viewport.View() != "" {
+	if v := m.viewport.View(); v != "" {
+		sb.WriteString(v)
 		sb.WriteString("\n")
 	}
+	sb.WriteString(m.statusLine())
+	sb.WriteString("\n")
 	sb.WriteString(m.input.View())
 	return sb.String()
 }
 
-// renderMessages 把消息区渲染成字符串（流式块在最后）。
+// statusLine 渲染底部状态栏（模型 | 权限 | todo | spinner）。
+func (m Model) statusLine() string {
+	var parts []string
+	if m.status.Model != "" {
+		parts = append(parts, m.status.Model)
+	}
+	if m.status.Permission != "" {
+		parts = append(parts, "权限:"+m.status.Permission)
+	}
+	if m.status.TodoCount > 0 {
+		parts = append(parts, fmt.Sprintf("todo:%d", m.status.TodoCount))
+	}
+	if m.running {
+		parts = append(parts, m.sp.View())
+	}
+	line := strings.Join(parts, " | ")
+	if m.running {
+		line += "   Esc 中断"
+	}
+	return styleSys.Render(line)
+}
+
+// renderMessages 把消息区渲染成字符串（工具块内插 + 流式块在最后）。
 func renderMessages(m *Model) string {
 	var sb strings.Builder
 	for _, it := range m.msgs {
 		renderMessageItem(&sb, it)
+	}
+	// 工具折叠块（消息流内插：出现在回合消息之后）。
+	for _, ts := range m.tools {
+		renderToolBlock(&sb, ts)
 	}
 	// 流式块（Thinking 灰显 + Text 原始，块完成才 md 渲染）。
 	if m.stream != nil && (m.stream.Text != "" || m.stream.Thinking != "") {
@@ -62,7 +95,6 @@ func renderMessageItem(sb *strings.Builder, it *MessageItem) {
 		}
 		sb.WriteString("\n\n")
 	default:
-		// 系统行 / 错误 / 工具占位（W3 折叠块替换）。
 		content := it.Content
 		if it.Err {
 			sb.WriteString(styleErr.Render(content) + "\n")
@@ -72,14 +104,50 @@ func renderMessageItem(sb *strings.Builder, it *MessageItem) {
 	}
 }
 
-// toolCallSummary 提取工具调用摘要（名称 + 参数前 60 字符）。
-func toolCallSummary(tc *messages.ToolCall) string {
-	if tc == nil {
-		return ""
+// renderToolBlock 渲染一个工具折叠块（块头 + 内容 + 折叠提示；diff 行着色）。
+func renderToolBlock(sb *strings.Builder, ts *ToolStatus) {
+	// 块头：[摘要] [状态]
+	statusStr := "[执行中]"
+	headStyle := styleHdr
+	if ts.Done {
+		if ts.Failed {
+			statusStr = "[ERR]"
+			headStyle = styleErr
+		} else {
+			statusStr = "[OK]"
+			headStyle = styleOK
+		}
 	}
-	s := string(tc.Args)
-	if len(s) > 60 {
-		s = s[:60] + "…"
+	sb.WriteString(headStyle.Render(ts.Summary + " " + statusStr) + "\n")
+
+	// 内容：折叠态（限 6 行）/ 展开态全文。
+	content := ts.Content
+	if !ts.Collapsed && ts.Full != "" {
+		content = ts.Full
 	}
-	return tc.Name + " " + s
+	lines := strings.Split(content, "\n")
+	overflow := len(lines) > 6
+	if ts.Collapsed && overflow {
+		lines = lines[:6]
+	}
+	for _, line := range lines {
+		sb.WriteString("  " + colorDiffLine(line) + "\n")
+	}
+	if overflow || (ts.Done && ts.Full != "" && ts.Full != ts.Content) {
+		sb.WriteString("  " + styleDim.Render("（Enter/点击展开看全文）") + "\n")
+	}
+}
+
+// colorDiffLine 对 diff 行着色（+ 绿 / - 红；排除 +++/--- 头）。
+func colorDiffLine(line string) string {
+	switch {
+	case strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "---"):
+		return styleDim.Render(line)
+	case strings.HasPrefix(line, "+"):
+		return styleAdd.Render(line)
+	case strings.HasPrefix(line, "-"):
+		return styleDel.Render(line)
+	default:
+		return line
+	}
 }
