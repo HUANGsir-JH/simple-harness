@@ -59,8 +59,9 @@ func New() (*Store, error) {
 func NewAt(root string) *Store { return &Store{root: root} }
 
 // CreateInCWD 在当前工作目录创建会话：建骨架 + 定位项目桶 + 新建会话。
-// CLI 会话创建的入口（运行/REPL 新会话）。
-func CreateInCWD(model string) (*Session, error) {
+// CLI 会话创建的入口（运行/REPL 新会话）。mode 是默认审批模式（config
+// approval.mode 播种值，ADR-029；空 = 不固化）。
+func CreateInCWD(model, mode string) (*Session, error) {
 	store, err := New()
 	if err != nil {
 		return nil, err
@@ -76,7 +77,7 @@ func CreateInCWD(model string) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	return proj.Create(model, cwd)
+	return proj.Create(model, cwd, mode)
 }
 
 // Root 返回 workspace 根。

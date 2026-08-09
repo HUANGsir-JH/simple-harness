@@ -36,16 +36,13 @@ func (app *App) buildAgent() (*agent.Agent, error) {
 	// ToolOutputMiddleware 统一截断工具结果（超长落盘 evictions/ + head/tail preview，ADR-028）。
 	// ApprovalMiddleware 工具审批（onActing，三档模式 + 会话级记忆，ADR-029）；
 	// 审批交互器经 rc.Approver 注入（REPL/runCmd 各自 channelApprover，非 TTY 不设）。
-	apprMode := approval.DefaultMode
-	if app.Config.Approval != nil && app.Config.Approval.Mode != "" {
-		apprMode = app.Config.Approval.Mode
-	}
+	// DefaultMode 与会话创建播种同源（App.defaultApprovalMode，config approval.mode）。
 	mw := middleware.NewChain(
 		middleware.ToolInstructionsMiddleware{Tools: reg.Specs()},
 		session.SessionMiddleware{},
 		middleware.TodoReminderMiddleware{},
 		middleware.ToolOutputMiddleware{},
-		approval.ApprovalMiddleware{DefaultMode: apprMode},
+		approval.ApprovalMiddleware{DefaultMode: app.defaultApprovalMode()},
 	)
 
 	a := agent.New(client, app.Resolved.Model)

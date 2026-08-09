@@ -31,7 +31,7 @@ go test ./internal/messages/ -run TestMessageJSONL
 go test ./internal/e2e/ -count=1
 ```
 
-REPL（`harness` 无子命令进入）命令：`/switch <id>|--last` 切换会话（进程内 resume）、`/model <name>` 切模型、`/effort <low|high|max>` 切推理档位。**Esc/Ctrl+C 中断当前回合**（raw mode 事件循环，中断提示落盘，resume 可见，ADR-028）。**工具审批**（ADR-029）：危险操作按模式询问，`y` 允许本次 / `s` 本会话记住（落盘 AgentState）/ `n` 拒绝（回填模型换思路）；非 TTY 自动拒绝。
+REPL（`harness` 无子命令进入）命令：`/switch <id>|--last` 切换会话（进程内 resume）、`/model <name>` 切模型、`/effort <low|high|max>` 切推理档位、`/permission <readonly|acceptedit|bypass>` 切审批模式（会话级，落盘 AgentState）。**Esc/Ctrl+C 中断当前回合**（raw mode 事件循环，中断提示落盘，resume 可见，ADR-028）。**工具审批**（ADR-029）：config `approval.mode` 为默认权限（会话创建时播种进 AgentState.Permission.Mode）；危险操作按模式询问，`y` 允许本次 / `s` 本会话记住（落盘 AgentState）/ `n` 拒绝（回填模型换思路）；非 TTY 自动拒绝。
 
 ## 代码架构
 
@@ -56,7 +56,7 @@ internal/
 
 1. **统一消息模型 + 事件分层**：核心层只操作统一 `Message`（role/content/thinking/tool_calls/tool_results），provider 适配层负责 ↔ 原生格式。事件分层：provider 采样级（text/thinking delta + **块完成** thinking_done/text_done + tool_call）+ agent 回合级（turn_start/turn_done 等，**带 MsgID** 关联块归属）。
 2. **Provider 单 anthropic wire**（ADR-022）：多后端 = 多 anthropic 兼容端点（base_url 覆盖即可），无多 wire 抽象。
-3. **进程内 middleware**（ADR-021/024/025/026/027/028）：6 hook（onion 前四 + onSystemPrompt 管道），贯穿 `ctx` + `*RuntimeContext`。**注入机制**：rc 承载会话（`Messages/State/StatePath/Model/ThinkingEffort`，`Session.RuntimeContext()` 每轮新建）；`session.SessionMiddleware` **无状态**挂 onAgent（从 rc.StatePath 读写，共享链可并发）；**工具 `Handle(ctx, rc, callID, args)` 带 rc**（todo 经 rc.State 读写）；`TodoReminderMiddleware` 挂 onReasoning（todo 非空且模型连续 ≥10 次 model call 未更新 → 请求消息尾部注入提醒临时副本，不写 conversation）；`ToolOutputMiddleware` 挂 onToolCall（after 改写本批 tool_result：超 20K 截断 head/tail 各 10K + 落盘 evictions/ + 路径提示；transcript 记完整、conversation 记 preview，ADR-028）；`ApprovalMiddleware` 挂 onActing（before 审批：三档模式 + shell 黑白名单，决策纯函数 `Decide`；Ask 经 `rc.Approver`（CLI 注入 channelApprover，单一读方 channel 协调）询问 y/s/n；拒绝返回 `DeniedError` 回填模型；会话级记忆 `AgentState.Permission.Approved`，ADR-029）。
+3. **进程内 middleware**（ADR-021/024/025/026/027/028）：6 hook（onion 前四 + onSystemPrompt 管道），贯穿 `ctx` + `*RuntimeContext`。**注入机制**：rc 承载会话（`Messages/State/StatePath/Model/ThinkingEffort`，`Session.RuntimeContext()` 每轮新建）；`session.SessionMiddleware` **无状态**挂 onAgent（从 rc.StatePath 读写，共享链可并发）；**工具 `Handle(ctx, rc, callID, args)` 带 rc**（todo 经 rc.State 读写）；`TodoReminderMiddleware` 挂 onReasoning（todo 非空且模型连续 ≥10 次 model call 未更新 → 请求消息尾部注入提醒临时副本，不写 conversation）；`ToolOutputMiddleware` 挂 onToolCall（after 改写本批 tool_result：超 20K 截断 head/tail 各 10K + 落盘 evictions/ + 路径提示；transcript 记完整、conversation 记 preview，ADR-028）；`ApprovalMiddleware` 挂 onActing（before 审批：三档模式 + shell 黑白名单，决策纯函数 `Decide`；模式 = 会话 `AgentState.Permission.Mode`（config 播种 + /permission 切换）；Ask 经 `rc.Approver`（CLI 注入 channelApprover，单一读方 channel 协调）询问 y/s/n；拒绝返回 `DeniedError` 回填模型；会话级记忆 `AgentState.Permission.Approved`，ADR-029）。
 4. **错误二分类 + 审批拒绝**：工具错误 `RespondToModel`（结果回填、循环继续）/ `Fatal`（终止 turn）。**审批拒绝 = 独立 `middleware.DeniedError`**（非工具错误）：agent 调用层捕获后作为失败结果回填、**不取消整批**、循环继续（ADR-029，拒绝 ≠ Fatal）。
 5. **并行工具**：errgroup 并发执行全部 tool_call，结果按 call_id 合并成**一条** tool_result 消息回填（anthropic 紧邻要求，ADR-024）。
 6. **会话双轨**（ADR-025 项目分桶）：`~/.harness/workspaces/<项目转义>/<session-id>/{historys, agentstate.json, plans, evictions}`；transcript = **块级事件 + 异步 writer**（单 goroutine FIFO + ordinal，压缩切新文件 `NewSegment`）；AgentState = todo/权限/plan 指针/摘要（含 `CWD` = **会话启动目录**，ADR-028）；evictions/ = 超长工具结果落盘（模型 read_file/grep 读全量）。resume 只读最大序号文件。

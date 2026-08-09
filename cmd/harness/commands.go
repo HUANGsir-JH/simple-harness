@@ -16,6 +16,7 @@ import (
 
 	"github.com/agent-project/harness/internal/agent"
 	"github.com/agent-project/harness/internal/agentstate"
+	"github.com/agent-project/harness/internal/approval"
 	"github.com/agent-project/harness/internal/middleware"
 	"github.com/agent-project/harness/internal/provider"
 	"github.com/agent-project/harness/internal/session"
@@ -63,7 +64,7 @@ func runCmd(args []string, jsonOut bool) error {
 		return err
 	}
 
-	sess, err := session.CreateInCWD(res.Model)
+	sess, err := session.CreateInCWD(res.Model, app.defaultApprovalMode())
 	if err != nil {
 		return err
 	}
@@ -190,7 +191,7 @@ func repl(jsonOut bool) error {
 	if err != nil {
 		return err
 	}
-	sess, err := session.CreateInCWD(app.Resolved.Model)
+	sess, err := session.CreateInCWD(app.Resolved.Model, app.defaultApprovalMode())
 	if err != nil {
 		return err
 	}
@@ -335,8 +336,20 @@ func (m *SessionManager) handleCommand(cmd replCommand) error {
 		}
 		fmt.Printf("已切换 effort %s\n", cmd.arg)
 		return nil
+	case "permission":
+		if cmd.arg == "" {
+			return fmt.Errorf("usage: /permission <readonly|acceptedit|bypass>")
+		}
+		if !slices.Contains(approval.Modes, cmd.arg) {
+			return fmt.Errorf("未知模式 %q（支持: readonly / acceptedit / bypass）", cmd.arg)
+		}
+		if err := m.active.SetPermissionMode(cmd.arg); err != nil {
+			return err
+		}
+		fmt.Printf("已切换审批模式 %s\n", cmd.arg)
+		return nil
 	default:
-		return fmt.Errorf("未知命令 /%s（支持: /switch /model /effort）", cmd.name)
+		return fmt.Errorf("未知命令 /%s（支持: /switch /model /effort /permission）", cmd.name)
 	}
 }
 
@@ -348,7 +361,7 @@ func (m *SessionManager) handleCommand(cmd replCommand) error {
 // （只中断本轮，下一轮新建 ctx 不受影响）；中断后 AddUser 一条系统提示落盘，
 // resume 后模型可见"上一轮被中断"。exit/quit 退出。
 func runREPL(ctx context.Context, m *SessionManager, renderer output) error {
-	fmt.Println("harness 交互式模式（exit/quit 退出；Esc/Ctrl+C 中断当前回合；/switch <id> /model <name> /effort <level>）")
+	fmt.Println("harness 交互式模式（exit/quit 退出；Esc/Ctrl+C 中断当前回合；/switch <id> /model <name> /effort <level> /permission <readonly|acceptedit|bypass>）")
 	renderer.start(m.active.Conversation())
 
 	// raw mode：让 Esc 作为字节可被实时读取（不依赖行缓冲回车）。非 TTY

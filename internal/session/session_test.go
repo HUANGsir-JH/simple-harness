@@ -19,7 +19,7 @@ func TestSessionCreateResume(t *testing.T) {
 	projPath := filepath.Join(root, "proj")
 	proj := &Project{Path: projPath, Dir: store.ProjectDir(projPath)}
 
-	sess, err := proj.Create("claude-sonnet-5", projPath)
+	sess, err := proj.Create("claude-sonnet-5", projPath, "")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestSessionRuntimeContext(t *testing.T) {
 	root := t.TempDir()
 	store := NewAt(root)
 	proj := &Project{Path: filepath.Join(root, "proj"), Dir: store.ProjectDir(filepath.Join(root, "proj"))}
-	sess, err := proj.Create("claude-sonnet-5", filepath.Join(root, "proj"))
+	sess, err := proj.Create("claude-sonnet-5", filepath.Join(root, "proj"), "")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestSessionSetModelEffortPersist(t *testing.T) {
 	root := t.TempDir()
 	store := NewAt(root)
 	proj := &Project{Path: filepath.Join(root, "proj"), Dir: store.ProjectDir(filepath.Join(root, "proj"))}
-	sess, err := proj.Create("m1", filepath.Join(root, "proj"))
+	sess, err := proj.Create("m1", filepath.Join(root, "proj"), "")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -149,3 +149,63 @@ func TestSessionSetModelEffortPersist(t *testing.T) {
 
 // testBoolPtr 测试用指针构造。
 func testBoolPtr(b bool) *bool { return &b }
+
+// TestCreatePermissionMode 验证默认审批模式在创建时固化进 AgentState
+// （ADR-029：config 默认播种，之后 /permission 切换改会话 state）；空 mode
+// 不固化（Permission nil，审批回退默认）。
+func TestCreatePermissionMode(t *testing.T) {
+	root := t.TempDir()
+	store := NewAt(root)
+	proj := &Project{Path: root, Dir: store.ProjectDir(root)}
+
+	sess, err := proj.Create("m", root, "readonly")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	defer sess.Close()
+	if sess.state.Permission == nil || sess.state.Permission.Mode != "readonly" {
+		t.Errorf("Create 应固化 mode=readonly: %+v", sess.state.Permission)
+	}
+	// RuntimeContext 反映固化值（ApprovalMiddleware 经 rc.State 读模式）。
+	if rc := sess.RuntimeContext(); rc.State.Permission == nil || rc.State.Permission.Mode != "readonly" {
+		t.Errorf("RuntimeContext 未反映固化 mode: %+v", rc.State.Permission)
+	}
+	// 重新加载验证已落盘。
+	st, err := agentstate.LoadFile(sess.statePath)
+	if err != nil || st.Permission == nil || st.Permission.Mode != "readonly" {
+		t.Errorf("落盘 state permission: %+v err=%v", st.Permission, err)
+	}
+
+	// 空 mode → 不固化。
+	sess2, err := proj.Create("m", root, "")
+	if err != nil {
+		t.Fatalf("Create empty mode: %v", err)
+	}
+	defer sess2.Close()
+	if sess2.state.Permission != nil {
+		t.Errorf("空 mode 不应固化 Permission: %+v", sess2.state.Permission)
+	}
+}
+
+// TestSetPermissionMode 验证 /permission 切换模式并落盘。
+func TestSetPermissionMode(t *testing.T) {
+	root := t.TempDir()
+	store := NewAt(root)
+	proj := &Project{Path: root, Dir: store.ProjectDir(root)}
+	sess, err := proj.Create("m", root, "")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	defer sess.Close()
+
+	if err := sess.SetPermissionMode("bypass"); err != nil {
+		t.Fatalf("SetPermissionMode: %v", err)
+	}
+	if rc := sess.RuntimeContext(); rc.State.Permission == nil || rc.State.Permission.Mode != "bypass" {
+		t.Errorf("RuntimeContext: %+v", rc.State.Permission)
+	}
+	st, err := agentstate.LoadFile(sess.statePath)
+	if err != nil || st.Permission == nil || st.Permission.Mode != "bypass" {
+		t.Errorf("落盘: %+v err=%v", st.Permission, err)
+	}
+}

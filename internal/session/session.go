@@ -33,7 +33,10 @@ type Session struct {
 // cwd 是会话启动的进程工作目录（state.CWD 存它，resume 后模型可知会话
 // 从哪启动，ADR-028）；bucket 归属仍由 Project.Path（FindProject 项目根）
 // 决定——两者解耦：state.CWD = 启动目录，bucket = 项目根。
-func (p *Project) Create(model, cwd string) (*Session, error) {
+// mode 是默认审批模式（config approval.mode 播种值；空 = 不固化，审批回退
+// 默认）。创建时固化进 AgentState.Permission.Mode，之后 /permission 切换改
+// 会话 state（resume 恢复）——审批模式完全由会话决定（ADR-029）。
+func (p *Project) Create(model, cwd, mode string) (*Session, error) {
 	sid := newSessionID()
 	dir := filepath.Join(p.Dir, sid)
 	historyDir := filepath.Join(dir, DirHistorys)
@@ -45,6 +48,9 @@ func (p *Project) Create(model, cwd string) (*Session, error) {
 	}
 	statePath := filepath.Join(dir, FileAgentState)
 	st := agentstate.New(sid, model, cwd)
+	if mode != "" {
+		st.Permission = &agentstate.PermissionState{Mode: mode}
+	}
 	if err := agentstate.SaveFile(statePath, st); err != nil {
 		return nil, err
 	}
@@ -147,6 +153,16 @@ func (s *Session) SetThinkingEnabled(enabled *bool) error {
 // SetThinkingEffort 更新推理档位并立即落盘（/effort 运行时切换）。
 func (s *Session) SetThinkingEffort(effort string) error {
 	s.state.ThinkingEffort = effort
+	return agentstate.SaveFile(s.statePath, s.state)
+}
+
+// SetPermissionMode 更新会话审批模式并立即落盘（/permission 运行时切换，
+// ADR-029）。切换后下一轮 Run 生效（ApprovalMiddleware 从 rc.State 读模式）。
+func (s *Session) SetPermissionMode(mode string) error {
+	if s.state.Permission == nil {
+		s.state.Permission = &agentstate.PermissionState{}
+	}
+	s.state.Permission.Mode = mode
 	return agentstate.SaveFile(s.statePath, s.state)
 }
 

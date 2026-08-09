@@ -3,6 +3,7 @@ package main
 import (
 	"sync"
 
+	"github.com/agent-project/harness/internal/approval"
 	"github.com/agent-project/harness/internal/provider"
 )
 
@@ -46,4 +47,14 @@ func loadApp(path string) (*App, error) {
 func defaultApp() (*App, error) {
 	appOnce.Do(func() { appVal, appErr = loadApp("") })
 	return appVal, appErr
+}
+
+// defaultApprovalMode 返回审批默认模式（config approval.mode；未配置回退
+// acceptedit，ADR-029）。会话创建时播种到 AgentState.Permission.Mode
+// （之后 /permission 切换改会话 state），审批 middleware 的 DefaultMode 同源。
+func (app *App) defaultApprovalMode() string {
+	if app.Config.Approval != nil && app.Config.Approval.Mode != "" {
+		return app.Config.Approval.Mode
+	}
+	return approval.DefaultMode
 }

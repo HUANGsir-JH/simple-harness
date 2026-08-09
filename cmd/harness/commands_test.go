@@ -45,7 +45,7 @@ func newTestSessionManager(t *testing.T) *SessionManager {
 	if err != nil {
 		t.Fatalf("findProject: %v", err)
 	}
-	sess, err := session.CreateInCWD(app.Resolved.Model)
+	sess, err := session.CreateInCWD(app.Resolved.Model, "")
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
@@ -103,6 +103,26 @@ func TestHandleCommandModelInvalid(t *testing.T) {
 	}
 }
 
+// TestHandleCommandPermission 验证 /permission 切换审批模式并落盘到会话 state。
+func TestHandleCommandPermission(t *testing.T) {
+	m := newTestSessionManager(t)
+	if err := m.handleCommand(replCommand{name: "permission", arg: "readonly"}); err != nil {
+		t.Fatalf("/permission readonly: %v", err)
+	}
+	if got := m.active.State().Permission; got == nil || got.Mode != "readonly" {
+		t.Errorf("state permission: got %+v", got)
+	}
+}
+
+// TestHandleCommandPermissionInvalid 验证非法模式报错。
+func TestHandleCommandPermissionInvalid(t *testing.T) {
+	m := newTestSessionManager(t)
+	err := m.handleCommand(replCommand{name: "permission", arg: "bogus"})
+	if err == nil || !strings.Contains(err.Error(), "未知模式") {
+		t.Fatalf("expected unknown-mode error, got %v", err)
+	}
+}
+
 // TestSessionManagerSwitch 验证进程内会话切换：未开会话 → resume；已开会话 → 复用。
 func TestSessionManagerSwitch(t *testing.T) {
 	m := newTestSessionManager(t)
@@ -110,7 +130,7 @@ func TestSessionManagerSwitch(t *testing.T) {
 
 	// 用项目桶另建一个会话（/switch 目标），关闭其 writer 释放文件（否则与
 	// resume 打开的 writer 同时持有同一文件，Windows 上会锁）。
-	other, err := m.proj.Create("m", m.proj.Path)
+	other, err := m.proj.Create("m", m.proj.Path, "")
 	if err != nil {
 		t.Fatalf("create other: %v", err)
 	}

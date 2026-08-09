@@ -248,7 +248,7 @@ runCmd（单轮）与 REPL 共用同一 `readStdinEvents + select` 骨架（TTY 
 
 ### 3.9 工具审批的回合级机制：onActing before + channel 协调（ADR-029）
 
-**审批挂载**：`ApprovalMiddleware` 挂 onActing（包裹单个工具执行），before 阶段调用纯函数 `Policy.Decide(call, mode, approved)` → 三档模式（readonly/acceptedit/bypass）+ shell 黑白名单 + 会话级记忆判定：
+**审批挂载**：`ApprovalMiddleware` 挂 onActing（包裹单个工具执行），before 阶段调用纯函数 `Policy.Decide(call, mode, approved)` → 三档模式（readonly/acceptedit/bypass）+ shell 黑白名单 + 会话级记忆判定。**模式来源**（ADR-029 补充）：config `approval.mode` 是默认权限（可不配置 = acceptedit），**会话创建时播种**进 `AgentState.Permission.Mode`（`Project.Create(model, cwd, mode)`，`CreateInCWD` 透传 `App.defaultApprovalMode()`）；运行时 `/permission <mode>` 会话级切换（`Session.SetPermissionMode`，立即落盘）——审批模式完全由会话 state 决定，`ApprovalMiddleware.mode()` 从 rc.State.Permission.Mode 读取（有值即用，否则回退 DefaultMode）：
 
 ```
 onActing (ApprovalMiddleware before)
@@ -631,7 +631,7 @@ classDiagram
     SessionManager "1" *-- "1" Session : active 激活会话
 ```
 
-**REPL 运行时切换**：`/switch <id>|--last`（换 `active`，未开则 Resume 入注册表）、`/model <name>`、`/effort <level>`（都落 `AgentState` 立即持久化）。
+**REPL 运行时切换**：`/switch <id>|--last`（换 `active`，未开则 Resume 入注册表）、`/model <name>`、`/effort <level>`、`/permission <readonly|acceptedit|bypass>`（都落 `AgentState` 立即持久化）。
 
 ## 六、关键关系速查
 
@@ -647,6 +647,7 @@ classDiagram
 | REPL 中断 ↔ runCtx | Esc/Ctrl+C（raw mode 事件循环）→ cancel 本轮 runCtx → AddUser 系统提示落盘，resume 可见（ADR-028） |
 | `ApprovalMiddleware` ↔ rc.Approver | onActing before 审批（三档模式 + shell 黑白名单）；Ask 经 channelApprover 与主循环协调（单一读方），y/s/n 答复；非 TTY 自动拒绝（ADR-029） |
 | 审批拒绝 ↔ `DeniedError` | 独立错误类型（非 ToolError）：调用层捕获回填失败结果、不取消整批、循环继续（拒绝≠Fatal） |
-| 审批记忆 ↔ `AgentState.Permission` | 仅会话级：`Mode`（三档，覆盖 config 默认）+ `Approved`（工具名/规范化命令前缀），SessionMiddleware 落盘 resume 恢复 |
+| 审批模式 ↔ `AgentState.Permission.Mode` | 会话创建时 config 默认播种 + `/permission` 切换；`ApprovalMiddleware.mode()` 从 rc.State 读（ADR-029） |
+| 审批记忆 ↔ `AgentState.Permission.Approved` | 仅会话级：`s` 批准后 key（工具名/规范化命令前缀）落盘，resume 恢复放行 |
 | `App` ↔ `Config/Resolved` | 配置统一入口：惰性单例缓存默认模型，`--config` 显式路径单独加载 |
 | `Conversation` ↔ `Message` ↔ `ToolResult` | 一条 tool_result 消息可合并多块（满足 anthropic 紧邻要求，ADR-024） |

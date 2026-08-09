@@ -235,7 +235,7 @@
 
 - **背景**：阶段三权限审批开工。调研 codex（Rust：Permission Profile + Approval Policy 两层正交、审批流水线 hook→guardian→user、审批缓存 key 含命令+cwd、命令规范化）+ opencode（TS：工具主动 ask、规则集有序 + 最后匹配胜出、决策粒度=工具名+资源模式、拒绝三分类含 CorrectedError、级联拒绝）后，结合既有 `onActing` 挂载点（ADR-021 预留）+ `AgentState.Permission` 预留字段（ADR-025）落地。
 - **选择**：
-  1. **三档模式**：`readonly`（只读操作放行，写操作/shell 询问）/ `acceptedit`（只读+编辑放行，shell 询问；默认）/ `bypass`（全部放行）。config `approval.mode` 配置默认，会话级 `AgentState.Permission.Mode` 覆盖（resume 恢复）。
+  1. **三档模式**：`readonly`（只读操作放行，写操作/shell 询问）/ `acceptedit`（只读+编辑放行，shell 询问；默认）/ `bypass`（全部放行）。**config `approval.mode` 是默认权限（可不配置 = acceptedit）**：会话创建时播种进 `AgentState.Permission.Mode`（`Project.Create` 加 mode 参数），运行时 `/permission <mode>` 会话级切换（`Session.SetPermissionMode`，立即落盘）——审批模式完全由会话 state 决定，config 只在创建时播种。
   2. **决策粒度**：工具分类（只读集合 / write_file+apply_patch / update_todo 低风险 / shell_command）+ shell 黑白名单前缀/子串匹配（白名单安全命令 `ls cat git status` 等放行；黑名单危险命令 `rm -rf sudo curl|sh` 等触发审批）。命令先**规范化**（trim + 折叠空白 + 取前 2 token，`git status --porcelain` → `git status`，对齐 opencode arity 理念）。
   3. **审批交互**：`Approver` 接口（middleware 包定义避免循环依赖）+ `channelApprover`（CLI 注入 rc.Approver）。REPL/runCmd 主循环经 channel 协调（单一读方原则，ADR-028）：审批请求发 channel → 主循环 select 打印 UI → 下一行输入路由为答复 y/s/n。**非 TTY / 无 approver → 自动拒绝**（回填模型换思路）。
   4. **拒绝 ≠ Fatal**：审批拒绝返回自定义 `middleware.DeniedError`（非 ToolError），agent 调用层捕获后作为失败结果回填、循环继续（不取消整批）。工具自身错误仍走 ToolError 二分类（acting core 内部处理）。

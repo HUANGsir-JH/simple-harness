@@ -29,7 +29,9 @@
 #   acceptedit — 只读 + 编辑工具（write_file/apply_patch）放行；shell 命令询问（默认）
 #   bypass     — 全部放行（完全信任，不审批）
 # 交互时按 y（允许本次）/ s（本会话记住）/ n（拒绝）；非 TTY 自动拒绝。
-# 会话级可经 AgentState.Permission.Mode 覆盖（resume 恢复）。
+# 此值是"默认权限"：每次会话创建时播种进 AgentState.Permission.Mode（resume
+# 恢复）；运行时用 /permission <readonly|acceptedit|bypass> 做会话级切换。
+# 不配置 = acceptedit。
 # approval:
 #   mode: acceptedit
 

@@ -14,6 +14,7 @@
 - **CLI 接线**（最难部分）：REPL 单一读方原则下，审批交互经 **channel 协调**——`channelApprover.Request` 发请求到 reqCh，主循环 select 消费 + 打印审批 UI + 下一行输入路由为答复（y/s/n / Esc）。`runCmd` 从 `withEscInterrupt`（独立 Esc goroutine 与审批读行竞争 stdin）改为与 REPL 统一的 `readStdinEvents + select` 骨架（withEscInterrupt 删除）。非 TTY / MakeRaw 失败 → 不设 rc.Approver → 自动拒绝。`--json` 发 `approval_request` 事件。
 - **契约类型**：`middleware.Approver / ApprovalRequest / Decision / DeniedError` 定义在 middleware 包（approval→middleware 依赖已存在，避免循环；provider 无法 import approval，approval.mode 校验硬编码合法值）。
 - **验证**：全量 `go build && go vet && go test ./...` 绿；approval 包 17 测试（三档/黑白名单/记忆/规范化/摘要）；agent 集成 3 测试（拒绝回填不 Fatal + 工具不执行 + 回合继续）；provider validate 2 测试；approver 3 测试（解析/channel 往返/ctx cancel）；**e2e 新增 TestApprovalE2E：termtest 真实 TTY 下 write_file 触发审批 UI → SendLine y → 工具执行写盘 → 次轮回复 → 退出码 0**。版本 0.3.0 → 0.4.0。
+- **补充（同日）**：采纳用户设计——config `approval.mode` 为默认权限（可不配置 = acceptedit），**会话创建时播种**进 `AgentState.Permission.Mode`（`Project.Create(model, cwd, mode)` 加参数，`CreateInCWD` 透传 `App.defaultApprovalMode()`）；新增 **`/permission <mode>` 会话级切换**（`Session.SetPermissionMode` 立即落盘，对齐 `/model`/`/effort` 模式）。审批模式完全由会话 state 决定（resume 恢复），config 只在创建时播种。测试：TestCreatePermissionMode/TestSetPermissionMode/TestHandleCommandPermission(+Invalid)。版本 0.4.0 → 0.5.0。
 - **留增强**：级联拒绝、全局 allowlist、拒绝反馈（CorrectedError）、bash 语法解析（tree-sitter/arity）、guardian 自动审批、复杂规则集。
 
 ### 工具结果截断中间件 + Esc 用户中断 + shell 长任务缓解 + state.CWD 修正 ✅（ADR-028）
