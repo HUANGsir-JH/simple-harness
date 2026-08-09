@@ -244,3 +244,21 @@
 - **理由**：三档对齐 IMPLEMENTATION_PLAN 既定设计 + codex SandboxMode；决策粒度按"工具名 + 命令内容"（opencode 已验证）比纯工具名更安全；DeniedError 独立类型让"策略拒绝"与"工具失败"语义分离（比借用 ToolError 更清晰，用户建议）；会话级记忆是用户明确选择（跨会话持久记忆风险高）；channel 协调复用既有单一读方架构（不新增 stdin 读者，避免竞态）。
 - **留增强**：级联拒绝（opencode：拒绝时同批 pending 一并拒）、全局 allowlist（持久化"以后允许"）、拒绝反馈（opencode CorrectedError：用户填理由给模型改写）、bash 命令语法解析（tree-sitter/arity 前缀表）、guardian 自动审批、复杂规则集。
 - **影响 ADR**：ADR-021 `onActing` 挂载点落地；ADR-006（分层审批 + 拒绝≠Fatal）实现；ADR-025 `AgentState.Permission` 从预留到实现（Mode + Approved）；ADR-003 错误二分类补充 DeniedError 第三路径（策略拒绝，非工具错误）。
+
+## ADR-030：TUI（bubbletea 全屏交互 UI，替代 REPL）（2026-08-09）
+
+- **背景**：REPL 的行式流输出 + 提示符混流影响项目测试（termtest 断言依赖时序且覆盖有限）；用户决定把 TUI 提前到现在（TASKS.md 阶段 6 → 子 agent 之前，阶段 4/5 剩余后置），TUI 上线后 **REPL 整体删除**。调研 codex（`codex-rs/tui`，ratatui 全帧 diff 重绘 + 命令式 App 状态机 + FrameRequester 合并重绘）+ opencode（`packages/tui`，Solid 组件树 + 原生渲染内核 + 增量 store + 16ms 批量合帧）提炼共性：渲染与输入/agent 解耦、事件驱动增量更新、组件化视图、流式 cell 完成合并、UI state 独立 reducer、**无 TTY state-machine 测试**。
+- **选择**：
+  1. **技术栈**：`charmbracelet/bubbletea` v1.3（elm 架构 Model/Update/Msg，Update/View 纯函数可测）+ `bubbles` v1.0（viewport/textarea/spinner）+ `lipgloss`（排版）+ `glamour` v1.0（markdown→ANSI）+ `hexops/gotextdiff`（write_file 覆盖 diff）。bubbletea 自研终端层（x/term + termenv，无 tcell 重依赖），Windows 支持完善（conpty）。
+  2. **入口**：`harness`（无子命令）与 `resume` 进 TUI；**REPL 删除**（runREPL 逻辑删，`repl()` 留薄壳调 `tui.RunTUI`）；`run` **保留**流式非交互（脚本/CI）；非 TTY 下 `harness` 无子命令报错提示用 `run`；`--json` 仅 `run` 支持（TUI 全屏不兼容）。
+  3. **队列**：run 期间 textarea 可编辑，Enter → `pending []string` 队列（**不落盘**，队列条显示输入框上方，多行可滚）；`turn_done` 逐条自动连跑；Esc 中断保留队列；审批弹窗与队列互斥；`/exit` 丢弃队列。
+  4. **斜杠命令**：`/switch` `/model` `/permission` `/effort` **弹窗选择器**（↑/↓ + Enter + Esc，复用审批弹窗框架），选项列表**实时从配置获取**（provider config / 模型 thinking.efforts），弹窗右侧显示选中项说明；**自动补全首版做**；执行反馈用**系统行**；**命令统一进队列**（消费按 `/` 前缀分派命令 / 普通文本发 agent，运行中切换天然解耦）；**命令落盘**（transcript 新增 `command` 行）**但 load 时不进 conversation**（模型不可见），resume 渲染系统行（对齐 thinking 存但不重放，ADR-025）。
+  5. **键鼠**：单焦点 + Tab 切换（输入区↔消息区）；**Ctrl+C = 复制**（textarea 选中，x/exp/clipboard，不可用 no-op）；Esc = 中断回合（ADR-028 保留）；退出 = 仅 `/exit`；输入历史（空输入 ↑，进程内内存）；鼠标首版 = 点击工具块展开/收起 + 滚轮消息滚动 + 点击输入聚焦（WithMouseCellMotion，行号反查 UI 元素）。
+  6. **工具展示 = 折叠块 + 按工具分派**（对齐 opencode ToolPart + collapse-tool-output / codex HistoryCell）：消息流内插；默认高 6 行超出折叠、点击/Enter 撑开滚动；失败态红 `[ERR]` + 错误 + 已收集输出。分派表：read_file 单行元信息（不渲染内容）；write_file 元信息 + **覆盖时 gotextdiff**（新建无 diff）；apply_patch 从 args.patch 提取 +/- 行 diff（无库）+ 文件列表；list_dir/glob 前 5 枚举 + 计数（纯名称）；update_todo 完整 checklist；shell_command 完整 command + 输出折叠块（超长落盘提示）。
+  7. **thinking**：流式灰显 + 块完成折叠 `[thinking]` 一行，点击展开；历史 thinking 折叠展示（resume 可见）。
+  8. **切换 session**：消息区**全量替换**为新 session 历史（重建首屏，非 REPL 增量）；工具区/stream/审批清空、状态栏会话 id/todo 更新；切换时队列清空、输入历史跨 session 共享。
+  9. **风格约束**：全程不用 emoji/彩色图标——状态用纯文本或 ASCII + 颜色（成功绿 / 失败红 / 进行中黄），如 `[OK]`/`[ERR]`/`[RUN]`。
+  10. **md 渲染**：模型普通输出基本是 markdown；**流式纯文本 → text_done 块完成 glamour 渲染完整 markdown 替换**（对齐 codex streaming cell → 完成合并；每块渲染一次，非逐 token）。
+  11. **测试策略**：单测为主 + e2e 尽量全面——T1 Model.Update 无 TTY 单测（消息流/工具状态机/审批/队列/切换/历史/命令消费）；T2 View 关键内容包含断言（非整串快照）；T3 事件桥 + T4 审批桥单测；T5 e2e termtest 尽量全面（prompt→回复/审批 y/n/exit/resume 首屏/switch/队列连跑/thinking/工具块展开/非 TTY 报错/run 保留）；**人工测试清单**（鼠标点击/中文 IME/Ctrl+C 复制/resize/长输出性能）完成后用户实测；T6 既有测试零回归（agent 核心不改）。
+- **理由**：TUI 对症 REPL 测试痛点（elm 纯函数可测，无 TTY）；bubbletea 是 Go agent CLI 主流、依赖树小、Windows 完善；删 REPL 避免双交互入口维护、TUI 成唯一交互形态；run 保留脚本化能力；队列/命令统一进队列使"运行中切换"天然解耦（无需禁止/中断/后台三选一）；工具分派对齐两参考项目已验证形态；md 渲染是模型输出刚需（glamour 与 bubbletea 同生态）；无 emoji 是用户明确风格。
+- **影响 ADR**：ADR-008 修订——`Output`/Renderer 接口保留给 `run`（TextRenderer/JSONRenderer 流式），TUI 是独立交互 UI 层（`internal/ui/tui`）而非 renderer 插拔实现；ADR-028 Esc 中断语义保留；ADR-025 transcript 增 `command` 行类型（命令落盘，load 不进 conversation）；ADR-026 无状态 agent 是 TUI 换壳零冲击的前提。
