@@ -230,3 +230,16 @@
   5. **描述一致性**：文件工具（read/list_dir/glob/write_file/apply_patch）description 改"相对进程工作目录或绝对路径"（诚实描述现状：按 `os.Getwd()` 解析、接受任意绝对路径；路径边界留阶段三 onActing）。
 - **理由**：截断中间件化让工具职责纯、策略一处可插拔（对齐 opencode `Tool.define` wrap 层）；head/tail 双端保留让模型看到输出开头与结尾（日志错误常在尾部），全量落盘供 read_file/grep 读；Esc 中断是 TUI 惯例（Claude Code/opencode），事件循环单一读方避免多 reader 竞争 stdin；transcript 记完整是审计精神（ADR-025），落盘 evictions/ 让"长结果模型自读"（ADR-009 eviction 设计提前落地）。
 - **影响 ADR**：ADR-009/023 的 eviction（>80K 落盘）落地为 20K 阈值 + head/tail；ADR-025 transcript 记完整不因截断丢失；ADR-021 `onToolCall` 挂载点新增 ToolOutputMiddleware；tools 包移除 truncate/MaxOutputChars（迁 middleware）。
+
+## ADR-029：工具审批——三档权限 + onActing middleware + 会话级记忆（2026-08-09）
+
+- **背景**：阶段三权限审批开工。调研 codex（Rust：Permission Profile + Approval Policy 两层正交、审批流水线 hook→guardian→user、审批缓存 key 含命令+cwd、命令规范化）+ opencode（TS：工具主动 ask、规则集有序 + 最后匹配胜出、决策粒度=工具名+资源模式、拒绝三分类含 CorrectedError、级联拒绝）后，结合既有 `onActing` 挂载点（ADR-021 预留）+ `AgentState.Permission` 预留字段（ADR-025）落地。
+- **选择**：
+  1. **三档模式**：`readonly`（只读操作放行，写操作/shell 询问）/ `acceptedit`（只读+编辑放行，shell 询问；默认）/ `bypass`（全部放行）。config `approval.mode` 配置默认，会话级 `AgentState.Permission.Mode` 覆盖（resume 恢复）。
+  2. **决策粒度**：工具分类（只读集合 / write_file+apply_patch / update_todo 低风险 / shell_command）+ shell 黑白名单前缀/子串匹配（白名单安全命令 `ls cat git status` 等放行；黑名单危险命令 `rm -rf sudo curl|sh` 等触发审批）。命令先**规范化**（trim + 折叠空白 + 取前 2 token，`git status --porcelain` → `git status`，对齐 opencode arity 理念）。
+  3. **审批交互**：`Approver` 接口（middleware 包定义避免循环依赖）+ `channelApprover`（CLI 注入 rc.Approver）。REPL/runCmd 主循环经 channel 协调（单一读方原则，ADR-028）：审批请求发 channel → 主循环 select 打印 UI → 下一行输入路由为答复 y/s/n。**非 TTY / 无 approver → 自动拒绝**（回填模型换思路）。
+  4. **拒绝 ≠ Fatal**：审批拒绝返回自定义 `middleware.DeniedError`（非 ToolError），agent 调用层捕获后作为失败结果回填、循环继续（不取消整批）。工具自身错误仍走 ToolError 二分类（acting core 内部处理）。
+  5. **会话级记忆**：用户按 s（本会话记住）→ key 记入 `AgentState.Permission.Approved`（shell 用规范化命令前缀，其它工具用工具名），随 AgentState 落盘跨轮生效。**不做**全局 allowlist.json。
+- **理由**：三档对齐 IMPLEMENTATION_PLAN 既定设计 + codex SandboxMode；决策粒度按"工具名 + 命令内容"（opencode 已验证）比纯工具名更安全；DeniedError 独立类型让"策略拒绝"与"工具失败"语义分离（比借用 ToolError 更清晰，用户建议）；会话级记忆是用户明确选择（跨会话持久记忆风险高）；channel 协调复用既有单一读方架构（不新增 stdin 读者，避免竞态）。
+- **留增强**：级联拒绝（opencode：拒绝时同批 pending 一并拒）、全局 allowlist（持久化"以后允许"）、拒绝反馈（opencode CorrectedError：用户填理由给模型改写）、bash 命令语法解析（tree-sitter/arity 前缀表）、guardian 自动审批、复杂规则集。
+- **影响 ADR**：ADR-021 `onActing` 挂载点落地；ADR-006（分层审批 + 拒绝≠Fatal）实现；ADR-025 `AgentState.Permission` 从预留到实现（Mode + Approved）；ADR-003 错误二分类补充 DeniedError 第三路径（策略拒绝，非工具错误）。

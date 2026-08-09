@@ -16,6 +16,7 @@ import (
 
 	"github.com/agent-project/harness/internal/agent"
 	"github.com/agent-project/harness/internal/agentstate"
+	"github.com/agent-project/harness/internal/middleware"
 	"github.com/agent-project/harness/internal/provider"
 	"github.com/agent-project/harness/internal/session"
 	"golang.org/x/term"
@@ -102,17 +103,77 @@ func runCmd(args []string, jsonOut bool) error {
 		renderer.event(ev)
 		sess.OnAgentEvent(ev) // 块级实时落盘
 	}
-	// 单轮 run 支持 Esc/Ctrl+C 中断（raw mode 监听；非 TTY 自动降级跳过）。
-	if err := withEscInterrupt(ctx, func(runCtx context.Context) error {
-		return a.Run(runCtx, rc, onEvent)
-	}); err != nil {
-		if errors.Is(err, context.Canceled) {
-			fmt.Println("\n（已中断）")
-			return nil
+
+	// 输入层：TTY 时 raw mode + 单一读方事件循环（Esc 中断 + 审批协调，
+	// ADR-028/029）；非 TTY / MakeRaw 失败 → 不启用审批交互（自动拒绝）、
+	// 无 Esc 中断（跑完即退）。
+	fd := int(os.Stdin.Fd())
+	var inputCh <-chan inputEvent
+	var reqCh chan *approvalRequest
+	if term.IsTerminal(fd) {
+		if old, err := term.MakeRaw(fd); err == nil {
+			defer func() { _ = term.Restore(fd, old) }()
+			inputCh = readStdinEvents(os.Stdin, os.Stdout)
+			reqCh = make(chan *approvalRequest, 8)
+			rc.Approver = newChannelApprover(reqCh)
 		}
-		return err
 	}
-	return nil
+
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	runDone := make(chan error, 1)
+	go func() { runDone <- a.Run(runCtx, rc, onEvent) }()
+
+	var pending *approvalRequest
+	for {
+		select {
+		case ev, ok := <-inputCh:
+			if !ok {
+				// stdin EOF（Ctrl+D）：取消本轮，等 Run 退出。
+				cancel()
+				inputCh = nil
+				continue
+			}
+			// 审批挂起：输入路由为审批答复（y/s/n / Esc）。
+			if pending != nil {
+				if ev.esc {
+					pending.resp <- middleware.DecisionDeny
+					pending = nil
+					cancel()
+					continue
+				}
+				line := strings.TrimSpace(ev.line)
+				if line == "" {
+					printApprovalUI(pending.req)
+					continue
+				}
+				dec, ok := parseApprovalDecision(line)
+				if !ok {
+					fmt.Printf("  无效输入（y/s/n）> ")
+					continue
+				}
+				pending.resp <- dec
+				pending = nil
+				continue
+			}
+			if ev.esc {
+				cancel() // 单轮 Esc/Ctrl+C 中断
+			}
+			// 普通行忽略（runCmd 无 REPL 命令）。
+		case req := <-reqCh:
+			pending = req
+			printApprovalUI(req.req)
+			if jsonOut {
+				emitApprovalJSON(req.req)
+			}
+		case err := <-runDone:
+			if errors.Is(err, context.Canceled) {
+				fmt.Println("\n（已中断）")
+				return nil
+			}
+			return err
+		}
+	}
 }
 
 // repl 是交互式模式（`harness` 无子命令）：新会话 + REPL 循环。
@@ -294,17 +355,22 @@ func runREPL(ctx context.Context, m *SessionManager, renderer output) error {
 	// （重定向/管道）或 MakeRaw 失败 → 降级普通读行（无 Esc 中断，行为同前）。
 	fd := int(os.Stdin.Fd())
 	var echo io.Writer = io.Discard
+	var reqCh chan *approvalRequest // nil = 不启用审批交互（非 TTY → 自动拒绝）
 	if term.IsTerminal(fd) {
 		if old, err := term.MakeRaw(fd); err == nil {
 			defer func() { _ = term.Restore(fd, old) }()
 			echo = os.Stdout // raw mode 无回显，需自行回显用户输入
+			reqCh = make(chan *approvalRequest, 8)
 		}
 	}
+	approver := newChannelApprover(reqCh)
 	inputCh := readStdinEvents(os.Stdin, echo)
+	_, isJSON := renderer.(jsonRenderer)
 
 	var runDone chan error
 	var cancelRun context.CancelFunc
 	running := false
+	var pending *approvalRequest // 非 nil = 审批挂起，下一行输入路由为审批答复
 
 	fmt.Print("> ")
 	for {
@@ -312,6 +378,32 @@ func runREPL(ctx context.Context, m *SessionManager, renderer output) error {
 		case ev, ok := <-inputCh:
 			if !ok {
 				return nil // stdin EOF（Ctrl+D）
+			}
+			// 审批挂起：输入路由为审批答复（y/s/n / Esc），不当作 REPL 命令。
+			if pending != nil {
+				if ev.esc {
+					// Esc：拒绝当前审批 + 中断当前回合。
+					pending.resp <- middleware.DecisionDeny
+					pending = nil
+					if running && cancelRun != nil {
+						cancelRun()
+					}
+					continue
+				}
+				line := strings.TrimSpace(ev.line)
+				if line == "" {
+					printApprovalUI(pending.req) // 空行重提示
+					continue
+				}
+				dec, ok := parseApprovalDecision(line)
+				if !ok {
+					fmt.Printf("  无效输入（y/s/n）> ")
+					continue
+				}
+				pending.resp <- dec
+				pending = nil
+				fmt.Print("> ")
+				continue
 			}
 			if ev.esc {
 				if running && cancelRun != nil {
@@ -340,6 +432,7 @@ func runREPL(ctx context.Context, m *SessionManager, renderer output) error {
 			}
 			// 每轮新建 rc（无状态 agent：会话状态经 rc 传入；切换会话下一轮自动生效）。
 			rc := m.active.RuntimeContext()
+			rc.Approver = approver // 审批交互注入（reqCh nil 时 approver 为 nil → 自动拒绝）
 			m.active.AddUser(line)
 			runCtx, cancel := context.WithCancel(ctx)
 			cancelRun = cancel
@@ -350,6 +443,13 @@ func runREPL(ctx context.Context, m *SessionManager, renderer output) error {
 				m.active.OnAgentEvent(ev)
 			}
 			go func() { runDone <- m.a.Run(runCtx, rc, onEvent) }()
+		case req := <-reqCh:
+			// 新审批请求（并行工具可同时多个，channel 缓冲排队逐个处理）。
+			pending = req
+			printApprovalUI(req.req)
+			if isJSON {
+				emitApprovalJSON(req.req)
+			}
 		case err := <-runDone:
 			running = false
 			cancelRun = nil
@@ -423,36 +523,6 @@ func readStdinEvents(reader io.Reader, echo io.Writer) <-chan inputEvent {
 		}
 	}()
 	return ch
-}
-
-// withEscInterrupt 在 raw mode 下监听 Esc/Ctrl+C → cancel ctx，用于单轮 runCmd
-// 的用户中断。stdin 非 TTY 或 MakeRaw 失败（重定向/管道）→ 跳过监听直接执行。
-func withEscInterrupt(ctx context.Context, fn func(ctx context.Context) error) error {
-	fd := int(os.Stdin.Fd())
-	if !term.IsTerminal(fd) {
-		return fn(ctx)
-	}
-	old, err := term.MakeRaw(fd)
-	if err != nil {
-		return fn(ctx)
-	}
-	defer term.Restore(fd, old)
-	runCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	go func() {
-		b := make([]byte, 1)
-		for {
-			n, err := os.Stdin.Read(b)
-			if err != nil {
-				return
-			}
-			if n > 0 && (b[0] == 0x1b || b[0] == 0x03) {
-				cancel()
-				return
-			}
-		}
-	}()
-	return fn(runCtx)
 }
 
 // resumeCmd 恢复会话（--last 或 <id>）并进入 REPL 继续。

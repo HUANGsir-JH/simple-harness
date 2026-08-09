@@ -244,7 +244,34 @@ main select:
 
 **为什么每轮独立 runCtx**：信号 `signal.NotifyContext` 的 ctx 一旦 cancel 永久失效，下一轮 Run 立即失败；每轮 `context.WithCancel` 新建 → 中断只停本轮，下一轮正常。**中断提示 AddUser 落盘**：写 conversation + transcript，resume 后模型看到"上一轮被中断"，对齐 Claude Code resume 行为（与 TodoReminder 的不落盘临时注入相反——中断是持久事件，值得落盘）。
 
-runCmd（单轮）用 `withEscInterrupt`（MakeRaw + goroutine 监听 Esc/Ctrl+C → cancel；非 TTY 跳过监听正常跑）。
+runCmd（单轮）与 REPL 共用同一 `readStdinEvents + select` 骨架（TTY 时；非 TTY 无 inputCh，跑完即退）——不再用独立 Esc goroutine（其单字节监听会与审批读行竞争 stdin，ADR-029 改为统一事件循环）。
+
+### 3.9 工具审批的回合级机制：onActing before + channel 协调（ADR-029）
+
+**审批挂载**：`ApprovalMiddleware` 挂 onActing（包裹单个工具执行），before 阶段调用纯函数 `Policy.Decide(call, mode, approved)` → 三档模式（readonly/acceptedit/bypass）+ shell 黑白名单 + 会话级记忆判定：
+
+```
+onActing (ApprovalMiddleware before)
+ ├─ Decide = Allow        → next（执行工具）
+ ├─ Decide = Ask          → rc.Approver.Request(ApprovalRequest{工具名/摘要/模式})
+ │    ├─ y (Allow)        → next
+ │    ├─ s (AllowSession) → 记入 rc.State.Permission.Approved（随 AgentState 落盘）→ next
+ │    └─ n (Deny) / 无 approver（非 TTY）→ 返回 middleware.DeniedError
+ └─ Decide = Deny         → DeniedError
+DeniedError → agent.runToolBatch 调用层捕获 → 作为失败 tool_result 回填 → 循环继续（拒绝≠Fatal，不取消整批）
+```
+
+**channel 协调（CLI 层）**：REPL 单一读方原则下审批不能直接读 stdin。`channelApprover.Request` 把请求发到 reqCh → 主循环 `select` 消费 + 打印审批 UI + **下一行输入路由为答复**（y/s/n / Esc）：
+
+```
+agent goroutine: channelApprover.Request → reqCh <- {req, resp}
+main select:
+ ├─ case req := <-reqCh  → pending = &req; 打印 "[审批] 工具名 摘要\n 允许(y)/本会话记住(s)/拒绝(n) > "
+ └─ case ev := <-inputCh → pending != nil 时: 输入行 → parseApprovalDecision → resp <- 决策
+                           （ev.esc → resp <- Deny + cancel 本轮 runCtx）
+```
+
+**非 TTY**（term.IsTerminal false / MakeRaw 失败）：不设 rc.Approver → `ApprovalMiddleware` 内 approver 为 nil → **自动拒绝**（回填模型换思路）。**审批记忆仅会话级**：`AgentState.Permission.Approved []string`（shell 用规范化命令前缀 `git status`，其它工具用工具名），SessionMiddleware after 落盘，resume 恢复。契约类型（Approver/ApprovalRequest/Decision/DeniedError）定义在 middleware 包（avoid 循环依赖）。
 
 ## 四、核心数据结构
 
@@ -302,6 +329,10 @@ classDiagram
         +string Description
         +string Status
     }
+    class PermissionState {
+        +string Mode    // readonly | acceptedit | bypass（会话级覆盖 config 默认）
+        +[]string Approved  // 会话级审批记忆：工具名 / 规范化命令前缀
+    }
     class Session {
         +string ID
         -string dir
@@ -333,6 +364,7 @@ classDiagram
     Message "1" *-- "many" ToolResultBlock
     ToolCall "1" o-- "0..1" ToolResult
     AgentState "1" *-- "many" TodoItem
+    AgentState "1" *-- "1" PermissionState : 审批状态（ADR-029）
     Session "1" *-- "1" AgentState : 持久化快照
     Session "1" *-- "1" Conversation : 消息流
     Store "1" *-- "many" Project
@@ -613,5 +645,8 @@ classDiagram
 | `update_todo` ↔ `rc.State.Todos` | todo 全量替换挂 AgentState（ReplaceTodos/RenderTodos），SessionMiddleware after 落盘；TodoReminder 防偏离（ADR-027） |
 | `ToolOutputMiddleware` ↔ tool_result | onToolCall after 统一截断（>20K → head/tail + evictions/ 落盘 + 路径），transcript 记完整、conversation 记 preview（ADR-028） |
 | REPL 中断 ↔ runCtx | Esc/Ctrl+C（raw mode 事件循环）→ cancel 本轮 runCtx → AddUser 系统提示落盘，resume 可见（ADR-028） |
+| `ApprovalMiddleware` ↔ rc.Approver | onActing before 审批（三档模式 + shell 黑白名单）；Ask 经 channelApprover 与主循环协调（单一读方），y/s/n 答复；非 TTY 自动拒绝（ADR-029） |
+| 审批拒绝 ↔ `DeniedError` | 独立错误类型（非 ToolError）：调用层捕获回填失败结果、不取消整批、循环继续（拒绝≠Fatal） |
+| 审批记忆 ↔ `AgentState.Permission` | 仅会话级：`Mode`（三档，覆盖 config 默认）+ `Approved`（工具名/规范化命令前缀），SessionMiddleware 落盘 resume 恢复 |
 | `App` ↔ `Config/Resolved` | 配置统一入口：惰性单例缓存默认模型，`--config` 显式路径单独加载 |
 | `Conversation` ↔ `Message` ↔ `ToolResult` | 一条 tool_result 消息可合并多块（满足 anthropic 紧邻要求，ADR-024） |

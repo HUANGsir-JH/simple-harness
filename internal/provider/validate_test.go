@@ -86,6 +86,27 @@ func TestValidateMissingKey(t *testing.T) {
 	}
 }
 
+// TestValidateBadApprovalMode 验证 approval.mode 非法值报错。
+func TestValidateBadApprovalMode(t *testing.T) {
+	cfg := testConfig()
+	cfg.Approval = &ApprovalConfig{Mode: "trust-everything"}
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "approval.mode") {
+		t.Fatalf("expected approval.mode error, got %v", err)
+	}
+}
+
+// TestValidateApprovalModeOK 验证合法 approval.mode 通过。
+func TestValidateApprovalModeOK(t *testing.T) {
+	for _, mode := range []string{"readonly", "acceptedit", "bypass"} {
+		cfg := testConfig()
+		cfg.Approval = &ApprovalConfig{Mode: mode}
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("mode %q: %v", mode, err)
+		}
+	}
+}
+
 // TestValidateMultipleErrors 验证一次返回全部错误（多行）。
 func TestValidateMultipleErrors(t *testing.T) {
 	cfg := Config{

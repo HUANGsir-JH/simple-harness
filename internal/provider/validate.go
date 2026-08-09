@@ -37,6 +37,16 @@ func (c Config) Validate() error {
 		}
 	}
 
+	// approval.mode 合法值（与 approval 包 Modes 对齐；字面量避免 provider→approval
+	// 循环依赖——approval → middleware → provider 已存在）。
+	if c.Approval != nil && c.Approval.Mode != "" {
+		switch c.Approval.Mode {
+		case "readonly", "acceptedit", "bypass":
+		default:
+			errs = append(errs, fmt.Sprintf("approval.mode: %q invalid (want readonly, acceptedit or bypass)", c.Approval.Mode))
+		}
+	}
+
 	if len(errs) == 0 {
 		return nil
 	}

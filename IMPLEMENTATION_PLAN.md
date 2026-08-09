@@ -43,7 +43,7 @@ harness/
 │   ├── provider/         # Provider 接口 + HTTP 客户端（仅 anthropic Messages wire，2026-08-07 移除 openai wire）
 │   ├── messages/         # 统一 Message 模型 + JSONL 序列化
 │   ├── tools/            # 工具注册表 + shell/file/apply_patch 实现
-│   ├── approval/         # 三档权限（readonly/acceptedit/bypass），作为 onActing middleware 实现
+│   ├── approval/         # 三档权限（readonly/acceptedit/bypass），onActing middleware + 会话级记忆（ADR-029，✅ 2026-08-09）
 │   ├── session/          # 会话（JSONL 追加写 + 轻量 AgentState 快照 + resume），落 ~/.harness/ workspace
 │   ├── compact/          # 上下文压缩（TokenBudget v1 + 摘要式 + 大结果 eviction），作为 onReasoning middleware
 │   ├── ui/               # Renderer 接口：simple（v1）/ tui（v2 插拔）
@@ -298,10 +298,10 @@ type Renderer interface {
 ### todo 工具（update_todo + 偏离提醒）✅ 已完成（2026-08-08，ADR-027）
 **目标**：`update_todo` 工具（全量替换语义，模型填 position 维护顺序，AgentScope tasksContext 对位），经 `rc.State.Todos` 读写，SessionMiddleware（无状态，rc.StatePath）after 落盘；工具结果回填 + `TodoReminderMiddleware`（onReasoning：todo 非空但模型连续 ≥10 次 model call 未更新 → 请求消息尾部注入提醒临时副本，不污染 conversation）。参考 codex `update_plan`（全量替换）+ opencode `todowrite`（持久化 + 详尽 prompt 引导）。**todo 数据结构已改为 `{Position, Description, Status}`**（删 ID；`ReplaceTodos` 按 position 稳定排序 + `RenderTodos` 渲染，替换原 AddTodo/UpdateTodoStatus）。
 
-### 阶段 3：审批（三档，作为 onActing middleware）+ 错误重试
-**目标**：`approval` 包实现三档权限（readonly / acceptedit / bypass）+ 黑白名单 + TTY 交互 + allowlist，**以 onActing middleware 挂载**（拒绝/确认结果回填，拒绝 ≠ Fatal）；规则匹配引擎保留扩展点（复杂匹配不强做）；错误重试完善（429 依赖 SDK，补充流中断恢复）
-**成功标准**：危险命令按权限档位放行/确认/拒绝；middleware 链能拦截工具执行；429 重试生效
-**测试**：审批策略单测（黑白名单匹配）；middleware 链单测；重试单测（mock 429 响应）
+### 阶段 3：审批（三档，作为 onActing middleware）+ 错误重试 ✅ 已完成（2026-08-09）
+**目标**：`approval` 包实现三档权限（readonly / acceptedit / bypass）+ 黑白名单 + TTY 交互 + 会话级记忆，**以 onActing middleware 挂载**（拒绝 ≠ Fatal，`middleware.DeniedError` 回填模型）；规则匹配引擎保留扩展点（复杂匹配不强做）；错误重试完善（429 依赖 SDK，补充流中断恢复）
+**成功标准**：危险命令按权限档位放行/确认/拒绝；middleware 链能拦截工具执行；429 重试生效 —— 前三项达成 ✅（approval 包单测 + agent 集成 + e2e 真实 TTY 审批交互 + 会话级记忆落盘）
+**测试**：审批策略单测（黑白名单匹配）✅；middleware 链单测 ✅；重试单测（mock 429 响应）— 依赖 SDK 内置（ADR-012），流中断恢复未单独做（留待真实 API 冒烟观察）
 
 ### 阶段 4（剩余）：系统提示词拼接 + AGENTS.md + 压缩
 **目标**：`agentsmd` 包（**作为 onSystemPrompt middleware** 注入：项目级 AGENTS.md 向上搜索 + 全局 `agents.md` 拼接，阶段 2.5 已建 agents.md 占位，配合动态系统提示词组装）；`compact` 包（TokenBudget v1 + 摘要式 + **大工具结果 eviction** 落盘会话目录 evictions/，作为 onReasoning middleware；压缩触发时调用 `transcript.NewSegment` 切新文件，seed = 摘要+保留，**不做 overflow 安全网**）

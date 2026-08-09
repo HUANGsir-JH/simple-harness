@@ -295,6 +295,17 @@ func (a *Agent) runToolBatch(ctx context.Context, rc *middleware.RuntimeContext,
 			go func(c *messages.ToolCall) {
 				defer wg.Done()
 				if err := acting(errCtx, rc, middleware.ActingInput{Call: c}); err != nil {
+					// 审批拒绝（middleware.DeniedError，ADR-029）：作为失败结果
+					// 回填、循环继续（ADR-006：拒绝 ≠ Fatal，不取消整批）。
+					var de *middleware.DeniedError
+					if errors.As(err, &de) {
+						res := &messages.ToolResult{Success: false, Content: de.Reason}
+						resultsMu.Lock()
+						results[c.ID] = res
+						resultsMu.Unlock()
+						emit(Event{Type: EventToolResult, ToolCall: c, ToolResult: res})
+						return
+					}
 					mu.Lock()
 					if firstErr == nil {
 						firstErr = err

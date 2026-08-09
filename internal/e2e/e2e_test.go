@@ -161,6 +161,90 @@ func TestInteractiveE2E(t *testing.T) {
 	}
 }
 
+// mockLLMServerWriteFile 首轮返回 write_file 工具调用（审批 e2e 用），
+// 之后返回固定文本回复。
+func mockLLMServerWriteFile(t *testing.T) *httptest.Server {
+	t.Helper()
+	var reqCount atomic.Int32
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		var sb strings.Builder
+		sb.WriteString(sse("message_start", msgStart))
+		if reqCount.Add(1) == 1 {
+			// 首轮：write_file 工具调用（readonly 下触发审批）。
+			sb.WriteString(sse("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call_1","name":"write_file","input":{"path":"out.txt","content":"hello"}}}`))
+		} else {
+			// 次轮：文本回复。
+			sb.WriteString(sse("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`))
+			sb.WriteString(sse("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"文件已写入。"}}`))
+		}
+		sb.WriteString(sse("content_block_stop", `{"type":"content_block_stop","index":0}`))
+		sb.WriteString(sse("message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":5}}`))
+		sb.WriteString(sse("message_stop", `{"type":"message_stop"}`))
+		_, _ = w.Write([]byte(sb.String()))
+	}))
+}
+
+// writeConfigApprovalTo 写带 approval.mode 的测试配置。
+func writeConfigApprovalTo(t *testing.T, baseURL, path, mode string) string {
+	t.Helper()
+	content := fmt.Sprintf(`providers:
+  mock:
+    base_url: %s
+    api_key: test-key
+    models:
+      m:
+        context_window: 128000
+        thinking:
+          enabled: false
+approval:
+  mode: %s
+`, baseURL, mode)
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	return path
+}
+
+// TestApprovalE2E 验证真实 TTY 审批交互（ADR-029）：write_file 在 readonly
+// 下触发审批 UI → 用户 y → 工具执行 → 次轮回复。termtest SendLine 模拟按键。
+func TestApprovalE2E(t *testing.T) {
+	srv := mockLLMServerWriteFile(t)
+	defer srv.Close()
+	workDir := t.TempDir()
+	cfg := writeConfigApprovalTo(t, srv.URL, filepath.Join(t.TempDir(), "config.yaml"), "readonly")
+
+	cp, err := termtest.NewTest(t, termtest.Options{
+		CmdName:        harnessExe,
+		Args:           []string{"run", "--config", cfg, "写一个文件"},
+		WorkDirectory:  workDir,
+		DefaultTimeout: 30 * time.Second,
+		Environment:    []string{"HARNESS_HOME=" + filepath.Join(t.TempDir(), ".harness-e2e")},
+	})
+	if err != nil {
+		t.Fatalf("newtest: %v", err)
+	}
+	defer cp.Close()
+
+	// 审批 UI 出现（摘要含写入路径）。
+	if _, err := cp.Expect("写入文件: out.txt"); err != nil {
+		t.Fatalf("expect approval UI: %v", err)
+	}
+	// 用户允许本次。
+	cp.SendLine("y")
+	if _, err := cp.Expect("文件已写入"); err != nil {
+		t.Fatalf("expect reply: %v", err)
+	}
+	if _, err := cp.ExpectExitCode(0); err != nil {
+		t.Fatalf("expect exit 0: %v", err)
+	}
+	// readonly 下用户允许后工具确实执行（文件写入工作目录）。
+	if _, err := os.Stat(filepath.Join(workDir, "out.txt")); err != nil {
+		t.Errorf("write_file 未执行: %v", err)
+	}
+}
+
 // TestSessionPersistenceE2E 验证 CLI 全链路落盘：run 后 workspace 下有会话
 // （historys + agentstate.json），`harness sessions` 能列出。
 func TestSessionPersistenceE2E(t *testing.T) {

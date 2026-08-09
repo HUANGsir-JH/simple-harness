@@ -6,9 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 一个参照 OpenAI Codex CLI（`../codex/codex-rs`，Rust 源码）+ AgentScope Java v2 架构、用 Go 构建的**可真实使用**的极简 agent harness（命令行形式）。定位为通用框架，未来可被其它项目（如 resume-agent）引用。
 
-**当前状态**：阶段 2（工具系统 + 并发执行 + 终端渲染 + middleware 骨架 + 交互式 CLI）✅ 2026-08-07；阶段 2.5（Workspace + AgentState + 会话落盘/resume）✅ 2026-08-08；**架构重构（ADR-026 无状态 agent + 运行时切换 + 配置统一 init）**✅ 2026-08-08；**todo 工具（update_todo 全量替换 + 跨轮偏离提醒，ADR-027）**✅ 2026-08-08；**工具结果截断中间件 + Esc 用户中断 + shell 长任务缓解 + state.CWD 修正（ADR-028）**✅ 2026-08-09。**规划文档 `IMPLEMENTATION_PLAN.md` 是权威来源**（含实施阶段与已确认决策表）；架构决策在 `docs/tasks/DECISIONS.md`（ADR-021~028 为核心）；任务跟踪在 `docs/tasks/{TASKS,PROGRESS}.md`。实现前先读 `IMPLEMENTATION_PLAN.md`。
+**当前状态**：阶段 2（工具系统 + 并发执行 + 终端渲染 + middleware 骨架 + 交互式 CLI）✅ 2026-08-07；阶段 2.5（Workspace + AgentState + 会话落盘/resume）✅ 2026-08-08；**架构重构（ADR-026 无状态 agent + 运行时切换 + 配置统一 init）**✅ 2026-08-08；**todo 工具（update_todo 全量替换 + 跨轮偏离提醒，ADR-027）**✅ 2026-08-08；**工具结果截断中间件 + Esc 用户中断 + shell 长任务缓解 + state.CWD 修正（ADR-028）**✅ 2026-08-09；**工具审批（三档权限 + onActing middleware + 会话级记忆，ADR-029）**✅ 2026-08-09。**规划文档 `IMPLEMENTATION_PLAN.md` 是权威来源**（含实施阶段与已确认决策表）；架构决策在 `docs/tasks/DECISIONS.md`（ADR-021~029 为核心）；任务跟踪在 `docs/tasks/{TASKS,PROGRESS}.md`。实现前先读 `IMPLEMENTATION_PLAN.md`。
 
-**实施顺序**：~~阶段 3 审批~~ → **todo 工具**（挂 state，已完）→ **工具结果落盘/中断/shell 缓解**（ADR-028，已完）→ 阶段 3 权限（onActing）→ 阶段 4 剩余（AGENTS.md 注入/压缩）→ 阶段 5（子 agent，并行已由无状态 agent 架构支撑）。
+**实施顺序**：~~阶段 3 审批~~ → **todo 工具**（挂 state，已完）→ **工具结果落盘/中断/shell 缓解**（ADR-028，已完）→ **工具审批（ADR-029，已完）**→ 阶段 4 剩余（AGENTS.md 注入/压缩）→ 阶段 5（子 agent，并行已由无状态 agent 架构支撑）。
 
 ## 常用命令
 
@@ -31,7 +31,7 @@ go test ./internal/messages/ -run TestMessageJSONL
 go test ./internal/e2e/ -count=1
 ```
 
-REPL（`harness` 无子命令进入）命令：`/switch <id>|--last` 切换会话（进程内 resume）、`/model <name>` 切模型、`/effort <low|high|max>` 切推理档位。**Esc/Ctrl+C 中断当前回合**（raw mode 事件循环，中断提示落盘，resume 可见，ADR-028）。
+REPL（`harness` 无子命令进入）命令：`/switch <id>|--last` 切换会话（进程内 resume）、`/model <name>` 切模型、`/effort <low|high|max>` 切推理档位。**Esc/Ctrl+C 中断当前回合**（raw mode 事件循环，中断提示落盘，resume 可见，ADR-028）。**工具审批**（ADR-029）：危险操作按模式询问，`y` 允许本次 / `s` 本会话记住（落盘 AgentState）/ `n` 拒绝（回填模型换思路）；非 TTY 自动拒绝。
 
 ## 代码架构
 
@@ -44,9 +44,10 @@ internal/
   messages/           # 统一 Message 模型（含 Thinking）+ JSONL 序列化
   tools/              # Tool 接口（Handle 带 rc）+ 注册表 + 7 内置工具（含 update_todo，ADR-027）
   agentstate/         # AgentState 快照（模型/thinking 档位/todo/权限/plan/摘要）+ 原子落盘
+  approval/           # 工具审批（ADR-029）：三档模式 + shell 黑白名单 + 会话级记忆，ApprovalMiddleware 挂 onActing
   session/            # workspace 项目分桶 + 块级 transcript 异步 writer + 无状态 SessionMiddleware + resume
   e2e/                # 进程外端到端测试（termtest）
-  # 规划中（未实现）：approval / compact / agentsmd / ui / hooks / config
+  # 规划中（未实现）：compact / agentsmd / ui / hooks / config
 ```
 
 ## 核心架构约束（来自 ADR，见 docs/tasks/DECISIONS.md）
@@ -55,8 +56,8 @@ internal/
 
 1. **统一消息模型 + 事件分层**：核心层只操作统一 `Message`（role/content/thinking/tool_calls/tool_results），provider 适配层负责 ↔ 原生格式。事件分层：provider 采样级（text/thinking delta + **块完成** thinking_done/text_done + tool_call）+ agent 回合级（turn_start/turn_done 等，**带 MsgID** 关联块归属）。
 2. **Provider 单 anthropic wire**（ADR-022）：多后端 = 多 anthropic 兼容端点（base_url 覆盖即可），无多 wire 抽象。
-3. **进程内 middleware**（ADR-021/024/025/026/027/028）：6 hook（onion 前四 + onSystemPrompt 管道），贯穿 `ctx` + `*RuntimeContext`。**注入机制**：rc 承载会话（`Messages/State/StatePath/Model/ThinkingEffort`，`Session.RuntimeContext()` 每轮新建）；`session.SessionMiddleware` **无状态**挂 onAgent（从 rc.StatePath 读写，共享链可并发）；**工具 `Handle(ctx, rc, callID, args)` 带 rc**（todo 经 rc.State 读写）；`TodoReminderMiddleware` 挂 onReasoning（todo 非空且模型连续 ≥10 次 model call 未更新 → 请求消息尾部注入提醒临时副本，不写 conversation）；`ToolOutputMiddleware` 挂 onToolCall（after 改写本批 tool_result：超 20K 截断 head/tail 各 10K + 落盘 evictions/ + 路径提示；transcript 记完整、conversation 记 preview，ADR-028）。
-4. **错误二分类**：工具错误 `RespondToModel`（结果回填、循环继续）/ `Fatal`（终止 turn）。审批拒绝也是普通错误回填。
+3. **进程内 middleware**（ADR-021/024/025/026/027/028）：6 hook（onion 前四 + onSystemPrompt 管道），贯穿 `ctx` + `*RuntimeContext`。**注入机制**：rc 承载会话（`Messages/State/StatePath/Model/ThinkingEffort`，`Session.RuntimeContext()` 每轮新建）；`session.SessionMiddleware` **无状态**挂 onAgent（从 rc.StatePath 读写，共享链可并发）；**工具 `Handle(ctx, rc, callID, args)` 带 rc**（todo 经 rc.State 读写）；`TodoReminderMiddleware` 挂 onReasoning（todo 非空且模型连续 ≥10 次 model call 未更新 → 请求消息尾部注入提醒临时副本，不写 conversation）；`ToolOutputMiddleware` 挂 onToolCall（after 改写本批 tool_result：超 20K 截断 head/tail 各 10K + 落盘 evictions/ + 路径提示；transcript 记完整、conversation 记 preview，ADR-028）；`ApprovalMiddleware` 挂 onActing（before 审批：三档模式 + shell 黑白名单，决策纯函数 `Decide`；Ask 经 `rc.Approver`（CLI 注入 channelApprover，单一读方 channel 协调）询问 y/s/n；拒绝返回 `DeniedError` 回填模型；会话级记忆 `AgentState.Permission.Approved`，ADR-029）。
+4. **错误二分类 + 审批拒绝**：工具错误 `RespondToModel`（结果回填、循环继续）/ `Fatal`（终止 turn）。**审批拒绝 = 独立 `middleware.DeniedError`**（非工具错误）：agent 调用层捕获后作为失败结果回填、**不取消整批**、循环继续（ADR-029，拒绝 ≠ Fatal）。
 5. **并行工具**：errgroup 并发执行全部 tool_call，结果按 call_id 合并成**一条** tool_result 消息回填（anthropic 紧邻要求，ADR-024）。
 6. **会话双轨**（ADR-025 项目分桶）：`~/.harness/workspaces/<项目转义>/<session-id>/{historys, agentstate.json, plans, evictions}`；transcript = **块级事件 + 异步 writer**（单 goroutine FIFO + ordinal，压缩切新文件 `NewSegment`）；AgentState = todo/权限/plan 指针/摘要（含 `CWD` = **会话启动目录**，ADR-028）；evictions/ = 超长工具结果落盘（模型 read_file/grep 读全量）。resume 只读最大序号文件。
 7. **thinking 存但不重放**（ADR-025）：`Message.Thinking` 存审计，provider 重放 assistant 时忽略（免 anthropic 格式适配）。

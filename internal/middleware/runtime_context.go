@@ -38,6 +38,11 @@ type RuntimeContext struct {
 	// ThinkingEnabled 是 per-call thinking 开关覆盖（nil = client 默认）。
 	ThinkingEnabled *bool
 
+	// Approver 是审批交互器（阶段三权限，ADR-029）。CLI 注入实现
+	// （channel 协调 / 直接读行）；nil = 自动拒绝（非 TTY 场景）。
+	// ApprovalMiddleware 在 onActing 询问时从 rc 读取。
+	Approver Approver
+
 	attrs map[string]any
 }
 

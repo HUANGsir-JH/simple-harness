@@ -5,6 +5,7 @@ import (
 	"slices"
 
 	"github.com/agent-project/harness/internal/agent"
+	"github.com/agent-project/harness/internal/approval"
 	"github.com/agent-project/harness/internal/middleware"
 	"github.com/agent-project/harness/internal/provider"
 	"github.com/agent-project/harness/internal/session"
@@ -33,11 +34,18 @@ func (app *App) buildAgent() (*agent.Agent, error) {
 	// 追加）。SessionMiddleware 无状态，从 rc.StatePath 读写 AgentState。
 	// TodoReminderMiddleware 在模型连续多轮不更新 todo 时注入偏离提醒。
 	// ToolOutputMiddleware 统一截断工具结果（超长落盘 evictions/ + head/tail preview，ADR-028）。
+	// ApprovalMiddleware 工具审批（onActing，三档模式 + 会话级记忆，ADR-029）；
+	// 审批交互器经 rc.Approver 注入（REPL/runCmd 各自 channelApprover，非 TTY 不设）。
+	apprMode := approval.DefaultMode
+	if app.Config.Approval != nil && app.Config.Approval.Mode != "" {
+		apprMode = app.Config.Approval.Mode
+	}
 	mw := middleware.NewChain(
 		middleware.ToolInstructionsMiddleware{Tools: reg.Specs()},
 		session.SessionMiddleware{},
 		middleware.TodoReminderMiddleware{},
 		middleware.ToolOutputMiddleware{},
+		approval.ApprovalMiddleware{DefaultMode: apprMode},
 	)
 
 	a := agent.New(client, app.Resolved.Model)

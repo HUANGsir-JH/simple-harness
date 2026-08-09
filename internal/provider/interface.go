@@ -22,6 +22,15 @@ type Config struct {
 	DefaultProvider string `yaml:"default_provider,omitempty"`
 	// Providers 是全部自定义供应商，key 为供应商名。
 	Providers map[string]ProviderConfig `yaml:"providers"`
+	// Approval 是工具审批配置（阶段三权限，ADR-029）；nil = 默认模式。
+	Approval *ApprovalConfig `yaml:"approval,omitempty"`
+}
+
+// ApprovalConfig 是工具审批配置。
+type ApprovalConfig struct {
+	// Mode 是默认审批模式：readonly | acceptedit | bypass（未配置回退
+	// acceptedit）。会话级可经 AgentState.Permission.Mode 覆盖（resume 恢复）。
+	Mode string `yaml:"mode,omitempty"`
 }
 
 // ProviderConfig 描述一个自定义供应商（连接 + 鉴权 + 其下模型列表）。

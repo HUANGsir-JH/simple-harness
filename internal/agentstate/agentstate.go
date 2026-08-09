@@ -50,9 +50,11 @@ const (
 	TodoCompleted  = "completed"
 )
 
-// PermissionState 预留：阶段三三档权限 + 规则（存快照供 resume）。
+// PermissionState 是会话级审批状态（阶段三权限，ADR-029）：
+// 模式 + 会话级记忆，存快照供 resume 恢复（session.SessionMiddleware 落盘）。
 type PermissionState struct {
-	Mode string `json:"mode,omitempty"` // readonly | acceptedit | bypass
+	Mode     string   `json:"mode,omitempty"`     // readonly | acceptedit | bypass
+	Approved []string `json:"approved,omitempty"` // 会话级审批记忆（工具名 / 规范化命令 key）
 }
 
 // PlanState 预留：plan 文件路径指针（内容本体在 plans/，快照只存指针）。

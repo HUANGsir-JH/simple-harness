@@ -4,6 +4,18 @@
 
 ## 2026-08-09
 
+### 工具审批（阶段三权限）✅（ADR-029）
+
+- **背景**：阶段三开工。调研 codex（Rust：Profile+Policy 两层正交、审批流水线 hook→guardian→user、缓存 key 含命令+cwd、命令规范化）+ opencode（TS：工具主动 ask、规则集最后匹配胜出、决策粒度=工具+资源模式、拒绝三分类、级联拒绝）。结合既有 `onActing` 挂载点（ADR-021 预留）+ `AgentState.Permission` 预留字段落地。用户三点决策：readonly 写操作**询问**、记忆**仅会话级**、非 TTY **自动拒绝**。
+- **approval 包**（`internal/approval/`）：
+  - **Policy**（纯函数 `Decide(call, mode, approved)`）：三档模式 `readonly/acceptedit/bypass`；工具分类（只读集合 / write_file+apply_patch / update_todo 低风险 / shell_command）+ shell 黑白名单前缀/子串匹配（白名单 `ls cat git status` 等放行；黑名单 `rm -rf sudo curl|sh` 等触发审批）。命令**规范化**（trim+折叠空白+取前 2 token，`git status --porcelain`→`git status`，对齐 opencode arity）。
+  - **ApprovalMiddleware**（onActing before）：Decide → Allow 放行 / Ask 经 `rc.Approver` 询问 / Deny 拒绝。**拒绝返回自定义 `middleware.DeniedError`**（用户建议：独立错误类型 vs 借用 ToolError——语义分离），agent 调用层捕获后回填失败结果、循环继续（拒绝≠Fatal，不取消整批）。
+  - **会话级记忆**：按 s → key 记入 `AgentState.Permission.Approved`（shell 规范化命令前缀 / 其它工具名），随 AgentState 落盘跨轮生效。
+- **CLI 接线**（最难部分）：REPL 单一读方原则下，审批交互经 **channel 协调**——`channelApprover.Request` 发请求到 reqCh，主循环 select 消费 + 打印审批 UI + 下一行输入路由为答复（y/s/n / Esc）。`runCmd` 从 `withEscInterrupt`（独立 Esc goroutine 与审批读行竞争 stdin）改为与 REPL 统一的 `readStdinEvents + select` 骨架（withEscInterrupt 删除）。非 TTY / MakeRaw 失败 → 不设 rc.Approver → 自动拒绝。`--json` 发 `approval_request` 事件。
+- **契约类型**：`middleware.Approver / ApprovalRequest / Decision / DeniedError` 定义在 middleware 包（approval→middleware 依赖已存在，避免循环；provider 无法 import approval，approval.mode 校验硬编码合法值）。
+- **验证**：全量 `go build && go vet && go test ./...` 绿；approval 包 17 测试（三档/黑白名单/记忆/规范化/摘要）；agent 集成 3 测试（拒绝回填不 Fatal + 工具不执行 + 回合继续）；provider validate 2 测试；approver 3 测试（解析/channel 往返/ctx cancel）；**e2e 新增 TestApprovalE2E：termtest 真实 TTY 下 write_file 触发审批 UI → SendLine y → 工具执行写盘 → 次轮回复 → 退出码 0**。版本 0.3.0 → 0.4.0。
+- **留增强**：级联拒绝、全局 allowlist、拒绝反馈（CorrectedError）、bash 语法解析（tree-sitter/arity）、guardian 自动审批、复杂规则集。
+
 ### 工具结果截断中间件 + Esc 用户中断 + shell 长任务缓解 + state.CWD 修正 ✅（ADR-028）
 
 - **背景**：用户提出三个能力缺口——长工具结果模型无法读全量（现 `truncate` 保留前 20K 直接丢）；用户无法主动中断 agent（REPL 共用 ctx 一旦 cancel 永久失效）；模型卡在慢 shell 命令（同步阻塞）。调研 codex（unified_exec HeadTailBuffer / turn_aborted）+ opencode（truncate.ts 落盘 / ctx.abort）。用户反馈定案：**截断上收为中间件**、**Esc 键触发中断**。
