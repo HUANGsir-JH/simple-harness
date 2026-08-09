@@ -6,57 +6,25 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/signal"
 	"strings"
-	"syscall"
 
 	"github.com/agent-project/harness/internal/agent"
 	"github.com/agent-project/harness/internal/middleware"
-	"github.com/agent-project/harness/internal/session"
 	"github.com/agent-project/harness/internal/ui"
+	"github.com/agent-project/harness/internal/ui/tui"
 	"golang.org/x/term"
 )
 
-// repl 是交互式模式（`harness` 无子命令）：新会话 + REPL 循环。
+// repl 是交互式模式（`harness` 无子命令）：进 TUI（bubbletea 全屏，ADR-030）。
+// W1 骨架：仅 UI 壳（/exit 退出）；W2 起接入 session/agent/事件桥/审批桥。
 func repl(jsonOut bool) error {
-	app, err := defaultApp()
-	if err != nil {
-		return err
-	}
-	a, err := app.buildAgent()
-	if err != nil {
-		return err
-	}
-	proj, err := findProject()
-	if err != nil {
-		return err
-	}
-	sess, err := session.CreateInCWD(app.Resolved.Model, app.defaultApprovalMode())
-	if err != nil {
-		return err
-	}
-
-	// SIGTERM 终止进程；SIGINT（Ctrl+C）作为字节由 raw mode 捕获 → 只中断当前
-	// 回合（不终止 REPL）。顶层 ctx 不被 SIGINT cancel，下一轮 Run 不受影响。
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM)
-	defer stop()
-
-	mgr := &SessionManager{
-		app:    app,
-		a:      a,
-		proj:   proj,
-		open:   map[string]*session.Session{sess.ID: sess},
-		active: sess,
-	}
-	defer mgr.closeAll()
-
-	var renderer ui.Output
 	if jsonOut {
-		renderer = ui.JSONRenderer{}
-	} else {
-		renderer = ui.NewTextRenderer(true)
+		return fmt.Errorf("交互模式不支持 --json（请用 `harness --json run <prompt>`）")
 	}
-	return runREPL(ctx, mgr, renderer)
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		return fmt.Errorf("交互模式需要终端（TUI 全屏），请用 `harness run <prompt>`（非交互单轮）")
+	}
+	return tui.RunTUI()
 }
 
 // runREPL 是交互式 REPL 循环（`harness` / resume 复用）。输入改事件循环：

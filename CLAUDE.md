@@ -6,9 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 一个参照 OpenAI Codex CLI（`../codex/codex-rs`，Rust 源码）+ AgentScope Java v2 架构、用 Go 构建的**可真实使用**的极简 agent harness（命令行形式）。定位为通用框架，未来可被其它项目（如 resume-agent）引用。
 
-**当前状态**：阶段 1（骨架+统一消息模型+Provider+最小 loop）✅ 2026-08-04；阶段 2（工具系统 + 并发执行 + 终端渲染 + middleware 骨架 + 交互式 CLI）✅ 2026-08-07；阶段 2.5（Workspace + AgentState + 会话落盘/resume）✅ 2026-08-08；**架构重构（ADR-026 无状态 agent + 运行时切换 + 配置统一 init）**✅ 2026-08-08；**todo 工具（update_todo 全量替换 + 跨轮偏离提醒，ADR-027）**✅ 2026-08-08；**工具结果截断中间件 + Esc 用户中断 + shell 长任务缓解 + state.CWD 修正（ADR-028）**✅ 2026-08-09；**工具审批（三档权限 + onActing middleware + 会话级记忆，ADR-029）**✅ 2026-08-09。**规划文档 `IMPLEMENTATION_PLAN.md` 是权威来源**（含已确认决策表与实施阶段状态，**已完成/待办严格区分**）；架构决策在 `docs/tasks/DECISIONS.md`（ADR-021~029 为核心）；任务跟踪在 `docs/tasks/{TASKS,PROGRESS}.md`。实现前先读 `IMPLEMENTATION_PLAN.md`。
+**当前状态**：阶段 1（骨架+统一消息模型+Provider+最小 loop）✅ 2026-08-04；阶段 2（工具系统 + 并发执行 + 终端渲染 + middleware 骨架 + 交互式 CLI）✅ 2026-08-07；阶段 2.5（Workspace + AgentState + 会话落盘/resume）✅ 2026-08-08；**架构重构（ADR-026 无状态 agent + 运行时切换 + 配置统一 init）**✅ 2026-08-08；**todo 工具（update_todo 全量替换 + 跨轮偏离提醒，ADR-027）**✅ 2026-08-08；**工具结果截断中间件 + Esc 用户中断 + shell 长任务缓解 + state.CWD 修正（ADR-028）**✅ 2026-08-09；**工具审批（三档权限 + onActing middleware + 会话级记忆，ADR-029）**✅ 2026-08-09；**TUI（bubbletea 全屏交互 UI 替代 REPL，ADR-030）**🔨 2026-08-09。**规划文档 `IMPLEMENTATION_PLAN.md` 是权威来源**（含已确认决策表与实施阶段状态，**已完成/待办严格区分**）；架构决策在 `docs/tasks/DECISIONS.md`（ADR-021~029 为核心）；任务跟踪在 `docs/tasks/{TASKS,PROGRESS}.md`。实现前先读 `IMPLEMENTATION_PLAN.md`。
 
-**实施顺序**：~~阶段 3 审批~~ → **todo 工具**（挂 state，已完）→ **工具结果落盘/中断/shell 缓解**（ADR-028，已完）→ **工具审批（ADR-029，已完）**→ 阶段 4 剩余（AGENTS.md 注入/压缩）→ 阶段 5（子 agent，并行已由无状态 agent 架构支撑）。
+**实施顺序**：~~阶段 3 审批~~ → **todo 工具**（挂 state，已完）→ **工具结果落盘/中断/shell 缓解**（ADR-028，已完）→ **工具审批（ADR-029，已完）**→ **TUI（bubbletea 替代 REPL，ADR-030，进行中）**→ 阶段 4 剩余（AGENTS.md 注入/压缩）→ 阶段 5（子 agent，并行已由无状态 agent 架构支撑）→ 阶段 6 剩余（摘要式压缩/grep/双向通信）。
 
 ## 常用命令
 
@@ -31,14 +31,14 @@ go test ./internal/messages/ -run TestMessageJSONL
 go test ./internal/e2e/ -count=1
 ```
 
-REPL（`harness` 无子命令进入）命令：`/switch <id>|--last` 切换会话（进程内 resume）、`/model <name>` 切模型、`/effort <low|high|max>` 切推理档位、`/permission <readonly|acceptedit|bypass>` 切审批模式（会话级，落盘 AgentState）。**Esc/Ctrl+C 中断当前回合**（raw mode 事件循环，中断提示落盘，resume 可见，ADR-028）。**工具审批**（ADR-029）：config `approval.mode` 为默认权限（会话创建时播种进 AgentState.Permission.Mode）；危险操作按模式询问，`y` 允许本次 / `s` 本会话记住（落盘 AgentState）/ `n` 拒绝（回填模型换思路）；非 TTY 自动拒绝。
+交互模式（`harness` 无子命令进 TUI，bubbletea 全屏）命令：`/switch` `/model` `/effort` `/permission` 弹窗选择器（选项实时从配置获取，右侧显示说明）、`/help`、`/exit`（退出仅此命令）。**Esc 中断当前回合**（中断提示落盘，resume 可见，ADR-028）；**Ctrl+C 复制**（非中断非退出）；run 期间输入进**队列**（输入框上方队列条，回合完成逐条连跑）。`run`（单轮流式非交互）保留。**工具审批**（ADR-029）：config `approval.mode` 为默认权限（会话创建时播种进 AgentState.Permission.Mode）；危险操作按模式询问，`y` 允许本次 / `s` 本会话记住（落盘 AgentState）/ `n` 拒绝（回填模型换思路）；非 TTY 自动拒绝。
 
 ## 代码架构
 
 ```
 cmd/harness/          # CLI 应用层：main（dispatch）/ runtime（统一配置 init）/ build（共享无状态 agent）/ run+resume+repl+session_mgr（子命令与 REPL 编排）
 internal/
-  ui/                 # ★ 用户交互层：终端输入（raw mode 单一读方事件循环）+ 渲染（text/json）+ 审批交互（ChannelApprover/ApprovalPrompt）
+  ui/                 # ★ 用户交互层：渲染（text/json，run 单轮用）+ 审批解析（ParseApprovalDecision）+ **tui/**（bubbletea 全屏交互 UI 替代 REPL：Model/View/Update 纯函数 + 事件桥 + 审批桥，ADR-030）
   agent/              # ★ 无状态 ReAct loop（采样→工具→回填，消息序列经 rc.Messages；ADR-026）+ 回合级事件（turn_done 为测试锚点）
   middleware/         # ★ 框架 core：6 hook 扩展机制（onAgent/onReasoning/onToolCall/onActing/onModelCall onion + onSystemPrompt 管道）+ RuntimeContext（承载会话）+ 契约（Approver/ApprovalRequest/DeniedError，ADR-029）
   middleware/impl/    # ★ 内置中间件实现：工具说明注入 / 会话状态 load-save / todo 跨轮提醒（ADR-027）/ 工具结果截断 head/tail + evictions 落盘（ADR-028）/ 工具审批三档 + 黑白名单 + 会话记忆（ADR-029）
@@ -65,6 +65,7 @@ internal/
 8. **UI 抽象**：`output` 接口（text 渲染器 + `--json` JSONL 事件）；事件回调双转发（渲染 + session 落盘）。
 9. **子 agent = 独立 session**（远期）：fork 只继承 user 消息 + 最终答案。并行已由无状态 agent + 共享 chain 并发安全支撑（ADR-026）。
 10. **无状态 agent + 运行时切换**（ADR-026）：agent 不持有会话，`Run(ctx, rc, onEvent)` 消息序列经 `rc.Messages`；**每 Run 新建 rc**，切换会话 = 换 active（REPL `/switch`）、并行 = 每 goroutine 一个 rc（共享 agent/chain 并发安全）。模型/thinking 档位 per-call 经 `Request.Model/ThinkingEnabled/ThinkingEffort` 覆盖（nil/空 = client 默认），会话级持久化在 AgentState（resume 恢复）；`/model`、`/effort` 运行时切换。配置统一 `defaultApp()` 惰性单例（`provider.LoadConfig` + `App{Config, Resolved}`）。
+11. **TUI 交互**（ADR-030）：`internal/ui/tui`（bubbletea elm：Model/Update/View 纯函数可测）是唯一交互入口（`repl()` 留薄壳，REPL 已删）；agent 事件经 `onEvent → program.Send` 桥接（agent 核心零冲击，ADR-026 前提）；审批 `rc.Approver` 换 `TUIApprover`（接口不变，run 继续用 channelApprover）；**队列 = 用户输入**（prompt + `/` 命令统一排队，消费按前缀分派命令/发 agent）；命令落盘 transcript `command` 行但不进 conversation（模型不可见）；工具块按工具分派折叠展示；无 emoji 风格（`[OK]/[ERR]/[RUN]` + 颜色）；测试单测为主 + e2e 全面。
 
 ## 工作流约定
 
@@ -73,3 +74,9 @@ internal/
 - 时间戳统一 `YYYY-MM-DD`；状态变更必须带日期。
 - **测试隔离**：涉及 workspace 的测试/进程用 `HARNESS_HOME=<临时目录>`，避免污染 `~/.harness/`。
 - 真实 API key 只在 `config.local.yaml`（gitignored），**永不写入对话/记忆/提交明文**。
+
+
+## 三个参考源
+1. D:\agent-project\harness\codex：codex开源仓库
+2. D:\agent-project\harness\opencode：opencode开源仓库
+3. D:\agent-project\harness\simple-harness\agent-scope-llms.txt：AgentScope LLMs 相关信息

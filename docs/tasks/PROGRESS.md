@@ -4,6 +4,14 @@
 
 ## 2026-08-09
 
+### TUI 阶段启动：决策落盘 + 任务拆分 ✅（ADR-030）
+
+- **背景**：用户指 REPL 的交互式行为（行式流输出 + 提示符混流）影响项目测试，决定把 TUI 提前到现在（TASKS.md 阶段 6 → 子 agent 之前），TUI 上线后 **REPL 整体删除**。
+- **调研**：两轮 Explore 深挖 codex（`codex-rs/tui`：ratatui 全帧 diff + 命令式 App 状态机 + FrameRequester 合并重绘 + 无 TTY state-machine 测试）+ opencode（`packages/tui`：Solid 组件树 + 原生渲染内核 + 16ms 批量合帧 + 增量 store reducer + 无 pty 帧快照测试）。提炼共性 6 条：渲染/输入/agent 解耦、事件驱动增量、组件化视图、流式 cell 完成合并、UI state 独立 reducer、无 TTY 测试。
+- **决策（ADR-030 落盘）**：bubbletea v1.3 + bubbles + lipgloss + glamour（md 渲染）+ gotextdiff（write diff）；REPL 删除、run 保留；队列（run 期间输入 + 队列条 + turn_done 连跑）；斜杠命令弹窗选择器 + 实时配置列表 + 自动补全 + 命令落盘 command 行（不发给模型）；单焦点 Tab 键鼠 + Ctrl+C 复制 + Esc 中断 + 仅 /exit 退出；工具折叠块按工具分派（read/write 单行元信息、write/apply diff、list_dir/glob 枚举、todo checklist、shell 完整 command+输出）；thinking 流式折叠；切换全量替换；无 emoji 风格；单测为主 + e2e 全面。
+- **落盘**：DECISIONS.md 加 ADR-030；TASKS.md 建阶段 TUI + W0-W5 子任务，阶段 4/5 标后置；task list 建 #82-87。
+- **下一步**：W1 依赖 + TUI 骨架。
+
 ### workspace 桶精确建桶修复 ✅（FindProject 去向上归并）
 
 - **现象**：用户报 case03 任务未在全局目录建 workspace 记录。排查发现**记录存在**但落进 `D__agent-project_harness`（项目根桶）：会话 `20260809T125025-74dce164`（agentstate.cwd = `D:\agent-project\harness\just-for-test\case03`，任务正常执行）。

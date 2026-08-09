@@ -135,6 +135,7 @@ func TestRunSingleTurnE2E(t *testing.T) {
 // 交互式入口用默认 config 查找（项目级 config.local.yaml），故把测试配置
 // 写到工作目录。
 func TestInteractiveE2E(t *testing.T) {
+	t.Skip("REPL 交互已被 TUI 骨架替代（ADR-030），W5 改造为 TUI termtest（输入→回复→/exit）")
 	srv := mockLLMServer(t)
 	defer srv.Close()
 	workDir := t.TempDir()
@@ -156,6 +157,29 @@ func TestInteractiveE2E(t *testing.T) {
 		t.Fatalf("expect reply: %v", err)
 	}
 	cp.SendLine("exit")
+	if _, err := cp.ExpectExitCode(0); err != nil {
+		t.Fatalf("expect exit 0: %v", err)
+	}
+}
+
+// TestTUIExitsE2E 验证 TUI 骨架能起 + /exit 退出（W1；W5 扩展交互场景）。
+func TestTUIExitsE2E(t *testing.T) {
+	cp, err := termtest.NewTest(t, termtest.Options{
+		CmdName:        harnessExe,
+		WorkDirectory:  t.TempDir(),
+		DefaultTimeout: 15 * time.Second,
+		Environment:    []string{"HARNESS_HOME=" + filepath.Join(t.TempDir(), ".harness-e2e")},
+	})
+	if err != nil {
+		t.Fatalf("newtest: %v", err)
+	}
+	defer cp.Close()
+
+	// TUI 骨架显示后，/exit 退出（退出仅此命令，ADR-030）。
+	if _, err := cp.Expect("harness TUI"); err != nil {
+		t.Fatalf("expect TUI 骨架: %v", err)
+	}
+	cp.SendLine("/exit")
 	if _, err := cp.ExpectExitCode(0); err != nil {
 		t.Fatalf("expect exit 0: %v", err)
 	}
