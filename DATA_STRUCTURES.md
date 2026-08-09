@@ -542,6 +542,26 @@ classDiagram
 
 `Line.Type` 取值：`meta | user | thinking | text | tool_use | tool_result | turn_start | turn_end`。`MsgID` 关联 thinking/text/tool_use 归属的 assistant 消息。
 
+#### 并发工具结果的存储：transcript 逐行 vs conversation 合并（ADR-024/025）
+
+一次采样模型发出多个 tool_call（并发执行，ADR-024）时，两个存储层面形态不同：
+
+```jsonl
+{"ordinal":4,"type":"tool_use",   "msg_id":"msg_x","call_id":"call_A","name":"list_dir",      "args":{"path":"."}}
+{"ordinal":5,"type":"tool_use",   "msg_id":"msg_x","call_id":"call_B","name":"shell_command",  "args":{"command":"..."}}
+{"ordinal":6,"type":"tool_result","turn":1,"call_id":"call_A","success":true,"content":"dir\t.git\nfile\t..."}   ← 独立一行
+{"ordinal":7,"type":"tool_result","turn":1,"call_id":"call_B","success":true,"content":"parallel-ok\r\n"}       ← 独立一行
+```
+
+| 存储 | 并发工具结果形态 | 原因 |
+|---|---|---|
+| **transcript（jsonl，磁盘）** | **每个工具结果一行** `tool_result`（各带 call_id），不合并 | transcript 是**块级事件流**：writer 对每个 `EventToolResult` 写一行（`transcript.go` OnAgentEvent），忠实记录事件粒度，审计/压缩可见真实块级历史 |
+| **conversation（内存，模型输入）** | **一条 `RoleTool` 消息带多块**（`ToolResults: [call_A块, call_B块]`） | agent.go `runToolBatch` 并发执行 → 按 calls 顺序组装 blocks → `NewToolResultsMessage` 合并 Add（满足 anthropic 紧邻要求：tool_use 后下一条含全部 tool_result） |
+
+**resume 合并**：`LoadConversation` 逐行重建时，`appendToolResult` 检测上一条已是 `RoleTool` → 把下一行 tool_result **append 到同一消息**（`transcript.go:255-263`），内存恢复成一条多块消息。正常 ReAct 循环里一批并行结果的 tool_result 行连续写入，故总能正确合并；若中间夹了其它消息则不合并（各自成块）。
+
+**顺序保证**：并发执行结果先入 `results map[callID]`，回填按 `in.Calls` 原始顺序遍历组装——模型看到的块顺序 = 它发出调用的顺序，不因并发完成快慢错乱。ToolOutputMiddleware 逐块独立截断/豁免（read_file 豁免，ADR-028），同一批里 shell 截断 + read 完整互不影响。
+
 **resume 语义**：只读最大序号文件（`history-<n>.jsonl`），按 ordinal 逐行重建 conversation（thinking 入 `Message.Thinking`，tool_result 合并）；`agentstate.json` 恢复非消息状态（含模型/档位）。
 
 ## 五、CLI 层（cmd/harness）
