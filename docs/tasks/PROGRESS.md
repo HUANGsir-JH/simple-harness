@@ -4,6 +4,14 @@
 
 ## 2026-08-09
 
+### 项目结构可维护性重构 ✅（middleware core/impl 分层 + 文件拆分）
+
+- **背景**：用户评估结构可维护性。要点——① `cmd/harness/commands.go` 651 行混 5 关注点（run/REPL/输入/resume）；② `provider/anthropic.go` 341 行混 client/消息转换/流适配；③ `session/transcript.go` 写侧（异步 writer）与读侧（resume 重建）混；④ `middleware/approval.go`（跨包契约）与审批实现分散，用户指其"与中间件无关"；⑤ `messages/jsonl.go` 死代码（ADR-025 后无生产调用）；⑥ `agent/util.go` 单函数文件。
+- **决策**：采纳用户"中间件 core + 接口实现分离"——框架层只留机制，具体中间件实现集中 **`internal/middleware/impl`**：`internal/approval` 包整体并入（policy + ApprovalMiddleware）、`session.SessionMiddleware` 搬入、原 middleware 三个通用中间件（tool_instructions/todo_reminder/tool_output）迁入。契约文件 `approval.go` → `contract.go` 留在框架层（agent 调用层捕获 DeniedError 只认 middleware 类型；契约若随实现走 impl 会与签名用 rc 互引成环）。**RuntimeContext 留在框架 core**：它是 handler 签名三件套（ctx + rc + Input）的载体、与 chain 强耦合；独立成包需连带迁走 Approver 契约、改 108 处引用，收益仅是命名纯度——不做。
+- **文件拆分**：commands.go → run.go/repl.go/input.go/resume.go（input_test.go 正好对上）；anthropic.go → anthropic_messages.go（toAnthropic* 转换）/ anthropic_stream.go（SSE 块事件适配）；transcript.go → load.go（读侧；currentSegment/historyPath 等共用辅助留写侧）；删 messages/jsonl.go + 5 个 JSONL 测试；agent/util.go 并入 agent.go。
+- **依赖方向**：middleware（框架）→ {messages, provider, agentstate} 纯数据层；impl → {middleware, messages, provider, agentstate}；tools → impl（EvictContent 复用，shell 超时落盘）。`internal/approval` 包删除，`internal/middleware` 框架层只剩 chain/runtime_context/contract 三文件。
+- **验证**：全量 `go build && go vet && go test ./...` 绿 + `go test -race ./...` 绿。已知 flaky（既有，非本次引入）：`TestShellCommandTimeoutEvictsOutput` 依赖 PowerShell 冷启动 ~1.5s 时序，完整套件并行负载高时偶发无输出，单独跑稳定通过。
+
 ### 工具审批（阶段三权限）✅（ADR-029）
 
 - **背景**：阶段三开工。调研 codex（Rust：Profile+Policy 两层正交、审批流水线 hook→guardian→user、缓存 key 含命令+cwd、命令规范化）+ opencode（TS：工具主动 ask、规则集最后匹配胜出、决策粒度=工具+资源模式、拒绝三分类、级联拒绝）。结合既有 `onActing` 挂载点（ADR-021 预留）+ `AgentState.Permission` 预留字段落地。用户三点决策：readonly 写操作**询问**、记忆**仅会话级**、非 TTY **自动拒绝**。

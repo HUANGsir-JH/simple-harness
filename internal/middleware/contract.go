@@ -4,10 +4,11 @@ import "context"
 
 // 审批契约类型（阶段三权限，ADR-029）。
 //
-// 定义在 middleware 包而非 approval 包：依赖方向 approval → middleware
-// 已存在（ApprovalMiddleware 嵌 Base、用 RuntimeContext），middleware 不能
-// 反向 import approval，否则循环。审批策略实现（Policy/黑白名单）在
-// internal/approval 包，本文件只承载跨包共享的"契约"类型。
+// 定义在 middleware 包而非中间件实现包（middleware/impl）：agent 调用层捕获
+// DeniedError 回填模型，只认 middleware 包类型；若契约随 ApprovalMiddleware
+// 放 impl，则 agent → impl → middleware 与 middleware → impl（签名用 rc）
+// 会互引成环。审批策略实现（Policy/黑白名单）与 ApprovalMiddleware 在
+// internal/middleware/impl 包；本文件只承载跨包共享的"契约"类型。
 
 // Approver 是审批交互接口。CLI 注入实现（channel 协调 / 直接读行）；
 // ApprovalMiddleware 在 onActing 询问时从 rc.Approver 读取。nil = 自动拒绝

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/agent-project/harness/internal/messages"
 	"github.com/agent-project/harness/internal/middleware"
@@ -332,3 +333,7 @@ func (a *Agent) runToolBatch(ctx context.Context, rc *middleware.RuntimeContext,
 	})
 	return wrapped(ctx, rc, middleware.ToolCallInput{Calls: calls})
 }
+
+// timeNowNanos 是一个小间接层，便于测试注入确定性的 ID；
+// 生产环境使用墙钟。
+func timeNowNanos() int64 { return time.Now().UnixNano() }

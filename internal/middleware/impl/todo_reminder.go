@@ -1,9 +1,10 @@
-package middleware
+package impl
 
 import (
 	"context"
 
 	"github.com/agent-project/harness/internal/messages"
+	"github.com/agent-project/harness/internal/middleware"
 )
 
 // TodoReminderThreshold 是提醒触发阈值：距上次"todo 活动"（模型调用
@@ -25,10 +26,10 @@ const TodoReminderThreshold = 10
 //     （conversation）→ 提醒不落 transcript、resume 不重放（ADR-027）；
 //     且提醒在请求尾部，不影响历史前缀的缓存命中
 type TodoReminderMiddleware struct {
-	Base
+	middleware.Base
 }
 
-func (m TodoReminderMiddleware) OnReasoning(ctx context.Context, rc *RuntimeContext, in ReasoningInput, next ReasoningHandler) error {
+func (m TodoReminderMiddleware) OnReasoning(ctx context.Context, rc *middleware.RuntimeContext, in middleware.ReasoningInput, next middleware.ReasoningHandler) error {
 	cnt := 0
 	if v, ok := rc.Get("todo_sample_count").(int); ok {
 		cnt = v

@@ -1,4 +1,4 @@
-package middleware
+package impl
 
 import (
 	"context"
@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/agent-project/harness/internal/middleware"
 )
 
 // MaxOutputChars 是工具结果回填模型的最大长度（超出走 eviction：head/tail
@@ -20,7 +22,7 @@ const MaxOutputChars = 20000
 //
 // rc 为 nil 或 StatePath 为空（非会话场景/测试）→ 退化纯截断（不落盘），
 // 保持工具测试无需会话环境。短文本原样返回。
-func EvictContent(rc *RuntimeContext, s string) string {
+func EvictContent(rc *middleware.RuntimeContext, s string) string {
 	if len(s) <= MaxOutputChars {
 		return s
 	}
@@ -62,11 +64,11 @@ func EvictContent(rc *RuntimeContext, s string) string {
 // 注：transcript（会话落盘）记完整结果（审计全量）；conversation（模型
 // 上下文）经本中间件截断为 preview + 路径，模型用 read_file/grep 读全量。
 type ToolOutputMiddleware struct {
-	Base
+	middleware.Base
 }
 
 // OnToolCall 在工具批执行完成后，对本批新增消息（tool_result）统一截断。
-func (ToolOutputMiddleware) OnToolCall(ctx context.Context, rc *RuntimeContext, in ToolCallInput, next ToolCallHandler) error {
+func (ToolOutputMiddleware) OnToolCall(ctx context.Context, rc *middleware.RuntimeContext, in middleware.ToolCallInput, next middleware.ToolCallHandler) error {
 	if rc == nil || rc.Messages == nil {
 		return next(ctx, rc, in)
 	}

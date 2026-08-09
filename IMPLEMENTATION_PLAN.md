@@ -33,16 +33,16 @@
 
 ```
 harness/
-├── cmd/harness/          # CLI：main（dispatch: run/resume/sessions/version/help）/ runtime（统一配置 init）/ build（共享无状态 agent）/ commands（run/resume + REPL）/ approver（审批 channel 协调）/ renderer（output 接口 + --json）
+├── cmd/harness/          # CLI：main（dispatch: run/resume/sessions/version/help）/ runtime（统一配置 init）/ build（共享无状态 agent）/ run+repl+input+resume（子命令与 REPL）/ approver（审批 channel 协调）/ renderer（output 接口 + --json）
 ├── internal/
 │   ├── agent/            # ★ 无状态 ReAct loop（采样→工具→回填，消息经 rc.Messages；ADR-026）+ 回合级事件
-│   ├── middleware/       # ★ 6 hook 扩展机制 + 洋葱链 + RuntimeContext（承载会话）+ 契约类型（Approver/DeniedError）+ TodoReminder/ToolOutput/Approval 中间件
+│   ├── middleware/       # ★ 框架 core：6 hook 扩展机制 + 洋葱链 + RuntimeContext（承载会话）+ 契约类型（Approver/ApprovalRequest/DeniedError）
+│   ├── middleware/impl/  # ★ 内置中间件实现（工具说明/会话状态 load-save/todo 提醒/工具截断/审批策略）
 │   ├── provider/         # 单 anthropic wire + 块事件适配 + per-call 覆盖（Request.Model/ThinkingEnabled/Effort）
-│   ├── messages/         # 统一 Message 模型（含 Thinking）+ JSONL 序列化
+│   ├── messages/         # 统一 Message 模型（含 Thinking）+ JSON 序列化
 │   ├── tools/            # Tool 接口（Handle 带 rc）+ 注册表 + 7 内置工具
 │   ├── agentstate/       # AgentState 快照（模型/档位/todo/权限/CWD/plan/摘要）+ 原子落盘
-│   ├── approval/         # 审批策略（三档 + 黑白名单 + Decide 纯函数）+ ApprovalMiddleware
-│   ├── session/          # workspace 项目分桶 + 块级 transcript 异步 writer + 无状态 SessionMiddleware + resume
+│   ├── session/          # workspace 项目分桶 + 块级 transcript 异步 writer + resume
 │   ├── e2e/              # 进程外端到端测试（termtest 真实 TTY + mock HTTP）
 │   └── # 规划中（未实现）：compact / agentsmd / hooks；ui 内联 cmd（output 接口，TUI 规划）
 ├── config.example.yaml   # 配置示例
@@ -70,7 +70,7 @@ type Middleware interface {
 }
 ```
 
-- **挂载点映射**：`onActing` = 工具审批（ApprovalMiddleware，ADR-029）；`onToolCall` = 工具结果截断（ToolOutputMiddleware，ADR-028）；`onReasoning` = todo 偏离提醒（TodoReminder，ADR-027）+ 压缩（规划）；`onSystemPrompt` = 工具说明注入（ToolInstructions）+ AGENTS.md（规划）；`onAgent` = 会话状态 load/save（SessionMiddleware）。
+- **挂载点映射**：`onActing` = 工具审批（ApprovalMiddleware，ADR-029）；`onToolCall` = 工具结果截断（ToolOutputMiddleware，ADR-028）；`onReasoning` = todo 偏离提醒（TodoReminder，ADR-027）+ 压缩（规划）；`onSystemPrompt` = 工具说明注入（ToolInstructions）+ AGENTS.md（规划）；`onAgent` = 会话状态 load/save（SessionMiddleware）。**以上内置中间件实现全部在 `internal/middleware/impl`**。
 - **注入机制**：`RuntimeContext`（rc）per-call 新建承载会话（Messages/State/StatePath/Model/Thinking*/Approver）；中间件从 rc 读写，**无状态可并发**（共享 chain 多 goroutine 安全，ADR-026）。
 - **事件分层**：provider 采样级（delta + 块完成 + tool_call + done/error）→ agent 回合级（带 MsgID 关联块归属）→ 渲染器/transcript 双转发。
 
@@ -131,7 +131,7 @@ type Tool interface {
 - 内置 7 工具：read_file / list_dir / glob / write_file / shell_command / apply_patch / update_todo。
 - **工具结果截断**：工具返回完整结果，截断策略在 ToolOutputMiddleware（onToolCall after，20K head/tail + evictions/ 落盘，ADR-028）。
 
-### 5. 审批（internal/approval/，ADR-029）
+### 5. 审批（internal/middleware/impl/，ADR-029）
 
 **三层正交设计**（完整版见 `DATA_STRUCTURES.md §3.9`）：
 

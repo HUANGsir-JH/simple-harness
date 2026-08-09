@@ -51,7 +51,7 @@
 
 - **目标**：三档权限（`readonly` / `acceptedit` / `bypass`）**以 onActing middleware 挂载** + 黑白名单 + TTY 交互 + **会话级记忆**（用户决策替代 allowlist，ADR-029；规则匹配引擎保留扩展点，复杂匹配不强做）
 - **成功标准**：危险命令按权限档位放行/确认/拒绝；middleware 链能拦截工具执行
-- **状态**：**已完成（2026-08-09，ADR-029）**。交付：`internal/approval/`（Policy 三档 + shell 黑白名单 + ApprovalMiddleware 挂 onActing + `middleware.DeniedError` 拒绝回填）+ channelApprover（REPL/runCmd 单一读方协调，y/s/n）+ `AgentState.Permission`（Mode 会话创建播种 + `/permission` 切换 + Approved 会话级记忆）+ e2e 真实 TTY 审批交互。
+- **状态**：**已完成（2026-08-09，ADR-029）**。交付：`internal/middleware/impl/`（Policy 三档 + shell 黑白名单 + ApprovalMiddleware 挂 onActing + `middleware.DeniedError` 拒绝回填）+ channelApprover（REPL/runCmd 单一读方协调，y/s/n）+ `AgentState.Permission`（Mode 会话创建播种 + `/permission` 切换 + Approved 会话级记忆）+ e2e 真实 TTY 审批交互。
 - **错误重试（非本阶段交付）**：429 依赖 SDK 内置退避（ADR-012，已承担）；流中断恢复未做，独立待办。
 - **Hooks（PreToolUse 子进程）**：降级远期，由 middleware 承载。
 

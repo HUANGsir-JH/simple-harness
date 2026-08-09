@@ -1,10 +1,11 @@
-package middleware
+package impl
 
 import (
 	"context"
 	"fmt"
 	"strings"
 
+	"github.com/agent-project/harness/internal/middleware"
 	"github.com/agent-project/harness/internal/provider"
 )
 
@@ -59,12 +60,12 @@ shell_command 是同步阻塞的：命令运行期间模型无法做任何事，
 // 工具列表、apply_patch 语法说明与任务管理引导（阶段二系统提示动态拼接的
 // 第一个实现，阶段四 AGENTS.md 等在此追加）。
 type ToolInstructionsMiddleware struct {
-	Base
+	middleware.Base
 	Tools []provider.ToolSpec
 }
 
 // OnSystemPrompt 追加工具说明段。
-func (m ToolInstructionsMiddleware) OnSystemPrompt(_ context.Context, _ *RuntimeContext, current string) (string, error) {
+func (m ToolInstructionsMiddleware) OnSystemPrompt(_ context.Context, _ *middleware.RuntimeContext, current string) (string, error) {
 	var sb strings.Builder
 	sb.WriteString(current)
 	sb.WriteString("\n\n# 可用工具\n")

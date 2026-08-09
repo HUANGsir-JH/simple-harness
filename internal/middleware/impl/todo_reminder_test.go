@@ -1,4 +1,4 @@
-package middleware
+package impl
 
 import (
 	"context"
@@ -7,21 +7,22 @@ import (
 
 	"github.com/agent-project/harness/internal/agentstate"
 	"github.com/agent-project/harness/internal/messages"
+	"github.com/agent-project/harness/internal/middleware"
 )
 
 // runReasoning 执行一轮 OnReasoning，返回 next 实际拿到的 Messages（注入后）。
-func runReasoning(mw TodoReminderMiddleware, rc *RuntimeContext, msgs []*messages.Message) []*messages.Message {
-	in := ReasoningInput{Messages: msgs}
-	_ = mw.OnReasoning(context.Background(), rc, in, func(_ context.Context, _ *RuntimeContext, in ReasoningInput) error {
+func runReasoning(mw TodoReminderMiddleware, rc *middleware.RuntimeContext, msgs []*messages.Message) []*messages.Message {
+	in := middleware.ReasoningInput{Messages: msgs}
+	_ = mw.OnReasoning(context.Background(), rc, in, func(_ context.Context, _ *middleware.RuntimeContext, in middleware.ReasoningInput) error {
 		msgs = in.Messages
 		return nil
 	})
 	return msgs
 }
 
-func reminderRC(t *testing.T) (*RuntimeContext, []*messages.Message) {
+func reminderRC(t *testing.T) (*middleware.RuntimeContext, []*messages.Message) {
 	t.Helper()
-	rc := NewRuntimeContext()
+	rc := middleware.NewRuntimeContext()
 	rc.State = agentstate.New("s1", "m", ".")
 	rc.State.ReplaceTodos([]agentstate.TodoItem{
 		{Position: 1, Description: "修复登录 bug", Status: agentstate.TodoInProgress},
@@ -33,7 +34,7 @@ func reminderRC(t *testing.T) (*RuntimeContext, []*messages.Message) {
 
 // TestReminderEmptyTodosNotTriggered 验证 todo 为空时永不触发（计数仍递增）。
 func TestReminderEmptyTodosNotTriggered(t *testing.T) {
-	rc := NewRuntimeContext()
+	rc := middleware.NewRuntimeContext()
 	rc.State = agentstate.New("s1", "m", ".") // Todos 空
 	conv := []*messages.Message{{Role: messages.RoleUser, Content: "hi"}}
 	mw := TodoReminderMiddleware{}

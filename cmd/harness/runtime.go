@@ -3,7 +3,7 @@ package main
 import (
 	"sync"
 
-	"github.com/agent-project/harness/internal/approval"
+	"github.com/agent-project/harness/internal/middleware/impl"
 	"github.com/agent-project/harness/internal/provider"
 )
 
@@ -56,5 +56,5 @@ func (app *App) defaultApprovalMode() string {
 	if app.Config.Approval != nil && app.Config.Approval.Mode != "" {
 		return app.Config.Approval.Mode
 	}
-	return approval.DefaultMode
+	return impl.DefaultMode
 }

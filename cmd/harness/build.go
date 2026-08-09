@@ -5,10 +5,9 @@ import (
 	"slices"
 
 	"github.com/agent-project/harness/internal/agent"
-	"github.com/agent-project/harness/internal/approval"
 	"github.com/agent-project/harness/internal/middleware"
+	"github.com/agent-project/harness/internal/middleware/impl"
 	"github.com/agent-project/harness/internal/provider"
-	"github.com/agent-project/harness/internal/session"
 	"github.com/agent-project/harness/internal/tools"
 )
 
@@ -38,11 +37,11 @@ func (app *App) buildAgent() (*agent.Agent, error) {
 	// 审批交互器经 rc.Approver 注入（REPL/runCmd 各自 channelApprover，非 TTY 不设）。
 	// DefaultMode 与会话创建播种同源（App.defaultApprovalMode，config approval.mode）。
 	mw := middleware.NewChain(
-		middleware.ToolInstructionsMiddleware{Tools: reg.Specs()},
-		session.SessionMiddleware{},
-		middleware.TodoReminderMiddleware{},
-		middleware.ToolOutputMiddleware{},
-		approval.ApprovalMiddleware{DefaultMode: app.defaultApprovalMode()},
+		impl.ToolInstructionsMiddleware{Tools: reg.Specs()},
+		impl.SessionMiddleware{},
+		impl.TodoReminderMiddleware{},
+		impl.ToolOutputMiddleware{},
+		impl.ApprovalMiddleware{DefaultMode: app.defaultApprovalMode()},
 	)
 
 	a := agent.New(client, app.Resolved.Model)

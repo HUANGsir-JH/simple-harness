@@ -7,9 +7,9 @@ import (
 	"testing"
 
 	"github.com/agent-project/harness/internal/agentstate"
-	"github.com/agent-project/harness/internal/approval"
 	"github.com/agent-project/harness/internal/messages"
 	"github.com/agent-project/harness/internal/middleware"
+	"github.com/agent-project/harness/internal/middleware/impl"
 	"github.com/agent-project/harness/internal/provider"
 	"github.com/agent-project/harness/internal/tools"
 )
@@ -45,7 +45,7 @@ func TestRunApprovalDenied(t *testing.T) {
 	}})
 	a := New(fc, "m")
 	a.SetTools(reg)
-	a.SetMiddleware(middleware.NewChain(approval.ApprovalMiddleware{DefaultMode: approval.ModeReadonly}))
+	a.SetMiddleware(middleware.NewChain(impl.ApprovalMiddleware{DefaultMode: impl.ModeReadonly}))
 
 	conv := newConversation()
 	rc := rcFor(conv)
@@ -90,7 +90,7 @@ func TestRunApprovalAllow(t *testing.T) {
 	}})
 	a := New(fc, "m")
 	a.SetTools(reg)
-	a.SetMiddleware(middleware.NewChain(approval.ApprovalMiddleware{DefaultMode: approval.ModeReadonly}))
+	a.SetMiddleware(middleware.NewChain(impl.ApprovalMiddleware{DefaultMode: impl.ModeReadonly}))
 
 	conv := newConversation()
 	rc := rcFor(conv)
@@ -125,7 +125,7 @@ func TestRunApprovalNoApprover(t *testing.T) {
 	}})
 	a := New(fc, "m")
 	a.SetTools(reg)
-	a.SetMiddleware(middleware.NewChain(approval.ApprovalMiddleware{DefaultMode: approval.ModeReadonly}))
+	a.SetMiddleware(middleware.NewChain(impl.ApprovalMiddleware{DefaultMode: impl.ModeReadonly}))
 
 	conv := newConversation()
 	rc := rcFor(conv)

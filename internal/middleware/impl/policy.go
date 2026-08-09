@@ -1,8 +1,12 @@
-// Package approval 实现工具审批策略（阶段三权限，ADR-029）。
+// Package impl 实现 harness 的全部内置中间件（ADR-021 capabilities）：
+// 工具说明注入 / 会话状态 load-save / todo 偏离提醒 / 工具结果截断 / 审批。
+// 框架契约（Middleware 接口、Chain、RuntimeContext、Approver/DeniedError）在
+// internal/middleware 包；本包是这些 hook 的具体实现，无状态可并发（ADR-026），
+// 由 cmd/harness 装配进共享链。
 //
-// 设计参照 codex approval + opencode permission 的简化版：
+// 工具审批策略设计参照 codex approval + opencode permission 的简化版：
 //   - 三档全局模式（readonly / acceptedit / bypass），决策粒度 = 工具分类
-//     + shell 命令黑白名单前缀/子串匹配（opencode 的 bash 命令粒度简化）
+//   - shell 命令黑白名单前缀/子串匹配（opencode 的 bash 命令粒度简化）
 //   - 会话级记忆（AgentState.Permission.Approved）：用户批准过的操作
 //     （key = 工具名 / 规范化命令前缀）本会话不再询问（codex
 //     ApprovedForSession 对位）
@@ -10,7 +14,7 @@
 //
 // 策略判定是纯函数（Decide），便于单测；人机交互（Approver）与策略解耦，
 // CLI 层注入实现。级联拒绝 / 全局 allowlist / 拒绝反馈留增强。
-package approval
+package impl
 
 import (
 	"encoding/json"
@@ -41,10 +45,10 @@ var Modes = []string{ModeReadonly, ModeAcceptEdits, ModeBypass}
 type toolClass int
 
 const (
-	classRead toolClass = iota // 只读（read_file/list_dir/glob）
-	classEdit                  // 编辑（write_file/apply_patch）
-	classTodo                  // 低风险状态工具（update_todo）
-	classShell                 // shell_command
+	classRead  toolClass = iota // 只读（read_file/list_dir/glob）
+	classEdit                   // 编辑（write_file/apply_patch）
+	classTodo                   // 低风险状态工具（update_todo）
+	classShell                  // shell_command
 	classUnknown
 )
 

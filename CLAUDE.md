@@ -39,13 +39,13 @@ REPL（`harness` 无子命令进入）命令：`/switch <id>|--last` 切换会�
 cmd/harness/          # CLI：main（dispatch）/ runtime（统一配置 init）/ build（共享无状态 agent）/ commands（run/resume/sessions + REPL）
 internal/
   agent/              # ★ 无状态 ReAct loop（采样→工具→回填，消息序列经 rc.Messages；ADR-026）+ 回合级事件（turn_done 为测试锚点）
-  middleware/         # ★ 6 hook 扩展机制（onAgent/onReasoning/onToolCall/onActing/onModelCall onion + onSystemPrompt 管道）+ RuntimeContext（承载会话）+ TodoReminderMiddleware（跨轮偏离提醒）+ ToolOutputMiddleware（工具结果截断 head/tail + 落盘 evictions/，ADR-028）
+  middleware/         # ★ 框架 core：6 hook 扩展机制（onAgent/onReasoning/onToolCall/onActing/onModelCall onion + onSystemPrompt 管道）+ RuntimeContext（承载会话）+ 契约（Approver/ApprovalRequest/DeniedError，ADR-029）
+  middleware/impl/    # ★ 内置中间件实现：工具说明注入 / 会话状态 load-save / todo 跨轮提醒（ADR-027）/ 工具结果截断 head/tail + evictions 落盘（ADR-028）/ 工具审批三档 + 黑白名单 + 会话记忆（ADR-029）
   provider/           # 单 anthropic wire（ADR-022）+ 块事件适配 + per-call 覆盖（Request.Model/ThinkingEnabled/Effort，ADR-026）
-  messages/           # 统一 Message 模型（含 Thinking）+ JSONL 序列化
+  messages/           # 统一 Message 模型（含 Thinking）+ JSON 序列化
   tools/              # Tool 接口（Handle 带 rc）+ 注册表 + 7 内置工具（含 update_todo，ADR-027）
   agentstate/         # AgentState 快照（模型/thinking 档位/todo/权限/plan/摘要）+ 原子落盘
-  approval/           # 工具审批（ADR-029）：三档模式 + shell 黑白名单 + 会话级记忆，ApprovalMiddleware 挂 onActing
-  session/            # workspace 项目分桶 + 块级 transcript 异步 writer + 无状态 SessionMiddleware + resume
+  session/            # workspace 项目分桶 + 块级 transcript 异步 writer + resume
   e2e/                # 进程外端到端测试（termtest）
   # 规划中（未实现）：compact（压缩）/ agentsmd（AGENTS.md 注入）/ hooks（子进程，远期）；ui 内联 cmd/renderer.go（output 接口，TUI 规划）
 ```
@@ -56,7 +56,7 @@ internal/
 
 1. **统一消息模型 + 事件分层**：核心层只操作统一 `Message`（role/content/thinking/tool_calls/tool_results），provider 适配层负责 ↔ 原生格式。事件分层：provider 采样级（text/thinking delta + **块完成** thinking_done/text_done + tool_call）+ agent 回合级（turn_start/turn_done 等，**带 MsgID** 关联块归属）。
 2. **Provider 单 anthropic wire**（ADR-022）：多后端 = 多 anthropic 兼容端点（base_url 覆盖即可），无多 wire 抽象。
-3. **进程内 middleware**（ADR-021/024/025/026/027/028）：6 hook（onion 前四 + onSystemPrompt 管道），贯穿 `ctx` + `*RuntimeContext`。**注入机制**：rc 承载会话（`Messages/State/StatePath/Model/ThinkingEffort`，`Session.RuntimeContext()` 每轮新建）；`session.SessionMiddleware` **无状态**挂 onAgent（从 rc.StatePath 读写，共享链可并发）；**工具 `Handle(ctx, rc, callID, args)` 带 rc**（todo 经 rc.State 读写）；`TodoReminderMiddleware` 挂 onReasoning（todo 非空且模型连续 ≥10 次 model call 未更新 → 请求消息尾部注入提醒临时副本，不写 conversation）；`ToolOutputMiddleware` 挂 onToolCall（after 改写本批 tool_result：超 20K 截断 head/tail 各 10K + 落盘 evictions/ + 路径提示；transcript 记完整、conversation 记 preview，ADR-028）；`ApprovalMiddleware` 挂 onActing（before 审批：三档模式 + shell 黑白名单，决策纯函数 `Decide`；模式 = 会话 `AgentState.Permission.Mode`（config 播种 + /permission 切换）；Ask 经 `rc.Approver`（CLI 注入 channelApprover，单一读方 channel 协调）询问 y/s/n；拒绝返回 `DeniedError` 回填模型；会话级记忆 `AgentState.Permission.Approved`，ADR-029）。
+3. **进程内 middleware**（ADR-021/024/025/026/027/028）：6 hook（onion 前四 + onSystemPrompt 管道），贯穿 `ctx` + `*RuntimeContext`。**注入机制**：rc 承载会话（`Messages/State/StatePath/Model/ThinkingEffort`，`Session.RuntimeContext()` 每轮新建）；`impl.SessionMiddleware` **无状态**挂 onAgent（从 rc.StatePath 读写，共享链可并发）；**工具 `Handle(ctx, rc, callID, args)` 带 rc**（todo 经 rc.State 读写）；`TodoReminderMiddleware` 挂 onReasoning（todo 非空且模型连续 ≥10 次 model call 未更新 → 请求消息尾部注入提醒临时副本，不写 conversation）；`ToolOutputMiddleware` 挂 onToolCall（after 改写本批 tool_result：超 20K 截断 head/tail 各 10K + 落盘 evictions/ + 路径提示；transcript 记完整、conversation 记 preview，ADR-028）；`ApprovalMiddleware` 挂 onActing（before 审批：三档模式 + shell 黑白名单，决策纯函数 `Decide`；模式 = 会话 `AgentState.Permission.Mode`（config 播种 + /permission 切换）；Ask 经 `rc.Approver`（CLI 注入 channelApprover，单一读方 channel 协调）询问 y/s/n；拒绝返回 `DeniedError` 回填模型；会话级记忆 `AgentState.Permission.Approved`，ADR-029）。
 4. **错误二分类 + 审批拒绝**：工具错误 `RespondToModel`（结果回填、循环继续）/ `Fatal`（终止 turn）。**审批拒绝 = 独立 `middleware.DeniedError`**（非工具错误）：agent 调用层捕获后作为失败结果回填、**不取消整批**、循环继续（ADR-029，拒绝 ≠ Fatal）。
 5. **并行工具**：errgroup 并发执行全部 tool_call，结果按 call_id 合并成**一条** tool_result 消息回填（anthropic 紧邻要求，ADR-024）。
 6. **会话双轨**（ADR-025 项目分桶）：`~/.harness/workspaces/<项目转义>/<session-id>/{historys, agentstate.json, plans, evictions}`；transcript = **块级事件 + 异步 writer**（单 goroutine FIFO + ordinal，压缩切新文件 `NewSegment`）；AgentState = todo/权限/plan 指针/摘要（含 `CWD` = **会话启动目录**，ADR-028）；evictions/ = 超长工具结果落盘（模型 read_file/grep 读全量）。resume 只读最大序号文件。

@@ -22,7 +22,7 @@ type RuntimeContext struct {
 	Messages *messages.Conversation
 
 	// State 是当前会话的 AgentState（注入机制 ADR-025）：
-	// session.SessionMiddleware 挂 onAgent，before 加载、after 保存；
+	// impl.SessionMiddleware 挂 onAgent，before 加载、after 保存；
 	// 工具经 Handle 的 rc 参数读写（如 todo 挂 rc.State.Todos）。
 	State *agentstate.AgentState
 

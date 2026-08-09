@@ -1,181 +1,23 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"slices"
 	"strings"
 	"syscall"
 
 	"github.com/agent-project/harness/internal/agent"
-	"github.com/agent-project/harness/internal/agentstate"
-	"github.com/agent-project/harness/internal/approval"
 	"github.com/agent-project/harness/internal/middleware"
+	"github.com/agent-project/harness/internal/middleware/impl"
 	"github.com/agent-project/harness/internal/provider"
 	"github.com/agent-project/harness/internal/session"
 	"golang.org/x/term"
 )
-
-// boolPtr 构造 bool 指针（--thinking/--no-thinking 覆盖会话 state 用）。
-func boolPtr(b bool) *bool { return &b }
-
-// runCmd 执行 `harness run <prompt>`：解析 flags → 建会话 → 应用覆盖 → 单轮 Run。
-func runCmd(args []string, jsonOut bool) error {
-	fs := flag.NewFlagSet("run", flag.ContinueOnError)
-	var configPath, modelFlag, effortFlag string
-	var thinkingFlag, noThinkingFlag, noThinkingDisplay bool
-	fs.StringVar(&configPath, "config", "", "path to config file (default ~/.harness/config.yaml)")
-	fs.StringVar(&modelFlag, "model", "", "model to use (must be defined in the selected provider; default: first model)")
-	fs.StringVar(&effortFlag, "effort", "", "reasoning effort override (low|high|max; must be in the model's thinking.efforts)")
-	fs.BoolVar(&thinkingFlag, "thinking", false, "force enable thinking (default: model config)")
-	fs.BoolVar(&noThinkingFlag, "no-thinking", false, "force disable thinking (default: model config)")
-	fs.BoolVar(&noThinkingDisplay, "no-thinking-display", false, "do not show thinking text")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	prompt := strings.Join(fs.Args(), " ")
-	if prompt == "" {
-		return fmt.Errorf("run: prompt is required (harness run \"your prompt\"; 不带参数运行 `harness` 进入交互式)")
-	}
-
-	var app *App
-	var err error
-	if configPath != "" {
-		app, err = loadApp(configPath)
-	} else {
-		app, err = defaultApp()
-	}
-	if err != nil {
-		return err
-	}
-	res, err := app.resolveFlags(modelFlag, effortFlag, thinkingFlag, noThinkingFlag)
-	if err != nil {
-		return err
-	}
-	a, err := app.buildAgent()
-	if err != nil {
-		return err
-	}
-
-	sess, err := session.CreateInCWD(res.Model, app.defaultApprovalMode())
-	if err != nil {
-		return err
-	}
-	defer sess.Close()
-	// flags → 会话 state（随 SessionMiddleware 落盘，resume 可恢复）。
-	if thinkingFlag {
-		if err := sess.SetThinkingEnabled(boolPtr(true)); err != nil {
-			return err
-		}
-	}
-	if noThinkingFlag {
-		if err := sess.SetThinkingEnabled(boolPtr(false)); err != nil {
-			return err
-		}
-	}
-	if effortFlag != "" {
-		if err := sess.SetThinkingEffort(effortFlag); err != nil {
-			return err
-		}
-	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	rc := sess.RuntimeContext()
-	sess.AddUser(prompt)
-
-	var renderer output
-	if jsonOut {
-		renderer = jsonRenderer{}
-	} else {
-		renderer = newTextRenderer(!noThinkingDisplay)
-	}
-	renderer.start(sess.Conversation())
-
-	onEvent := func(ev agent.Event) {
-		renderer.event(ev)
-		sess.OnAgentEvent(ev) // 块级实时落盘
-	}
-
-	// 输入层：TTY 时 raw mode + 单一读方事件循环（Esc 中断 + 审批协调，
-	// ADR-028/029）；非 TTY / MakeRaw 失败 → 不启用审批交互（自动拒绝）、
-	// 无 Esc 中断（跑完即退）。
-	fd := int(os.Stdin.Fd())
-	var inputCh <-chan inputEvent
-	var reqCh chan *approvalRequest
-	if term.IsTerminal(fd) {
-		if old, err := term.MakeRaw(fd); err == nil {
-			defer func() { _ = term.Restore(fd, old) }()
-			inputCh = readStdinEvents(os.Stdin, os.Stdout)
-			reqCh = make(chan *approvalRequest, 8)
-			rc.Approver = newChannelApprover(reqCh)
-		}
-	}
-
-	runCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	runDone := make(chan error, 1)
-	go func() { runDone <- a.Run(runCtx, rc, onEvent) }()
-
-	var pending *approvalRequest
-	for {
-		select {
-		case ev, ok := <-inputCh:
-			if !ok {
-				// stdin EOF（Ctrl+D）：取消本轮，等 Run 退出。
-				cancel()
-				inputCh = nil
-				continue
-			}
-			// 审批挂起：输入路由为审批答复（y/s/n / Esc）。
-			if pending != nil {
-				if ev.esc {
-					pending.resp <- middleware.DecisionDeny
-					pending = nil
-					cancel()
-					continue
-				}
-				line := strings.TrimSpace(ev.line)
-				if line == "" {
-					printApprovalUI(pending.req)
-					continue
-				}
-				dec, ok := parseApprovalDecision(line)
-				if !ok {
-					fmt.Printf("  无效输入（y/s/n）> ")
-					continue
-				}
-				pending.resp <- dec
-				pending = nil
-				continue
-			}
-			if ev.esc {
-				cancel() // 单轮 Esc/Ctrl+C 中断
-			}
-			// 普通行忽略（runCmd 无 REPL 命令）。
-		case req := <-reqCh:
-			pending = req
-			printApprovalUI(req.req)
-			if jsonOut {
-				emitApprovalJSON(req.req)
-			}
-		case err := <-runDone:
-			if errors.Is(err, context.Canceled) {
-				fmt.Println("\n（已中断）")
-				return nil
-			}
-			return err
-		}
-	}
-}
 
 // repl 是交互式模式（`harness` 无子命令）：新会话 + REPL 循环。
 func repl(jsonOut bool) error {
@@ -340,7 +182,7 @@ func (m *SessionManager) handleCommand(cmd replCommand) error {
 		if cmd.arg == "" {
 			return fmt.Errorf("usage: /permission <readonly|acceptedit|bypass>")
 		}
-		if !slices.Contains(approval.Modes, cmd.arg) {
+		if !slices.Contains(impl.Modes, cmd.arg) {
 			return fmt.Errorf("未知模式 %q（支持: readonly / acceptedit / bypass）", cmd.arg)
 		}
 		if err := m.active.SetPermissionMode(cmd.arg); err != nil {
@@ -478,174 +320,4 @@ func runREPL(ctx context.Context, m *SessionManager, renderer output) error {
 			fmt.Print("> ")
 		}
 	}
-}
-
-// inputEvent 是 REPL 的 stdin 输入事件。
-type inputEvent struct {
-	esc  bool   // Esc/Ctrl+C 按下 → 中断当前回合
-	line string // 提交的一整行（回车触发）
-}
-
-// readStdinEvents 从 reader 逐 rune 读取，产出一致化输入事件（单一读方：REPL
-// 主循环与中断监听共用此 channel，避免多个 goroutine 竞争 stdin）。raw mode
-// 下终端不回显，经 echo 自行回显（普通字符、退格擦除）。规则：
-//
-//	Esc(0x1b) / Ctrl+C(0x03) → esc 事件
-//	\r 或 \n → 行提交（空行忽略）；Ctrl+D(0x04) → 关闭 channel（EOF）
-//	退格(0x7f/0x08) → 删除行尾 + 回显 "\b \b"
-//	其它 → 追加当前行 + 回显
-func readStdinEvents(reader io.Reader, echo io.Writer) <-chan inputEvent {
-	ch := make(chan inputEvent)
-	go func() {
-		defer close(ch)
-		br := bufio.NewReader(reader)
-		var line []rune
-		for {
-			r, _, err := br.ReadRune()
-			if err != nil {
-				return
-			}
-			switch r {
-			case 0x1b, 0x03: // Esc / Ctrl+C
-				line = line[:0]
-				ch <- inputEvent{esc: true}
-			case '\r', '\n':
-				if len(line) > 0 {
-					ch <- inputEvent{line: string(line)}
-					line = line[:0]
-				}
-			case 0x7f, 0x08: // 退格
-				if len(line) > 0 {
-					line = line[:len(line)-1]
-					if echo != nil {
-						io.WriteString(echo, "\b \b")
-					}
-				}
-			case 0x04: // Ctrl+D：非空行先提交（flush），再 EOF（退出）
-				if len(line) > 0 {
-					ch <- inputEvent{line: string(line)}
-					line = line[:0]
-				}
-				return
-			default:
-				line = append(line, r)
-				if echo != nil {
-					fmt.Fprint(echo, string(r))
-				}
-			}
-		}
-	}()
-	return ch
-}
-
-// resumeCmd 恢复会话（--last 或 <id>）并进入 REPL 继续。
-func resumeCmd(args []string, jsonOut bool) error {
-	fs := flag.NewFlagSet("resume", flag.ContinueOnError)
-	last := fs.Bool("last", false, "resume the most recent session for this project")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	id := strings.Join(fs.Args(), " ")
-
-	proj, err := findProject()
-	if err != nil {
-		return err
-	}
-
-	var info session.SessionInfo
-	if *last {
-		var ok bool
-		if info, ok = proj.Last(); !ok {
-			return fmt.Errorf("resume: 本项目暂无会话（先 `harness run`）")
-		}
-	} else {
-		if id == "" {
-			return fmt.Errorf("resume: 需要会话 id 或 --last（`harness sessions` 查看）")
-		}
-		list, _ := proj.Sessions()
-		found := false
-		for _, s := range list {
-			if s.ID == id {
-				info = s
-				found = true
-				break
-			}
-		}
-		if !found {
-			return fmt.Errorf("resume: 会话 %q 不存在（`harness sessions` 查看）", id)
-		}
-	}
-
-	sess, err := proj.Resume(info)
-	if err != nil {
-		return err
-	}
-
-	app, err := defaultApp()
-	if err != nil {
-		return err
-	}
-	a, err := app.buildAgent()
-	if err != nil {
-		return err
-	}
-
-	// SIGTERM 终止进程；SIGINT（Ctrl+C）作为字节由 raw mode 捕获 → 只中断当前
-	// 回合（不终止 REPL）。顶层 ctx 不被 SIGINT cancel，下一轮 Run 不受影响。
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM)
-	defer stop()
-
-	mgr := &SessionManager{
-		app:    app,
-		a:      a,
-		proj:   proj,
-		open:   map[string]*session.Session{sess.ID: sess},
-		active: sess,
-	}
-	defer mgr.closeAll()
-
-	var renderer output
-	if jsonOut {
-		renderer = jsonRenderer{}
-	} else {
-		renderer = newTextRenderer(true)
-	}
-	return runREPL(ctx, mgr, renderer)
-}
-
-// sessionsCmd 列出当前项目的会话。
-func sessionsCmd(args []string) error {
-	proj, err := findProject()
-	if err != nil {
-		return err
-	}
-	list, err := proj.Sessions()
-	if err != nil {
-		return err
-	}
-	if len(list) == 0 {
-		fmt.Println("（本项目暂无会话，先 `harness run`）")
-		return nil
-	}
-	for _, s := range list {
-		var model, updated string
-		if st, err := agentstate.LoadFile(filepath.Join(s.Path, session.FileAgentState)); err == nil {
-			model, updated = st.Model, st.UpdatedAt
-		}
-		fmt.Printf("%s  model=%s  updated=%s\n", s.ID, model, updated)
-	}
-	return nil
-}
-
-// findProject 定位当前项目桶（New + Getwd + FindProject）。
-func findProject() (*session.Project, error) {
-	store, err := session.New()
-	if err != nil {
-		return nil, err
-	}
-	cwd, err := os.Getwd()
-	if err != nil {
-		return nil, err
-	}
-	return store.FindProject(cwd)
 }

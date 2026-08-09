@@ -541,7 +541,7 @@ classDiagram
     RuntimeContext ..> SessionMiddleware : 读写 State / StatePath
 ```
 
-**注**：`RuntimeContext` 是 per-call 上下文（每 Run 新建），`Chain` 及其中间件全部无状态 → 共享 chain 可被多 goroutine 并发 Run。
+**注**：`RuntimeContext` 是 per-call 上下文（每 Run 新建），`Chain` 及其中间件全部无状态 → 共享 chain 可被多 goroutine 并发 Run。框架契约（`Middleware`/`Chain`/`RuntimeContext`/`Approver`/`DeniedError`）在 `internal/middleware`；具体中间件实现（SessionMiddleware/ToolInstructions/TodoReminder/ToolOutput/Approval）在 `internal/middleware/impl`。
 
 ### 4.4 agent 与工具（agent / tools）
 

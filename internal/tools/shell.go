@@ -11,6 +11,7 @@ import (
 
 	"github.com/agent-project/harness/internal/messages"
 	"github.com/agent-project/harness/internal/middleware"
+	"github.com/agent-project/harness/internal/middleware/impl"
 	"github.com/agent-project/harness/internal/provider"
 )
 
@@ -74,14 +75,14 @@ func (ShellCommandTool) Handle(ctx context.Context, rc *middleware.RuntimeContex
 		// 超时：已收集输出落盘（错误带路径，模型可用 read_file 读进度，不盲目重试）。
 		msg := fmt.Sprintf("shell_command: 命令超时（%v）", timeout)
 		if out.Len() > 0 {
-			msg += "\n" + middleware.EvictContent(rc, out.String())
+			msg += "\n" + impl.EvictContent(rc, out.String())
 		}
 		return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: msg}
 	}
 	if err != nil {
 		msg := "shell_command: " + err.Error()
 		if out.Len() > 0 {
-			msg += "\n" + middleware.EvictContent(rc, out.String())
+			msg += "\n" + impl.EvictContent(rc, out.String())
 		}
 		return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: msg}
 	}
