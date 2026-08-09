@@ -1,6 +1,6 @@
 // Package e2e 是进程外端到端测试：termtest 驱动真实 harness 进程，
 // LLM 端点指向 mock HTTP server（确定性，不依赖真实 API）。
-// 验证：单轮 run 的 turn_done 锚点、交互式 REPL。
+// 验证：单轮 run 的 turn_done 锚点、交互式 TUI。
 package e2e
 
 import (
@@ -150,7 +150,7 @@ func TestTUIInteractiveE2E(t *testing.T) {
 	}
 	defer cp.Close()
 
-	if _, err := cp.Expect("输入消息"); err != nil {
+	if _, err := cp.Expect("Ask anything"); err != nil {
 		t.Fatalf("expect TUI 输入区: %v", err)
 	}
 	cp.SendLine("你好")
@@ -183,12 +183,12 @@ func TestTUIApprovalE2E(t *testing.T) {
 	}
 	defer cp.Close()
 
-	if _, err := cp.Expect("输入消息"); err != nil {
+	if _, err := cp.Expect("Ask anything"); err != nil {
 		t.Fatalf("expect TUI 输入区: %v", err)
 	}
 	cp.SendLine("写一个文件")
 	// 审批弹窗出现（readonly 下 write_file 询问）。
-	if _, err := cp.Expect("[审批]"); err != nil {
+	if _, err := cp.Expect("PERMISSION REQUIRED"); err != nil {
 		t.Fatalf("expect approval popup: %v", err)
 	}
 	cp.SendLine("y")
@@ -261,7 +261,7 @@ func TestTUIExitsE2E(t *testing.T) {
 	defer cp.Close()
 
 	// TUI 输入区占位符渲染后，/exit 退出（退出仅此命令，ADR-030）。
-	if _, err := cp.Expect("输入消息"); err != nil {
+	if _, err := cp.Expect("Ask anything"); err != nil {
 		t.Fatalf("expect TUI 输入区: %v", err)
 	}
 	cp.SendLine("/exit")

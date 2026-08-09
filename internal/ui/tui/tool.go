@@ -27,6 +27,15 @@ type ToolStatus struct {
 	Collapsed bool
 
 	oldContent string // write_file diff 用：ToolCall 时预读的旧文件（覆盖场景）
+	oldExists  bool
+}
+
+// Expandable reports whether the block has detail beyond its compact view.
+func (t *ToolStatus) Expandable() bool {
+	if t == nil || t.Name == "read_file" || t.Full == "" {
+		return false
+	}
+	return t.Full != t.Content || len(strings.Split(strings.TrimSpace(t.Full), "\n")) > 6
 }
 
 // toolCallSummary 按工具提取块头摘要（只含关键参数，body 参数不展示）。
@@ -66,6 +75,7 @@ func prepareTool(ts *ToolStatus) {
 	}
 	if old, err := os.ReadFile(p.Path); err == nil {
 		ts.oldContent = string(old)
+		ts.oldExists = true
 	}
 }
 
@@ -75,15 +85,15 @@ func applyToolResult(ts *ToolStatus, res *messages.ToolResult) {
 	ts.Done = true
 	ts.Failed = !res.Success
 	if !res.Success {
-		ts.Content = "[ERR] " + truncate(res.Content, 200)
+		ts.Content = truncate(res.Content, 240)
 		ts.Full = res.Content
 		return
 	}
 	switch ts.Name {
 	case "read_file":
 		// 元信息单行（不渲染内容）：行数 + 大小。
-		lines := strings.Count(res.Content, "\n") + 1
-		ts.Content = fmt.Sprintf("%s · %d 行 · %s", readFilePath(ts.Args), lines, humanSize(len(res.Content)))
+		lines := lineCount(res.Content)
+		ts.Content = fmt.Sprintf("%s  |  %d lines  |  %s", readFilePath(ts.Args), lines, humanSize(len(res.Content)))
 	case "write_file":
 		ts.writeResult(res)
 	case "apply_patch":
@@ -94,18 +104,18 @@ func applyToolResult(ts *ToolStatus, res *messages.ToolResult) {
 		}
 		ts.Full = ts.Content
 	case "list_dir":
-		names := splitLines(res.Content)
-		ts.Content = fmt.Sprintf("%d 项：%s", len(names), firstN(names, 5))
-		ts.Full = res.Content
+		names := listDirNames(res.Content)
+		ts.Content = fmt.Sprintf("%d items  %s", len(names), firstN(names, 5))
+		ts.Full = strings.Join(names, "\n")
 	case "glob":
 		paths := splitLines(res.Content)
-		ts.Content = fmt.Sprintf("匹配 %d 个：%s", len(paths), firstN(paths, 5))
+		ts.Content = fmt.Sprintf("%d matches  %s", len(paths), firstN(paths, 5))
 		ts.Full = res.Content
 	case "update_todo":
 		ts.Content = res.Content // 完整 checklist
 		ts.Full = res.Content
 	case "shell_command":
-		ts.Content = "[OK] exit 0" + headLines(res.Content, 5)
+		ts.Content = "exit 0" + headLines(res.Content, 5)
 		ts.Full = res.Content
 	default:
 		ts.Content = truncate(res.Content, 200)
@@ -118,19 +128,21 @@ func (ts *ToolStatus) writeResult(res *messages.ToolResult) {
 	path := readFilePath(ts.Args)
 	newContent := writeFileContent(ts.Args)
 	lines := strings.Count(newContent, "\n")
-	if ts.oldContent == "" {
-		ts.Content = fmt.Sprintf("新建 %s（%d 行 · %s）", path, lines, humanSize(len(newContent)))
+	if !ts.oldExists && ts.oldContent == "" {
+		ts.Content = fmt.Sprintf("created %s  |  %d lines  |  %s", path, lines, humanSize(len(newContent)))
 		return
 	}
 	edits := myers.ComputeEdits(span.URIFromPath(path), ts.oldContent, newContent)
 	diff := fmt.Sprint(gotextdiff.ToUnified("old", "new", ts.oldContent, edits))
-	ts.Content = fmt.Sprintf("覆盖 %s（%d 行 · %s）\n%s", path, lines, humanSize(len(newContent)), diff)
+	ts.Content = fmt.Sprintf("updated %s  |  %d lines  |  %s\n%s", path, lines, humanSize(len(newContent)), diff)
 	ts.Full = ts.Content
 }
 
 // readFilePath 提取 read_file/write_file 的 path 参数。
 func readFilePath(args []byte) string {
-	var p struct{ Path string `json:"path"` }
+	var p struct {
+		Path string `json:"path"`
+	}
 	_ = json.Unmarshal(args, &p)
 	if p.Path == "" {
 		return "?"
@@ -140,14 +152,18 @@ func readFilePath(args []byte) string {
 
 // writeFileContent 提取 write_file 的 content 参数。
 func writeFileContent(args []byte) string {
-	var p struct{ Content string `json:"content"` }
+	var p struct {
+		Content string `json:"content"`
+	}
 	_ = json.Unmarshal(args, &p)
 	return p.Content
 }
 
 // patchDiff 从 apply_patch 参数提取 +/- 行（diff 渲染；patch 自带 diff 语义）。
 func patchDiff(args []byte) string {
-	var p struct{ Patch string `json:"patch"` }
+	var p struct {
+		Patch string `json:"patch"`
+	}
 	if json.Unmarshal(args, &p) != nil {
 		return ""
 	}
@@ -169,16 +185,33 @@ func splitLines(s string) []string {
 	return strings.Split(s, "\n")
 }
 
+func listDirNames(content string) []string {
+	lines := splitLines(content)
+	for i, line := range lines {
+		if _, name, ok := strings.Cut(line, "\t"); ok {
+			lines[i] = name
+		}
+	}
+	return lines
+}
+
+func lineCount(content string) int {
+	if content == "" {
+		return 0
+	}
+	return strings.Count(strings.TrimSuffix(content, "\n"), "\n") + 1
+}
+
 // firstN 取前 n 项拼接（省略显示 +N）。
 func firstN(items []string, n int) string {
 	if len(items) == 0 {
-		return "（空）"
+		return "(empty)"
 	}
 	shown := items
 	suffix := ""
 	if len(items) > n {
 		shown = items[:n]
-		suffix = fmt.Sprintf(" …(+%d)", len(items)-n)
+		suffix = fmt.Sprintf(" ... +%d", len(items)-n)
 	}
 	return strings.Join(shown, " ") + suffix
 }
@@ -192,7 +225,7 @@ func headLines(s string, n int) string {
 	if len(lines) <= n {
 		return "\n" + strings.Join(lines, "\n")
 	}
-	return "\n" + strings.Join(lines[:n], "\n") + fmt.Sprintf("\n…(+%d 行)", len(lines)-n)
+	return "\n" + strings.Join(lines[:n], "\n") + fmt.Sprintf("\n... +%d lines", len(lines)-n)
 }
 
 // humanSize 人类可读大小（B/KB/MB）。

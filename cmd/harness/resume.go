@@ -13,6 +13,7 @@ import (
 	"github.com/agent-project/harness/internal/agentstate"
 	"github.com/agent-project/harness/internal/session"
 	"github.com/agent-project/harness/internal/ui/tui"
+	"golang.org/x/term"
 )
 
 // resumeCmd 恢复会话（--last 或 <id>）并进入 TUI 继续（ADR-030）。
@@ -22,10 +23,14 @@ func resumeCmd(args []string, jsonOut bool) error {
 	}
 	fs := flag.NewFlagSet("resume", flag.ContinueOnError)
 	last := fs.Bool("last", false, "resume the most recent session for this project")
+	noThinkingDisplay := fs.Bool("no-thinking-display", false, "do not show thinking text")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	id := strings.Join(fs.Args(), " ")
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		return fmt.Errorf("resume requires a terminal (full-screen TUI); use `harness run <prompt>` for non-interactive work")
+	}
 
 	proj, err := findProject()
 	if err != nil {
@@ -75,7 +80,7 @@ func resumeCmd(args []string, jsonOut bool) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM)
 	defer stop()
 
-	return tui.RunTUI(a, proj, app.Config, sess, ctx)
+	return tui.RunTUI(a, proj, app.Config, sess, ctx, !*noThinkingDisplay)
 }
 
 // sessionsCmd 列出当前项目的会话。

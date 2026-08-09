@@ -7,80 +7,173 @@ import (
 	"github.com/agent-project/harness/internal/agentstate"
 	"github.com/agent-project/harness/internal/messages"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
-// lipgloss 样式（无 emoji/图标，纯文本 + 颜色，ADR-030 风格约束）。
 var (
-	styleUser  = lipgloss.NewStyle().Foreground(lipgloss.Color("33")).Bold(true) // 蓝
-	styleAsst  = lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Bold(true) // 绿
-	styleSys   = lipgloss.NewStyle().Foreground(lipgloss.Color("246"))           // 灰
-	styleDim   = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))           // thinking/次级灰
-	styleErr   = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))           // 红
-	styleOK    = lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Bold(true) // 成功绿
-	styleAdd   = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))            // diff + 绿
-	styleDel   = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))           // diff - 红
-	styleHdr   = lipgloss.NewStyle().Foreground(lipgloss.Color("178")).Bold(true) // 工具块头黄
+	colorCanvas = lipgloss.Color("234")
+	colorPanel  = lipgloss.Color("235")
+	colorRaised = lipgloss.Color("237")
+	colorBorder = lipgloss.Color("240")
+	colorMuted  = lipgloss.Color("244")
+	colorText   = lipgloss.Color("252")
+	colorCyan   = lipgloss.Color("81")
+	colorGreen  = lipgloss.Color("78")
+	colorYellow = lipgloss.Color("220")
+	colorRed    = lipgloss.Color("203")
+
+	styleBrand     = lipgloss.NewStyle().Foreground(colorCyan).Bold(true)
+	styleText      = lipgloss.NewStyle().Foreground(colorText)
+	styleMuted     = lipgloss.NewStyle().Foreground(colorMuted)
+	styleUser      = lipgloss.NewStyle().Foreground(colorCyan).Bold(true)
+	styleAssistant = lipgloss.NewStyle().Foreground(colorText).Bold(true)
+	styleSystem    = lipgloss.NewStyle().Foreground(colorMuted)
+	styleError     = lipgloss.NewStyle().Foreground(colorRed)
+	styleSuccess   = lipgloss.NewStyle().Foreground(colorGreen)
+	styleRunning   = lipgloss.NewStyle().Foreground(colorYellow)
+	styleAdd       = lipgloss.NewStyle().Foreground(colorGreen)
+	styleDelete    = lipgloss.NewStyle().Foreground(colorRed)
+	styleSelected  = lipgloss.NewStyle().Background(colorRaised).Foreground(colorText)
+	stylePanel     = lipgloss.NewStyle().Background(colorPanel).Foreground(colorText)
+	styleBorder    = lipgloss.NewStyle().Foreground(colorBorder)
+
+	// Compatibility aliases used by tool/markdown tests.
+	styleSys  = styleSystem
+	styleDim  = styleMuted
+	styleErr  = styleError
+	styleOK   = styleSuccess
+	styleHdr  = styleRunning
+	styleAsst = styleAssistant
+	styleDel  = styleDelete
+
+	asciiBorder = lipgloss.Border{
+		Top: "-", Bottom: "-", Left: "|", Right: "|",
+		TopLeft: "+", TopRight: "+", BottomLeft: "+", BottomRight: "+",
+	}
 )
 
-// View 渲染整个屏幕（纯函数）：消息区 + 状态栏 + todo/队列条 + 弹窗 + 输入区。
-// 底部区域（下→上）：输入框 → 队列条 → todo 条（ADR-030）。
 func (m Model) View() string {
-	var sb strings.Builder
-	if v := m.viewport.View(); v != "" {
-		sb.WriteString(v)
-		sb.WriteString("\n")
-	}
-	sb.WriteString(m.statusLine())
-	sb.WriteString("\n")
-	if tb := renderTodoBar(&m); tb != "" {
-		sb.WriteString(tb)
-		sb.WriteString("\n")
-	}
-	if qb := renderQueueBar(&m); qb != "" {
-		sb.WriteString(qb)
-		sb.WriteString("\n")
-	}
-	if m.appr != nil {
-		sb.WriteString(renderApproval(m.appr))
-		sb.WriteString("\n")
-	}
-	if m.sel != nil {
-		sb.WriteString(renderPopup(m.sel))
-		sb.WriteString("\n")
-	}
-	sb.WriteString(m.input.View())
-	return sb.String()
-}
-
-// renderApproval 渲染审批弹窗条（输入区上方；无 emoji，纯文本 + 颜色）。
-func renderApproval(appr *approvalPopup) string {
-	req := appr.req
-	line := styleHdr.Render("[审批] " + req.ToolName)
-	if req.Summary != "" {
-		line += " " + req.Summary
-	}
-	return line + "\n" + styleDim.Render("  模式 "+req.Mode+" | 允许(y) / 本会话记住(s) / 拒绝(n) / Esc 拒绝并中断")
-}
-
-// renderTodoBar 渲染 todo 常驻条（输入框上方；进行中-待办-完成排序，≤5 项 + 统计小字）。
-func renderTodoBar(m *Model) string {
-	todos := m.status.Todos
-	if len(todos) == 0 {
+	if m.width <= 0 || m.height <= 0 {
 		return ""
 	}
-	shown := todos
-	extra := ""
-	if len(todos) > 5 {
-		shown = todos[:5]
-		extra = fmt.Sprintf(" …(+%d)", len(todos)-5)
+	main := m.viewport.View()
+	if m.appr != nil || m.sel != nil || m.help {
+		main = m.modalArea()
 	}
+	parts := []string{
+		m.headerView(),
+		main,
+	}
+	if aux := m.auxiliaryView(); aux != "" {
+		parts = append(parts, aux)
+	}
+	parts = append(parts, m.composerView(), m.footerView())
+	return lipgloss.NewStyle().Background(colorCanvas).Render(strings.Join(parts, "\n"))
+}
+
+func (m Model) headerView() string {
+	left := styleBrand.Render("HARNESS")
+	if m.status.Model != "" {
+		left += styleMuted.Render("  " + m.status.Model)
+	}
+	right := ""
+	if m.status.SessionID != "" {
+		right = styleMuted.Render(shortSession(m.status.SessionID))
+	}
+	line := alignRow(left, right, m.width, 1)
+	divider := styleBorder.Render(strings.Repeat("-", maxInt(1, m.width)))
+	return line + "\n" + divider
+}
+
+func (m Model) composerView() string {
+	label := "MESSAGE"
+	if m.focus == focusTimeline {
+		label = "MESSAGE  [inactive]"
+	}
+	labelLine := styleMuted.Render(label)
+	body := m.input.View()
+	innerWidth := maxInt(1, m.width-4)
+	box := lipgloss.NewStyle().
+		Width(innerWidth).
+		Padding(0, 1).
+		BorderStyle(asciiBorder).
+		BorderForeground(colorBorder)
+	if m.focus == focusComposer {
+		box = box.BorderForeground(colorCyan)
+	}
+	return box.Render(labelLine + "\n" + body)
+}
+
+func (m Model) footerView() string {
+	left := ""
+	if m.toast != "" {
+		left = styleMuted.Render(m.toast)
+	} else if m.running {
+		left = styleRunning.Render(m.sp.View() + " RUNNING")
+	} else {
+		left = styleSuccess.Render("READY")
+	}
+	rightParts := make([]string, 0, 4)
+	if m.status.Permission != "" {
+		rightParts = append(rightParts, m.status.Permission)
+	}
+	if m.status.ThinkingEffort != "" {
+		rightParts = append(rightParts, "effort:"+m.status.ThinkingEffort)
+	}
+	if m.status.TodoCount > 0 {
+		rightParts = append(rightParts, fmt.Sprintf("todo:%d", m.status.TodoCount))
+	}
+	if len(m.queue) > 0 {
+		rightParts = append(rightParts, fmt.Sprintf("queued:%d", len(m.queue)))
+	}
+	right := styleMuted.Render(strings.Join(rightParts, "  "))
+	return alignRow(left, right, m.width, 1)
+}
+
+func (m Model) auxiliaryView() string {
 	var parts []string
-	for _, t := range shown {
-		parts = append(parts, todoMark(t)+" "+t.Description)
+	if completion := m.completionView(); completion != "" {
+		parts = append(parts, completion)
+	}
+	if todo := renderTodoBar(&m); todo != "" {
+		parts = append(parts, todo)
+	}
+	if queue := renderQueueBar(&m); queue != "" {
+		parts = append(parts, queue)
+	}
+	return strings.Join(parts, "\n")
+}
+
+func (m Model) completionView() string {
+	if !m.completionVisible() {
+		return ""
+	}
+	items := completionItems(m.input.Value())
+	if len(items) > 5 {
+		items = items[:5]
+	}
+	rows := make([]string, 0, len(items))
+	for i, item := range items {
+		row := fmt.Sprintf("  /%-12s %s", item.name, item.short)
+		row = ansi.Truncate(row, maxInt(1, m.width-2), "")
+		if i == m.completion {
+			row = styleSelected.Width(maxInt(1, m.width)).Render("> " + strings.TrimPrefix(row, "  "))
+		} else {
+			row = stylePanel.Width(maxInt(1, m.width)).Render(row)
+		}
+		rows = append(rows, row)
+	}
+	return strings.Join(rows, "\n")
+}
+
+func renderTodoBar(m *Model) string {
+	if len(m.status.Todos) == 0 {
+		return ""
 	}
 	var done, doing, pending int
-	for _, t := range todos {
-		switch t.Status {
+	labels := make([]string, 0, 5)
+	for _, todo := range m.status.Todos {
+		switch todo.Status {
 		case agentstate.TodoCompleted:
 			done++
 		case agentstate.TodoInProgress:
@@ -88,14 +181,45 @@ func renderTodoBar(m *Model) string {
 		default:
 			pending++
 		}
+		if len(labels) < 5 {
+			labels = append(labels, todoMark(todo)+" "+todo.Description)
+		}
 	}
-	return styleSys.Render("todo  "+strings.Join(parts, "  ")+extra) + "\n" +
-		styleDim.Render(fmt.Sprintf("     %d 完成 · %d 进行中 · %d 待办", done, doing, pending))
+	line := "  TODO  " + strings.Join(labels, "  |  ")
+	if extra := len(m.status.Todos) - len(labels); extra > 0 {
+		line += fmt.Sprintf("  ... +%d", extra)
+	}
+	stats := fmt.Sprintf("%d active  %d pending  %d done", doing, pending, done)
+	return styleRunning.Render(ansi.Truncate(line, maxInt(1, m.width), "...")) + "\n" +
+		alignRow("", styleMuted.Render(stats), m.width, 0)
 }
 
-// todoMark 纯文本状态标记（无 emoji，ADR-030 风格约束）。
-func todoMark(t agentstate.TodoItem) string {
-	switch t.Status {
+func renderQueueBar(m *Model) string {
+	if len(m.queue) == 0 {
+		return ""
+	}
+	limit := len(m.queue)
+	if limit > 3 {
+		limit = 3
+	}
+	lines := make([]string, 0, limit)
+	for i := 0; i < limit; i++ {
+		content := strings.ReplaceAll(m.queue[i], "\n", " ")
+		label := "  QUEUED"
+		if i > 0 {
+			label = "        "
+		}
+		line := fmt.Sprintf("%s  %d  %s", label, i+1, content)
+		if i == limit-1 && len(m.queue) > limit {
+			line += fmt.Sprintf("  ... +%d", len(m.queue)-limit)
+		}
+		lines = append(lines, styleMuted.Render(ansi.Truncate(line, maxInt(1, m.width), "...")))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func todoMark(todo agentstate.TodoItem) string {
+	switch todo.Status {
 	case agentstate.TodoCompleted:
 		return "[x]"
 	case agentstate.TodoInProgress:
@@ -105,152 +229,272 @@ func todoMark(t agentstate.TodoItem) string {
 	}
 }
 
-// renderQueueBar 渲染队列条（输入框上方、todo 之下；待发送内容可见）。
-func renderQueueBar(m *Model) string {
-	if len(m.queue) == 0 {
-		return ""
+func (m Model) modalArea() string {
+	var content string
+	switch {
+	case m.appr != nil:
+		content = renderApproval(m.appr, m.width)
+	case m.sel != nil:
+		content = renderPopup(m.sel, m.width, m.viewport.Height)
+	case m.help:
+		content = renderHelp(m.width)
 	}
-	var parts []string
-	for _, q := range m.queue {
-		parts = append(parts, q)
-	}
-	return styleDim.Render("待发送: " + strings.Join(parts, " | "))
+	return lipgloss.Place(m.width, m.viewport.Height, lipgloss.Center, lipgloss.Center, content,
+		lipgloss.WithWhitespaceBackground(colorCanvas))
 }
 
-// renderPopup 渲染命令弹窗选择器（↑/↓ 选，Enter 确认，Esc 取消）。
-func renderPopup(sel *selectPopup) string {
+func renderApproval(appr *approvalPopup, width int) string {
+	panelWidth := clamp(width-8, 34, 76)
+	bodyWidth := maxInt(20, panelWidth-4)
+	summary := ansi.Hardwrap(appr.req.Summary, bodyWidth, true)
+	if summary == "" {
+		summary = appr.req.ToolName
+	}
+	content := styleRunning.Render("PERMISSION REQUIRED") + "\n\n" +
+		styleText.Render(appr.req.ToolName) + "\n" + styleMuted.Render(summary) + "\n\n" +
+		styleSuccess.Render("[Y] Allow once") + "   " +
+		styleRunning.Render("[S] Allow for session") + "   " +
+		styleError.Render("[N] Deny")
+	return modalStyle(panelWidth).Render(content)
+}
+
+func renderHelp(width int) string {
+	panelWidth := clamp(width-8, 38, 78)
+	left := strings.Join([]string{
+		styleAssistant.Render("COMMANDS"),
+		"/switch      change session",
+		"/model       change model",
+		"/effort      reasoning effort",
+		"/permission  approval policy",
+		"/exit        leave Harness",
+	}, "\n")
+	right := strings.Join([]string{
+		styleAssistant.Render("KEYS"),
+		"Tab          change focus",
+		"PgUp/PgDn    scroll",
+		"Shift+Enter  new line",
+		"Ctrl+C       copy composer",
+		"Esc          interrupt turn",
+	}, "\n")
+	content := left
+	if panelWidth >= 66 {
+		content = lipgloss.JoinHorizontal(lipgloss.Top,
+			lipgloss.NewStyle().Width(panelWidth/2-2).Render(left), right)
+	} else {
+		content += "\n\n" + right
+	}
+	return modalStyle(panelWidth).Render(content)
+}
+
+func modalStyle(width int) lipgloss.Style {
+	return lipgloss.NewStyle().
+		Width(maxInt(20, width-4)).
+		Padding(1, 2).
+		Background(colorPanel).
+		Foreground(colorText).
+		BorderStyle(asciiBorder).
+		BorderForeground(colorBorder)
+}
+
+// renderTimeline returns both the viewport content and relative line hit boxes.
+func renderTimeline(m *Model) (string, []hitTarget) {
 	var sb strings.Builder
-	sb.WriteString(styleHdr.Render("["+sel.title+"]  ↑/↓ 选择 · Enter 确认 · Esc 取消") + "\n")
-	for i, it := range sel.items {
-		prefix := "  "
-		label := it.label
-		if it.desc != "" {
-			label += "  " + styleDim.Render("(" + it.desc + ")")
+	var hits []hitTarget
+	line := 0
+	appendCell := func(cell string, hit *hitTarget) {
+		cell = strings.TrimRight(cell, "\n")
+		if cell == "" {
+			return
 		}
-		if i == sel.cursor {
-			prefix = "> "
-			sb.WriteString(styleHdr.Render(prefix+label) + "\n")
-		} else {
-			sb.WriteString(prefix + label + "\n")
+		height := lipgloss.Height(cell)
+		if hit != nil {
+			hit.start = line
+			hit.end = line + height - 1
+			hits = append(hits, *hit)
 		}
-	}
-	return sb.String()
-}
-
-// statusLine 渲染底部状态栏（模型 | 权限 | todo | spinner）。
-func (m Model) statusLine() string {
-	var parts []string
-	if m.status.Model != "" {
-		parts = append(parts, m.status.Model)
-	}
-	if m.status.Permission != "" {
-		parts = append(parts, "权限:"+m.status.Permission)
-	}
-	if m.status.TodoCount > 0 {
-		parts = append(parts, fmt.Sprintf("todo:%d", m.status.TodoCount))
-	}
-	if m.running {
-		parts = append(parts, m.sp.View())
-	}
-	line := strings.Join(parts, " | ")
-	if m.running {
-		line += "   Esc 中断"
-	}
-	return styleSys.Render(line)
-}
-
-// renderMessages 把消息区渲染成字符串（工具块内插 + 流式块在最后）。
-func renderMessages(m *Model) string {
-	var sb strings.Builder
-	for _, it := range m.msgs {
-		renderMessageItem(&sb, it)
-	}
-	// 工具折叠块（消息流内插：出现在回合消息之后）。
-	for _, ts := range m.tools {
-		renderToolBlock(&sb, ts)
-	}
-	// 流式块（Thinking 灰显 + Text 原始，块完成才 md 渲染）。
-	if m.stream != nil && (m.stream.Text != "" || m.stream.Thinking != "") {
-		sb.WriteString(styleAsst.Render("[Assistant] "))
-		if m.stream.Thinking != "" {
-			sb.WriteString(styleDim.Render(m.stream.Thinking) + "\n")
-		}
-		sb.WriteString(m.stream.Text)
-		sb.WriteString("\n")
-	}
-	return sb.String()
-}
-
-// renderMessageItem 渲染一条消息。
-func renderMessageItem(sb *strings.Builder, it *MessageItem) {
-	switch it.Role {
-	case messages.RoleUser:
-		sb.WriteString(styleUser.Render("[User] ") + it.Rendered + "\n\n")
-	case messages.RoleAssistant:
-		sb.WriteString(styleAsst.Render("[Assistant] "))
-		if it.Done {
-			sb.WriteString(it.Rendered)
-		} else {
-			sb.WriteString(it.Content)
-		}
-		if it.Thinking != "" {
-			sb.WriteString("\n" + styleDim.Render("[thinking] 推理内容（点击展开）"))
-		}
+		sb.WriteString(cell)
 		sb.WriteString("\n\n")
-	default:
-		content := it.Content
-		if it.Err {
-			sb.WriteString(styleErr.Render(content) + "\n")
-		} else {
-			sb.WriteString(styleSys.Render(content) + "\n")
+		line += height + 2
+	}
+
+	for _, item := range m.items {
+		switch item.kind {
+		case itemMessage:
+			cell := renderMessageItem(item.msg, m.contentWidth, m.showThinking)
+			var hit *hitTarget
+			if m.showThinking && item.msg.Thinking != "" {
+				h := hitTarget{kind: hitThinking, id: item.msg.ID}
+				hit = &h
+			}
+			appendCell(cell, hit)
+		case itemTool:
+			cell := renderToolBlock(item.tool, m.contentWidth, m.isSelected(hitTool, item.tool.ID))
+			hit := hitTarget{kind: hitTool, id: item.tool.ID}
+			appendCell(cell, &hit)
 		}
 	}
+	if m.stream != nil && (m.stream.Text != "" || (m.showThinking && m.stream.Thinking != "")) {
+		appendCell(renderStream(m.stream, m.contentWidth, m.showThinking), nil)
+	}
+	if sb.Len() == 0 {
+		empty := lipgloss.PlaceHorizontal(m.width, lipgloss.Center,
+			styleMuted.Render("Start a conversation"))
+		sb.WriteString("\n\n" + empty)
+	}
+	return strings.TrimRight(sb.String(), "\n"), hits
 }
 
-// renderToolBlock 渲染一个工具折叠块（块头 + 内容 + 折叠提示；diff 行着色）。
-func renderToolBlock(sb *strings.Builder, ts *ToolStatus) {
-	// 块头：[摘要] [状态]
-	statusStr := "[执行中]"
-	headStyle := styleHdr
-	if ts.Done {
-		if ts.Failed {
-			statusStr = "[ERR]"
-			headStyle = styleErr
+// renderMessages remains as a small compatibility helper for focused view tests.
+func renderMessages(m *Model) string {
+	content, _ := renderTimeline(m)
+	return content
+}
+
+func renderMessageItem(item *MessageItem, width int, showThinking bool) string {
+	width = maxInt(16, width)
+	if item.Role == "" {
+		label := "SYSTEM"
+		style := styleSystem
+		if item.Err {
+			label = "ERROR"
+			style = styleError
+		}
+		return style.Render(label+"  ") + styleMuted.Render(ansi.Hardwrap(item.Content, width-9, true))
+	}
+	content := item.Content
+	if item.Done && item.Rendered != "" {
+		content = item.Rendered
+	}
+	content = ansi.Hardwrap(strings.TrimSpace(content), width-2, true)
+	if item.Role == messages.RoleUser {
+		body := lipgloss.NewStyle().
+			Foreground(colorText).
+			BorderStyle(lipgloss.Border{Left: "|"}).
+			BorderLeft(true).
+			BorderForeground(colorCyan).
+			PaddingLeft(1).
+			Render(content)
+		return styleUser.Render("YOU") + "\n" + body
+	}
+
+	var parts []string
+	parts = append(parts, styleAssistant.Render("ASSISTANT"))
+	if showThinking && item.Thinking != "" {
+		if item.ThinkingExpanded {
+			thinking := ansi.Hardwrap(strings.TrimSpace(item.Thinking), width-2, true)
+			parts = append(parts, styleMuted.Render("THINKING  [expanded]")+"\n"+styleMuted.Render(thinking))
 		} else {
-			statusStr = "[OK]"
-			headStyle = styleOK
+			parts = append(parts, styleMuted.Render(fmt.Sprintf("THINKING  [collapsed]  %d chars", len([]rune(item.Thinking)))))
 		}
 	}
-	sb.WriteString(headStyle.Render(ts.Summary + " " + statusStr) + "\n")
-
-	// 内容：折叠态（限 6 行）/ 展开态全文。
-	content := ts.Content
-	if !ts.Collapsed && ts.Full != "" {
-		content = ts.Full
+	if content != "" {
+		parts = append(parts, content)
 	}
-	lines := strings.Split(content, "\n")
-	overflow := len(lines) > 6
-	if ts.Collapsed && overflow {
+	return strings.Join(parts, "\n")
+}
+
+func renderStream(stream *StreamState, width int, showThinking bool) string {
+	parts := []string{styleAssistant.Render("ASSISTANT")}
+	if showThinking && stream.Thinking != "" {
+		parts = append(parts, styleMuted.Render(ansi.Hardwrap(stream.Thinking, width-2, true)))
+	}
+	if stream.Text != "" {
+		parts = append(parts, styleText.Render(ansi.Hardwrap(stream.Text, width-2, true)))
+	}
+	return strings.Join(parts, "\n")
+}
+
+func renderToolBlock(tool *ToolStatus, width int, selected bool) string {
+	status := "[RUN]"
+	statusStyle := styleRunning
+	if tool.Done {
+		status = "[OK]"
+		statusStyle = styleSuccess
+		if tool.Failed {
+			status = "[ERR]"
+			statusStyle = styleError
+		}
+	}
+	head := statusStyle.Render(status) + " " + styleText.Render(ansi.Truncate(tool.Summary, maxInt(8, width-10), "..."))
+	if selected {
+		head = styleSelected.Render("> ") + head
+	}
+
+	content := tool.Content
+	if !tool.Collapsed && tool.Full != "" {
+		content = tool.Full
+	}
+	if content == "" {
+		content = "waiting for result"
+	}
+	lines := strings.Split(strings.TrimSpace(content), "\n")
+	total := len(lines)
+	if tool.Collapsed && len(lines) > 6 {
 		lines = lines[:6]
 	}
-	for _, line := range lines {
-		sb.WriteString("  " + colorDiffLine(line) + "\n")
+	for i, line := range lines {
+		lines[i] = "  " + colorDiffLine(ansi.Hardwrap(line, maxInt(8, width-4), true))
 	}
-	if overflow || (ts.Done && ts.Full != "" && ts.Full != ts.Content) {
-		sb.WriteString("  " + styleDim.Render("（Enter/点击展开看全文）") + "\n")
+	body := strings.Join(lines, "\n")
+	if tool.Expandable() {
+		state := "expanded"
+		if tool.Collapsed {
+			state = fmt.Sprintf("collapsed  %d lines", total)
+		}
+		body += "\n" + styleMuted.Render("  ["+state+"]")
 	}
+	return head + "\n" + lipgloss.NewStyle().
+		BorderStyle(lipgloss.Border{Left: "|"}).
+		BorderLeft(true).
+		BorderForeground(colorBorder).
+		PaddingLeft(1).
+		Render(body)
 }
 
-// colorDiffLine 对 diff 行着色（+ 绿 / - 红；排除 +++/--- 头）。
 func colorDiffLine(line string) string {
 	switch {
 	case strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "---"):
-		return styleDim.Render(line)
+		return styleMuted.Render(line)
 	case strings.HasPrefix(line, "+"):
 		return styleAdd.Render(line)
 	case strings.HasPrefix(line, "-"):
-		return styleDel.Render(line)
+		return styleDelete.Render(line)
 	default:
 		return line
 	}
+}
+
+func (m Model) isSelected(kind hitKind, id string) bool {
+	return m.focus == focusTimeline && m.selectedHit >= 0 && m.selectedHit < len(m.hits) &&
+		m.hits[m.selectedHit].kind == kind && m.hits[m.selectedHit].id == id
+}
+
+func alignRow(left, right string, width, padding int) string {
+	available := maxInt(1, width-padding*2)
+	left = ansi.Truncate(left, available, "")
+	rightWidth := lipgloss.Width(right)
+	leftWidth := lipgloss.Width(left)
+	if leftWidth+rightWidth+1 > available {
+		right = ansi.Truncate(right, maxInt(0, available-leftWidth-1), "")
+		rightWidth = lipgloss.Width(right)
+	}
+	gap := maxInt(0, available-leftWidth-rightWidth)
+	return strings.Repeat(" ", padding) + left + strings.Repeat(" ", gap) + right + strings.Repeat(" ", padding)
+}
+
+func shortSession(id string) string {
+	if len(id) <= 13 {
+		return id
+	}
+	return id[:8] + "..." + id[len(id)-4:]
+}
+
+func clamp(value, minValue, maxValue int) int {
+	if value < minValue {
+		return minValue
+	}
+	if value > maxValue {
+		return maxValue
+	}
+	return value
 }

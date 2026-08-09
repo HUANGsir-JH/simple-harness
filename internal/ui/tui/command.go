@@ -19,10 +19,14 @@ type command struct {
 
 // parseCommandLine 解析输入行；非 / 开头返回 ok=false。
 func parseCommandLine(line string) (command, bool) {
+	line = strings.TrimSpace(line)
 	if !strings.HasPrefix(line, "/") {
 		return command{}, false
 	}
 	fields := strings.Fields(line)
+	if len(fields) == 0 {
+		return command{}, false
+	}
 	return command{name: strings.TrimPrefix(fields[0], "/"), arg: strings.Join(fields[1:], " ")}, true
 }
 

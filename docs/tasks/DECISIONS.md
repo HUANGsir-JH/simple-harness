@@ -262,3 +262,14 @@
   11. **测试策略**：单测为主 + e2e 尽量全面——T1 Model.Update 无 TTY 单测（消息流/工具状态机/审批/队列/切换/历史/命令消费）；T2 View 关键内容包含断言（非整串快照）；T3 事件桥 + T4 审批桥单测；T5 e2e termtest 尽量全面（prompt→回复/审批 y/n/exit/resume 首屏/switch/队列连跑/thinking/工具块展开/非 TTY 报错/run 保留）；**人工测试清单**（鼠标点击/中文 IME/Ctrl+C 复制/resize/长输出性能）完成后用户实测；T6 既有测试零回归（agent 核心不改）。
 - **理由**：TUI 对症 REPL 测试痛点（elm 纯函数可测，无 TTY）；bubbletea 是 Go agent CLI 主流、依赖树小、Windows 完善；删 REPL 避免双交互入口维护、TUI 成唯一交互形态；run 保留脚本化能力；队列/命令统一进队列使"运行中切换"天然解耦（无需禁止/中断/后台三选一）；工具分派对齐两参考项目已验证形态；md 渲染是模型输出刚需（glamour 与 bubbletea 同生态）；无 emoji 是用户明确风格。
 - **影响 ADR**：ADR-008 修订——`Output`/Renderer 接口保留给 `run`（TextRenderer/JSONRenderer 流式），TUI 是独立交互 UI 层（`internal/ui/tui`）而非 renderer 插拔实现；ADR-028 Esc 中断语义保留；ADR-025 transcript 增 `command` 行类型（命令落盘，load 不进 conversation）；ADR-026 无状态 agent 是 TUI 换壳零冲击的前提。
+
+## ADR-031：TUI timeline 与窄屏交互收敛（2026-08-09）
+
+- **背景**：首版 TUI 已满足功能清单，但消息和工具分别渲染，工具块脱离实际事件位置；弹窗与输入区共享底部空间会造成跳屏；队列在 `turn_done` 事件处理时启动下一回合，随后旧回合的 `run_done` 可能把新回合误置为空闲。
+- **选择**：
+  1. UI 用单一 `timeline []timelineItem` 保存消息、工具调用和系统行；工具调用在 `tool_call` 事件到达时插入，结果只更新对应块。resume 优先按 transcript ordinal 重建，`command` 行与模型消息保持原顺序；旧会话无可读 transcript 时回退 `Conversation`。
+  2. `EventTurnDone` 只收尾流式块，不消费队列；队列只在对应 `runDoneMsg` 到达后消费，保证一个 agent goroutine 完整退出后才启动下一条。
+  3. 布局采用固定 header/main/auxiliary/composer/footer 分区，resize 时重新计算 viewport；弹窗在 main 区居中，不改变底部 composer 高度。工具和 thinking 的点击区域由渲染时记录的相对行号反查。
+  4. Ctrl+C 复制当前 composer 全文到系统剪贴板并给出短暂系统提示；不可用剪贴板时显示失败提示。状态标签、spinner 和边框采用 ASCII，颜色只表达语义。
+  5. `resume --no-thinking-display` 与无子命令 `harness --no-thinking-display` 只影响 UI 展示，不修改 transcript 或模型上下文。
+- **理由**：timeline 与 transcript 是同一条可审计事件流，能够同时满足历史顺序和工具就地展示；以 goroutine 返回作为队列边界能消除事件桥的竞态；分区布局和 ASCII fallback 对 Windows ConPTY、窄屏和中文宽字符更稳定；复制 composer 是 Bubbles textarea 没有 selection API 时仍可交付的明确行为。

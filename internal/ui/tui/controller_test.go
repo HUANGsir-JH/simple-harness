@@ -109,17 +109,17 @@ func TestQueueWhileRunning(t *testing.T) {
 	}
 }
 
-// TestQueueAutoRun turn_done 后队列自动启动下一条（逐条连跑）。
+// TestQueueAutoRun runDone 后队列自动启动下一条（逐条连跑）。
 func TestQueueAutoRun(t *testing.T) {
 	var calls atomic.Int32
 	c := newTestController(t, &calls)
 	m := New(c)
 	m.queue = []string{"second"}
 
-	nm, cmd := m.Update(agentEventMsg{ev: agent.Event{Type: agent.EventTurnDone}})
+	nm, cmd := m.Update(runDoneMsg{})
 	m = nm.(Model)
 	if cmd == nil {
-		t.Fatal("queue 非空时 turn_done 应自动启动下一条")
+		t.Fatal("queue 非空时 runDone 应自动启动下一条")
 	}
 	if len(m.queue) != 0 {
 		t.Fatalf("queue 应清空，got %v", m.queue)
@@ -127,6 +127,17 @@ func TestQueueAutoRun(t *testing.T) {
 	_ = cmd() // 执行下一条回合
 	if calls.Load() != 1 {
 		t.Fatalf("应执行 1 次 agent.Run，got %d", calls.Load())
+	}
+}
+
+func TestTurnDoneDoesNotRaceNextRun(t *testing.T) {
+	m := New(nil)
+	m.running = true
+	m.queue = []string{"second"}
+	nm, cmd := m.Update(agentEventMsg{ev: agent.Event{Type: agent.EventTurnDone}})
+	m = nm.(Model)
+	if cmd != nil || !m.running || len(m.queue) != 1 {
+		t.Fatalf("turn_done must not consume queue: running=%v queue=%v", m.running, m.queue)
 	}
 }
 

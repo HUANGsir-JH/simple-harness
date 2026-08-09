@@ -15,7 +15,7 @@ import (
 // repl 是交互式模式（`harness` 无子命令）：新会话 + TUI（bubbletea 全屏，ADR-030）。
 // 非 TTY / --json 下报错提示用 run（TUI 需要真实终端，--json 仅 run 支持）。
 // REPL 已删除（W5，ADR-030）：TUI 是唯一交互模式。
-func repl(jsonOut bool) error {
+func repl(jsonOut bool, thinkingDisplay ...bool) error {
 	if jsonOut {
 		return fmt.Errorf("交互模式不支持 --json（请用 `harness --json run <prompt>`）")
 	}
@@ -46,5 +46,9 @@ func repl(jsonOut bool) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM)
 	defer stop()
 
-	return tui.RunTUI(a, proj, app.Config, sess, ctx)
+	showThinking := true
+	if len(thinkingDisplay) > 0 {
+		showThinking = thinkingDisplay[0]
+	}
+	return tui.RunTUI(a, proj, app.Config, sess, ctx, showThinking)
 }

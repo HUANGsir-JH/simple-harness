@@ -19,6 +19,36 @@ func LoadConversation(historyDir string) (*messages.Conversation, error) {
 	return loadHistoryFile(historyPath(historyDir, seg))
 }
 
+// LoadLines returns the latest transcript segment in ordinal order. UI clients
+// use it when they need non-model entries such as command rows as well as the
+// conversation reconstructed by LoadConversation.
+func LoadLines(historyDir string) ([]Line, error) {
+	seg := currentSegment(historyDir)
+	if seg == 0 {
+		return nil, nil
+	}
+	f, err := os.Open(historyPath(historyDir, seg))
+	if err != nil {
+		return nil, fmt.Errorf("session: open %s: %w", historyPath(historyDir, seg), err)
+	}
+	defer f.Close()
+
+	var lines []Line
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	for sc.Scan() {
+		var line Line
+		if err := json.Unmarshal(sc.Bytes(), &line); err != nil {
+			return nil, fmt.Errorf("session: bad line: %w", err)
+		}
+		lines = append(lines, line)
+	}
+	if err := sc.Err(); err != nil {
+		return nil, err
+	}
+	return lines, nil
+}
+
 func loadHistoryFile(path string) (*messages.Conversation, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -64,29 +94,15 @@ func loadHistoryFile(path string) (*messages.Conversation, error) {
 // loadCommands 读取 historys 的 command 行（斜杠命令历史；TUI resume 渲染
 // 系统行，ADR-030）。command 行不进 conversation（模型不可见）。
 func loadCommands(historyDir string) ([]string, error) {
-	seg := currentSegment(historyDir)
-	if seg == 0 {
-		return nil, nil
-	}
-	f, err := os.Open(historyPath(historyDir, seg))
+	lines, err := LoadLines(historyDir)
 	if err != nil {
-		return nil, fmt.Errorf("session: open %s: %w", historyPath(historyDir, seg), err)
+		return nil, err
 	}
-	defer f.Close()
 	var out []string
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-	for sc.Scan() {
-		var line Line
-		if err := json.Unmarshal(sc.Bytes(), &line); err != nil {
-			return nil, fmt.Errorf("session: bad line: %w", err)
-		}
+	for _, line := range lines {
 		if line.Type == "command" {
 			out = append(out, line.Content)
 		}
-	}
-	if err := sc.Err(); err != nil {
-		return nil, err
 	}
 	return out, nil
 }

@@ -34,6 +34,9 @@ func run(args []string) error {
 	if len(rest) == 0 {
 		return repl(jsonOut) // 直接 harness（无子命令）→ 交互式
 	}
+	if len(rest) == 1 && rest[0] == "--no-thinking-display" {
+		return repl(jsonOut, false)
+	}
 	switch rest[0] {
 	case "version":
 		fmt.Printf("harness %s\n", version)
@@ -68,7 +71,7 @@ func usage() {
 	fmt.Println("  --effort <low|high|max>      reasoning effort override (must be in the model's thinking.efforts)")
 	fmt.Println("  --thinking                   force enable thinking (default: model config)")
 	fmt.Println("  --no-thinking                force disable thinking (default: model config)")
-	fmt.Println("  --no-thinking-display        do not show thinking text (only affects text renderer)")
+	fmt.Println("  --no-thinking-display        do not show thinking text")
 	fmt.Println()
 	fmt.Println("TUI commands:")
 	fmt.Println("  /switch /model /effort /permission    popup pickers (real-time config lists)")
