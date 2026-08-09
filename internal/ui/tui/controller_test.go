@@ -13,7 +13,7 @@ import (
 )
 
 // newTestSession 建临时 workspace + 会话（HARNESS_HOME 隔离）。
-func newTestSession(t *testing.T) *session.Session {
+func newTestSession(t *testing.T) (*session.Session, *session.Project) {
 	t.Helper()
 	root := t.TempDir()
 	store := session.NewAt(root)
@@ -23,13 +23,13 @@ func newTestSession(t *testing.T) *session.Session {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = sess.Close() })
-	return sess
+	return sess, proj
 }
 
 // newTestController 构造带 FakeClient 的桥（每次 Stream 返回固定纯文本回合）。
 func newTestController(t *testing.T, calls *atomic.Int32) *Controller {
 	t.Helper()
-	sess := newTestSession(t)
+	sess, proj := newTestSession(t)
 	client := &provider.FakeClient{
 		StreamFn: func(ctx context.Context, req provider.Request) (provider.EventStream, error) {
 			if calls != nil {
@@ -42,7 +42,7 @@ func newTestController(t *testing.T, calls *atomic.Int32) *Controller {
 			}), nil
 		},
 	}
-	return NewController(agent.New(client, "test-model"), sess, context.Background())
+	return NewController(agent.New(client, "test-model"), proj, provider.Config{}, sess, context.Background())
 }
 
 // collectSend 收集 program.Send 的消息（模拟 bubbletea 事件循环）。

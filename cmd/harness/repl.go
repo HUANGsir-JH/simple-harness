@@ -36,6 +36,10 @@ func repl(jsonOut bool) error {
 	if err != nil {
 		return err
 	}
+	proj, err := findProject()
+	if err != nil {
+		return err
+	}
 	sess, err := session.CreateInCWD(app.Resolved.Model, app.defaultApprovalMode())
 	if err != nil {
 		return err
@@ -47,7 +51,7 @@ func repl(jsonOut bool) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM)
 	defer stop()
 
-	return tui.RunTUI(a, sess, ctx)
+	return tui.RunTUI(a, proj, app.Config, sess, ctx)
 }
 
 // runREPL 是交互式 REPL 循环（`harness` / resume 复用）。输入改事件循环：
