@@ -298,10 +298,11 @@ type Renderer interface {
 ### todo 工具（update_todo + 偏离提醒）✅ 已完成（2026-08-08，ADR-027）
 **目标**：`update_todo` 工具（全量替换语义，模型填 position 维护顺序，AgentScope tasksContext 对位），经 `rc.State.Todos` 读写，SessionMiddleware（无状态，rc.StatePath）after 落盘；工具结果回填 + `TodoReminderMiddleware`（onReasoning：todo 非空但模型连续 ≥10 次 model call 未更新 → 请求消息尾部注入提醒临时副本，不污染 conversation）。参考 codex `update_plan`（全量替换）+ opencode `todowrite`（持久化 + 详尽 prompt 引导）。**todo 数据结构已改为 `{Position, Description, Status}`**（删 ID；`ReplaceTodos` 按 position 稳定排序 + `RenderTodos` 渲染，替换原 AddTodo/UpdateTodoStatus）。
 
-### 阶段 3：审批（三档，作为 onActing middleware）+ 错误重试 ✅ 已完成（2026-08-09）
-**目标**：`approval` 包实现三档权限（readonly / acceptedit / bypass）+ 黑白名单 + TTY 交互 + 会话级记忆，**以 onActing middleware 挂载**（拒绝 ≠ Fatal，`middleware.DeniedError` 回填模型）；规则匹配引擎保留扩展点（复杂匹配不强做）；错误重试完善（429 依赖 SDK，补充流中断恢复）
-**成功标准**：危险命令按权限档位放行/确认/拒绝；middleware 链能拦截工具执行；429 重试生效 —— 前三项达成 ✅（approval 包单测 + agent 集成 + e2e 真实 TTY 审批交互 + 会话级记忆落盘）
-**测试**：审批策略单测（黑白名单匹配）✅；middleware 链单测 ✅；重试单测（mock 429 响应）— 依赖 SDK 内置（ADR-012），流中断恢复未单独做（留待真实 API 冒烟观察）
+### 阶段 3：审批（三档，onActing middleware）✅ 已完成（2026-08-09）
+**目标**：`approval` 包实现三档权限（readonly / acceptedit / bypass）+ 黑白名单 + TTY 交互 + 会话级记忆，**以 onActing middleware 挂载**（拒绝 ≠ Fatal，`middleware.DeniedError` 回填模型）；规则匹配引擎保留扩展点（复杂匹配不强做）
+**成功标准**：危险命令按权限档位放行/确认/拒绝；middleware 链能拦截工具执行 —— 达成 ✅（approval 包单测 + agent 集成 + e2e 真实 TTY 审批交互 + 会话级记忆落盘 + config 播种 /permission 切换）
+**测试**：审批策略单测（黑白名单匹配）✅；middleware 链单测 ✅；agent 集成（拒绝回填不 Fatal）✅；session 固化/切换 + /permission 命令 ✅
+**错误重试（非本阶段交付）**：历史目标里的"错误重试"与审批无关，已拆出——**429 重试依赖 SDK 内置退避**（ADR-012 架构决策，SDK 已承担，无需自研代码）；**流中断恢复（流式断连补充处理）未做**，为独立待办（真实 API 冒烟观察）。
 
 ### 阶段 4（剩余）：系统提示词拼接 + AGENTS.md + 压缩
 **目标**：`agentsmd` 包（**作为 onSystemPrompt middleware** 注入：项目级 AGENTS.md 向上搜索 + 全局 `agents.md` 拼接，阶段 2.5 已建 agents.md 占位，配合动态系统提示词组装）；`compact` 包（TokenBudget v1 + 摘要式 + **大工具结果 eviction** 落盘会话目录 evictions/，作为 onReasoning middleware；压缩触发时调用 `transcript.NewSegment` 切新文件，seed = 摘要+保留，**不做 overflow 安全网**）

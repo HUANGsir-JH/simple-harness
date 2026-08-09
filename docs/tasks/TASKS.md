@@ -47,11 +47,13 @@
 - **目标**：todo 工具（任务清单拆解/跟踪）
 - **状态**：未开始（2026-08-06 用户指定单独做，不进工具系统阶段）
 
-## 阶段 3：权限/审批（三档）+ 错误重试
+## 阶段 3：权限/审批（三档）
 
-- **目标**：三档权限（`readonly` / `acceptedit` / `bypass`）**以 onActing middleware 挂载** + 黑白名单 + TTY 交互 + **会话级记忆**（用户决策替代 allowlist，ADR-029；规则匹配引擎保留扩展点，复杂匹配不强做）；错误重试完善
-- **成功标准**：危险命令按权限档位放行/确认/拒绝；middleware 链能拦截工具执行；429 重试生效
-- **状态**：**已完成（2026-08-09，ADR-029）**。交付：`internal/approval/`（Policy 三档 + shell 黑白名单 + ApprovalMiddleware 挂 onActing + `middleware.DeniedError` 拒绝回填）+ channelApprover（REPL/runCmd 单一读方协调，y/s/n）+ `AgentState.Permission`（Mode 会话创建播种 + `/permission` 切换 + Approved 会话级记忆）+ e2e 真实 TTY 审批交互。错误重试 429 依赖 SDK 内置（ADR-012），流中断恢复留真实 API 冒烟观察。Hooks（PreToolUse 子进程）降级远期，由 middleware 承载。
+- **目标**：三档权限（`readonly` / `acceptedit` / `bypass`）**以 onActing middleware 挂载** + 黑白名单 + TTY 交互 + **会话级记忆**（用户决策替代 allowlist，ADR-029；规则匹配引擎保留扩展点，复杂匹配不强做）
+- **成功标准**：危险命令按权限档位放行/确认/拒绝；middleware 链能拦截工具执行
+- **状态**：**已完成（2026-08-09，ADR-029）**。交付：`internal/approval/`（Policy 三档 + shell 黑白名单 + ApprovalMiddleware 挂 onActing + `middleware.DeniedError` 拒绝回填）+ channelApprover（REPL/runCmd 单一读方协调，y/s/n）+ `AgentState.Permission`（Mode 会话创建播种 + `/permission` 切换 + Approved 会话级记忆）+ e2e 真实 TTY 审批交互。
+- **错误重试（非本阶段交付）**：429 依赖 SDK 内置退避（ADR-012，已承担）；流中断恢复未做，独立待办。
+- **Hooks（PreToolUse 子进程）**：降级远期，由 middleware 承载。
 
 ## 阶段 4：Workspace（~/.harness/）+ 会话 + 系统提示词拼接 + 压缩
 
