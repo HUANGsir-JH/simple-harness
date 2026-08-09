@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/agent-project/harness/internal/agent"
 )
@@ -14,6 +15,10 @@ import (
 // segMarker 是切分指令行（内部哨兵）：writer 收到后关闭当前文件、开新文件。
 // 走 channel 保证与后续事件串行（保序，见 plan）。
 const segMarker = "__segment__"
+
+// flushMarker 是同步指令行（内部哨兵）：writer 收到后确认已写完此前所有行
+// （AddCommand 落盘同步点；命令低频可接受）。
+const flushMarker = "__flush__"
 
 // Line 是 transcript 的一行（块级事件，ADR-025）。resume 按 ordinal 排序加载。
 type Line struct {
@@ -31,6 +36,7 @@ type Line struct {
 	Success   *bool           `json:"success,omitempty"`
 	Content   string          `json:"content,omitempty"`
 	Text      string          `json:"text,omitempty"`
+	Sync      chan struct{}   `json:"-"` // 内部 flush 确认（不序列化）
 }
 
 // TranscriptWriter 是块级 transcript 的异步 writer（ADR-025）。
@@ -49,6 +55,7 @@ type TranscriptWriter struct {
 	ordinal int64 // 行序号（writer goroutine 内）
 	turn    int   // 当前回合（OnAgentEvent 所在 goroutine，串行）
 	done    chan struct{}
+	closeOnce sync.Once // Close 幂等（REPL/RunTUI 双路径可能重复关闭）
 }
 
 // historyBuf 是 channel 缓冲：写入方（agent 事件回调）在缓冲满时阻塞，
@@ -114,21 +121,39 @@ func (w *TranscriptWriter) NewSegment() {
 	w.ch <- Line{Type: segMarker}
 }
 
-// Close 关闭 channel 并等后台 goroutine flush 后关闭文件。
+// Close 关闭 channel 并等后台 goroutine flush 后关闭文件（幂等）。
 func (w *TranscriptWriter) Close() error {
-	close(w.ch)
-	<-w.done
-	return w.file.Close()
+	var err error
+	w.closeOnce.Do(func() {
+		close(w.ch)
+		<-w.done
+		err = w.file.Close()
+	})
+	return err
+}
+
+// Flush 等待此前所有入队行写入（同步点；AddCommand 落盘确认，命令低频可接受）。
+// 走 w.ch（FIFO）保证顺序：flush 确认在它之前的行都写完。
+func (w *TranscriptWriter) Flush() {
+	ack := make(chan struct{})
+	w.ch <- Line{Type: flushMarker, Sync: ack}
+	<-ack
 }
 
 func (w *TranscriptWriter) run() {
 	defer close(w.done)
 	for line := range w.ch {
-		if line.Type == segMarker {
+		switch {
+		case line.Type == segMarker:
 			w.segment++
 			if err := w.openSegment(); err != nil {
 				// v1：切分失败不阻塞后续（文件写错误进 file.Err？简化忽略）。
 				_ = err
+			}
+			continue
+		case line.Type == flushMarker:
+			if line.Sync != nil {
+				close(line.Sync)
 			}
 			continue
 		}

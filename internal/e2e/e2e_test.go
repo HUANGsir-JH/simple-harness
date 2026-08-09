@@ -131,11 +131,9 @@ func TestRunSingleTurnE2E(t *testing.T) {
 	}
 }
 
-// TestInteractiveE2E 验证交互式 REPL：发送输入 → 回合（工具闭环）→ 回复 → 退出。
-// 交互式入口用默认 config 查找（项目级 config.local.yaml），故把测试配置
-// 写到工作目录。
-func TestInteractiveE2E(t *testing.T) {
-	t.Skip("REPL 交互已被 TUI 骨架替代（ADR-030），W5 改造为 TUI termtest（输入→回复→/exit）")
+// TestTUIInteractiveE2E 验证 TUI 交互闭环：输入 prompt → 回合（工具 + 回复）→ /exit 退出。
+// 交互式入口用默认 config 查找（项目级 config.local.yaml），故把测试配置写到工作目录。
+func TestTUIInteractiveE2E(t *testing.T) {
 	srv := mockLLMServer(t)
 	defer srv.Close()
 	workDir := t.TempDir()
@@ -152,11 +150,93 @@ func TestInteractiveE2E(t *testing.T) {
 	}
 	defer cp.Close()
 
+	if _, err := cp.Expect("输入消息"); err != nil {
+		t.Fatalf("expect TUI 输入区: %v", err)
+	}
 	cp.SendLine("你好")
+	// mock 首轮 list_dir 工具 + 次轮文本回复。
 	if _, err := cp.Expect("目录已列出"); err != nil {
 		t.Fatalf("expect reply: %v", err)
 	}
-	cp.SendLine("exit")
+	cp.SendLine("/exit")
+	if _, err := cp.ExpectExitCode(0); err != nil {
+		t.Fatalf("expect exit 0: %v", err)
+	}
+}
+
+// TestTUIApprovalE2E 验证 TUI 审批交互（ADR-029/030）：readonly 下 write_file
+// 触发审批弹窗 → y 允许 → 工具执行 → 次轮回复。
+func TestTUIApprovalE2E(t *testing.T) {
+	srv := mockLLMServerWriteFile(t)
+	defer srv.Close()
+	workDir := t.TempDir()
+	writeConfigApprovalTo(t, srv.URL, filepath.Join(workDir, "config.local.yaml"), "readonly")
+
+	cp, err := termtest.NewTest(t, termtest.Options{
+		CmdName:        harnessExe,
+		WorkDirectory:  workDir,
+		DefaultTimeout: 30 * time.Second,
+		Environment:    []string{"HARNESS_HOME=" + filepath.Join(t.TempDir(), ".harness-e2e")},
+	})
+	if err != nil {
+		t.Fatalf("newtest: %v", err)
+	}
+	defer cp.Close()
+
+	if _, err := cp.Expect("输入消息"); err != nil {
+		t.Fatalf("expect TUI 输入区: %v", err)
+	}
+	cp.SendLine("写一个文件")
+	// 审批弹窗出现（readonly 下 write_file 询问）。
+	if _, err := cp.Expect("[审批]"); err != nil {
+		t.Fatalf("expect approval popup: %v", err)
+	}
+	cp.SendLine("y")
+	if _, err := cp.Expect("文件已写入"); err != nil {
+		t.Fatalf("expect reply: %v", err)
+	}
+	// readonly 下用户允许后工具确实执行（文件写入工作目录）。
+	if _, err := os.Stat(filepath.Join(workDir, "out.txt")); err != nil {
+		t.Errorf("write_file 未执行: %v", err)
+	}
+	cp.SendLine("/exit")
+	if _, err := cp.ExpectExitCode(0); err != nil {
+		t.Fatalf("expect exit 0: %v", err)
+	}
+}
+
+// TestTUIResumeE2E 验证 resume --last 进入 TUI 并载入历史首屏（ADR-030 全量替换）。
+func TestTUIResumeE2E(t *testing.T) {
+	srv := mockLLMServer(t)
+	defer srv.Close()
+	workDir := t.TempDir()
+	writeConfigTo(t, srv.URL, filepath.Join(workDir, "config.local.yaml"))
+	home := filepath.Join(t.TempDir(), ".harness-e2e")
+
+	// 先用 run（非 TTY）产生一个会话（历史含"目录已列出"）。
+	cmd := exec.Command(harnessExe, "run", "你好")
+	cmd.Dir = workDir
+	cmd.Env = append(os.Environ(), "HARNESS_HOME="+home)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("run 产会话失败: %v\n%s", err, out)
+	}
+
+	// resume --last → TUI 载入历史首屏。
+	cp, err := termtest.NewTest(t, termtest.Options{
+		CmdName:        harnessExe,
+		Args:           []string{"resume", "--last"},
+		WorkDirectory:  workDir,
+		DefaultTimeout: 30 * time.Second,
+		Environment:    []string{"HARNESS_HOME=" + home},
+	})
+	if err != nil {
+		t.Fatalf("newtest: %v", err)
+	}
+	defer cp.Close()
+	if _, err := cp.Expect("目录已列出"); err != nil {
+		t.Fatalf("resume 首屏应含历史回复: %v", err)
+	}
+	cp.SendLine("/exit")
 	if _, err := cp.ExpectExitCode(0); err != nil {
 		t.Fatalf("expect exit 0: %v", err)
 	}

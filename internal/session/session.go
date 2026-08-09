@@ -175,8 +175,10 @@ func (s *Session) AddUser(content string) {
 
 // AddCommand 记录一条斜杠命令（transcript command 行；不进 conversation，
 // 模型不可见——对齐 thinking 存但不重放，ADR-030）。TUI resume 渲染系统行。
+// 命令低频，落盘同步（Flush）保证 resume/切换立即可见。
 func (s *Session) AddCommand(content string) {
 	s.writer.Write(Line{Type: "command", Content: content})
+	s.writer.Flush()
 }
 
 // Commands 返回本会话历史中的斜杠命令（resume 时 TUI 渲染系统行）。

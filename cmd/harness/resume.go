@@ -12,11 +12,14 @@ import (
 
 	"github.com/agent-project/harness/internal/agentstate"
 	"github.com/agent-project/harness/internal/session"
-	"github.com/agent-project/harness/internal/ui"
+	"github.com/agent-project/harness/internal/ui/tui"
 )
 
-// resumeCmd 恢复会话（--last 或 <id>）并进入 REPL 继续。
+// resumeCmd 恢复会话（--last 或 <id>）并进入 TUI 继续（ADR-030）。
 func resumeCmd(args []string, jsonOut bool) error {
+	if jsonOut {
+		return fmt.Errorf("resume 交互模式不支持 --json（请用 `harness --json run <prompt>`）")
+	}
 	fs := flag.NewFlagSet("resume", flag.ContinueOnError)
 	last := fs.Bool("last", false, "resume the most recent session for this project")
 	if err := fs.Parse(args); err != nil {
@@ -67,27 +70,12 @@ func resumeCmd(args []string, jsonOut bool) error {
 		return err
 	}
 
-	// SIGTERM 终止进程；SIGINT（Ctrl+C）作为字节由 raw mode 捕获 → 只中断当前
-	// 回合（不终止 REPL）。顶层 ctx 不被 SIGINT cancel，下一轮 Run 不受影响。
+	// SIGTERM 终止进程；SIGINT（Ctrl+C）由 bubbletea 作为按键事件处理（复制语义）。
+	// 回合中断用 Esc（ADR-028），顶层 ctx 不被 SIGINT cancel。
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM)
 	defer stop()
 
-	mgr := &SessionManager{
-		app:    app,
-		a:      a,
-		proj:   proj,
-		open:   map[string]*session.Session{sess.ID: sess},
-		active: sess,
-	}
-	defer mgr.closeAll()
-
-	var renderer ui.Output
-	if jsonOut {
-		renderer = ui.JSONRenderer{}
-	} else {
-		renderer = ui.NewTextRenderer(true)
-	}
-	return runREPL(ctx, mgr, renderer)
+	return tui.RunTUI(a, proj, app.Config, sess, ctx)
 }
 
 // sessionsCmd 列出当前项目的会话。

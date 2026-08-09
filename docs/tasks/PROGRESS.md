@@ -4,6 +4,14 @@
 
 ## 2026-08-09
 
+### TUI 阶段完成 ✅（ADR-030，替代 REPL）
+
+- **交付**（W1-W5）：bubbletea 全屏聊天式 TUI 替代 REPL——消息流式 + md 渲染（glamour 块完成渲染）、底部多行输入 + 队列（回合中排队、turn_done 逐条连跑）、工具折叠块按工具分派（read/write 单行元信息、write 覆盖 gotextdiff、apply_patch diff、list_dir/glob 枚举、update_todo checklist、shell 完整 command+输出）、审批弹窗（tuiApprover 桥 + y/s/n + Esc 拒绝中断）、斜杠命令弹窗选择器（/switch /model /effort /permission，选项实时从配置获取 + 右侧说明）、todo 常驻条（输入框上方、进行中-待办-完成排序 ≤5 项 + 统计）+ 队列条、/switch 消息区全量替换、命令落盘 transcript command 行（resume 呈现、不发模型）、Ctrl+C 复制语义、无 emoji 风格、单焦点 Tab 键鼠模型。
+- **REPL 删除**：runREPL + SessionManager 移除（session_mgr.go 删除）；`repl()` 留薄壳调 tui.RunTUI；`run` 保留流式非交互 + TTY 审批；`resume` 迁 TUI（历史首屏）。
+- **测试**：tui 包 30+ 单测（事件桥/消息流/工具状态机+分派/审批弹窗/命令弹窗/队列/中断/落盘/todo 条）+ termtest e2e 全面覆盖（TUI 起/交互闭环/审批 y/resume 首屏 + run 保留用例）。TranscriptWriter.Close 幂等（sync.Once）+ Flush 同步点（命令落盘）。
+- **版本**：0.5.0 → **0.6.0**。
+- **人工测试清单（termtest 难覆盖，需实测）**：鼠标点击工具块展开/收起、中文 IME 输入、Ctrl+C 复制（剪贴板）、终端 resize、长输出滚动性能、并行工具多审批排队、真实模型回合。
+
 ### TUI 阶段启动：决策落盘 + 任务拆分 ✅（ADR-030）
 
 - **背景**：用户指 REPL 的交互式行为（行式流输出 + 提示符混流）影响项目测试，决定把 TUI 提前到现在（TASKS.md 阶段 6 → 子 agent 之前），TUI 上线后 **REPL 整体删除**。
