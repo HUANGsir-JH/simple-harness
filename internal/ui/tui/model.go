@@ -7,6 +7,7 @@ import (
 
 	"github.com/agent-project/harness/internal/agent"
 	"github.com/agent-project/harness/internal/messages"
+	"github.com/agent-project/harness/internal/middleware"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -37,19 +38,26 @@ type StatusBar struct {
 	TodoCount  int
 }
 
+// approvalPopup 是审批弹窗（输入区上方；y/s/n 直击键，Esc 拒绝 + 中断）。
+type approvalPopup struct {
+	req    middleware.ApprovalRequest
+	respCh chan middleware.Decision
+}
+
 // Model 是 TUI 根组件（bubbletea elm：Update/View 纯函数）。
-// W3：工具折叠块 + 状态栏 + spinner + Esc 中断落盘。
+// W4：审批弹窗 + 斜杠命令弹窗 + 队列条 + 自动补全。
 type Model struct {
 	c       *Controller
 	input   textarea.Model
 	msgs    []*MessageItem
 	tools   []*ToolStatus // 本批工具折叠块（消息流内插，ADR-030）
 	stream  *StreamState
-	queue   []string // 用户输入队列（prompt；斜杠命令 W4 统一进队列）
+	queue   []string // 用户输入队列（prompt + /命令统一排队，W4）
 	running bool     // 是否有回合在跑
 
 	sp     spinner.Model
 	status StatusBar
+	appr   *approvalPopup // 非 nil = 审批弹窗（输入接管 y/s/n）
 
 	viewport viewport.Model // 消息区（滚动）
 	width    int
@@ -98,6 +106,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case agentEventMsg:
 		return m.handleAgentEvent(msg.ev)
 
+	case approvalRequestMsg:
+		m.appr = &approvalPopup{req: msg.req, respCh: msg.respCh}
+		m.refresh()
+		return m, nil
+
 	case runDoneMsg:
 		return m.handleRunDone(msg.err)
 
@@ -114,8 +127,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 }
 
-// handleKey 处理键盘事件（焦点模型 W3 部分：输入区/消息区，弹窗 W4）。
+// handleKey 处理键盘事件（焦点模型：审批弹窗优先；弹窗/消息区 W4b 扩展）。
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// 审批弹窗：y/s/n 直击键 / Esc 拒绝 + 中断（输入被接管，不传 textarea）。
+	if m.appr != nil {
+		return m.handleApprovalKey(msg)
+	}
+
 	switch msg.String() {
 	case "ctrl+c":
 		// Ctrl+C = 复制语义（ADR-030）；剪贴板接入前 no-op。
@@ -139,6 +157,34 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	return m, cmd
+}
+
+// handleApprovalKey 处理审批弹窗按键（y 允许 / s 本会话记住 / n 拒绝 / Esc 拒绝+中断）。
+func (m Model) handleApprovalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	var dec middleware.Decision
+	switch strings.ToLower(msg.String()) {
+	case "y":
+		dec = middleware.DecisionAllow
+	case "s":
+		dec = middleware.DecisionAllowSession
+	case "n":
+		dec = middleware.DecisionDeny
+	case "esc":
+		// Esc：拒绝 + 中断当前回合。
+		m.appr.respCh <- middleware.DecisionDeny
+		m.appr = nil
+		if m.running && m.c != nil {
+			m.c.cancelRun()
+		}
+		m.refresh()
+		return m, nil
+	default:
+		return m, nil // 弹窗接管，其它键忽略
+	}
+	m.appr.respCh <- dec
+	m.appr = nil
+	m.refresh()
+	return m, nil
 }
 
 // submit 处理 Enter 提交：/exit 退出；/命令走命令处理（W4）；其余进队列或启动回合。
