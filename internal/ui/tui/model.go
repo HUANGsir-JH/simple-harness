@@ -1,10 +1,13 @@
 package tui
 
 import (
+	"context"
+	"errors"
 	"strings"
 
 	"github.com/agent-project/harness/internal/agent"
 	"github.com/agent-project/harness/internal/messages"
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -26,16 +29,27 @@ type StreamState struct {
 	Thinking string
 }
 
+// StatusBar 是底部状态栏缓存（refresh 时从 session 读，View 只读缓存）。
+type StatusBar struct {
+	Model      string
+	SessionID  string
+	Permission string
+	TodoCount  int
+}
+
 // Model 是 TUI 根组件（bubbletea elm：Update/View 纯函数）。
-// W2：消息区 + 输入区 + md 渲染 + 回合启动/中断 + 队列基础版。
-// W3 起：tools（工具折叠块）/ status（状态栏）；W4：queue 条 UI / 审批 / 命令。
+// W3：工具折叠块 + 状态栏 + spinner + Esc 中断落盘。
 type Model struct {
 	c       *Controller
 	input   textarea.Model
 	msgs    []*MessageItem
+	tools   []*ToolStatus // 本批工具折叠块（消息流内插，ADR-030）
 	stream  *StreamState
 	queue   []string // 用户输入队列（prompt；斜杠命令 W4 统一进队列）
 	running bool     // 是否有回合在跑
+
+	sp     spinner.Model
+	status StatusBar
 
 	viewport viewport.Model // 消息区（滚动）
 	width    int
@@ -51,9 +65,15 @@ func New(c *Controller) Model {
 	ta.SetWidth(80)
 	ta.SetHeight(3)
 	ta.Focus()
+
+	sp := spinner.New()
+	sp.Spinner = spinner.Line
+	sp.Style = styleDim
+
 	return Model{
 		c:        c,
 		input:    ta,
+		sp:       sp,
 		viewport: viewport.New(0, 0),
 	}
 }
@@ -68,7 +88,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 		m.input.SetWidth(msg.Width - 4)
 		m.viewport.Width = msg.Width - 4
-		m.viewport.Height = msg.Height - 6
+		m.viewport.Height = msg.Height - 7
 		m.refresh()
 		return m, nil
 
@@ -81,12 +101,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case runDoneMsg:
 		return m.handleRunDone(msg.err)
 
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.sp, cmd = m.sp.Update(msg)
+		if m.running {
+			return m, cmd // 回合进行中继续转
+		}
+		return m, nil
+
 	default:
 		return m, nil
 	}
 }
 
-// handleKey 处理键盘事件（焦点模型 W3 扩展：弹窗/消息区）。
+// handleKey 处理键盘事件（焦点模型 W3 部分：输入区/消息区，弹窗 W4）。
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c":
@@ -94,7 +122,11 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "esc":
 		if m.running && m.c != nil {
-			m.c.cancelRun() // 中断当前回合；中断提示 W3 加
+			m.c.cancelRun()
+			// 中断提示落盘（ADR-028）：resume 后模型可见，对齐 Claude Code。
+			m.c.active.AddUser("（系统：上一轮 agent 运行被用户中断。如有未完成的工作，请继续；后台进程可能仍在运行。）")
+			m.msgs = append(m.msgs, &MessageItem{Role: "", Content: "[系统] 已中断当前回合", Rendered: "[系统] 已中断当前回合", Done: true})
+			m.refresh()
 		}
 		return m, nil
 	}
@@ -153,6 +185,7 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		if m.stream == nil {
 			m.stream = &StreamState{}
 		}
+		return m, m.sp.Tick
 	case agent.EventThinkingDelta:
 		if m.stream == nil {
 			m.stream = &StreamState{}
@@ -171,20 +204,20 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 	case agent.EventTextDone:
 		m.flushStream()
 	case agent.EventToolCall:
-		// 工具折叠块 W3 实现；此处仅显示调用行占位。
-		m.msgs = append(m.msgs, &MessageItem{Role: messages.RoleAssistant, Content: "[工具] " + toolCallSummary(ev.ToolCall), Rendered: "[工具] " + toolCallSummary(ev.ToolCall), Done: true})
+		m.onToolCall(ev.ToolCall)
 	case agent.EventToolResult:
-		// W3 工具块填充。
+		m.onToolResult(ev)
 	case agent.EventTurnDone:
 		m.flushStream()
 		m.running = false
+		m.refresh()
 		// 队列逐条连跑（ADR-030）：回合完成自动发下一条。
 		if len(m.queue) > 0 && m.c != nil {
 			next := m.queue[0]
 			m.queue = m.queue[1:]
-			m.refresh()
 			return m, m.c.Run(next)
 		}
+		return m, nil
 	case agent.EventError:
 		m.running = false
 		if ev.Err != nil {
@@ -195,9 +228,38 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// onToolCall 建工具折叠块（pending）。
+func (m *Model) onToolCall(tc *messages.ToolCall) {
+	if tc == nil {
+		return
+	}
+	ts := &ToolStatus{ID: tc.ID, Name: tc.Name, Args: tc.Args, Summary: toolCallSummary(tc.Name, tc.Args), Collapsed: true}
+	prepareTool(ts)
+	m.tools = append(m.tools, ts)
+}
+
+// onToolResult 关联 ToolCall 填充结果（按 ID；审批拒绝也发 ToolResult，ADR-029）。
+func (m *Model) onToolResult(ev agent.Event) {
+	if ev.ToolCall == nil {
+		return
+	}
+	for _, ts := range m.tools {
+		if ts.ID == ev.ToolCall.ID {
+			if ev.ToolResult != nil {
+				applyToolResult(ts, ev.ToolResult)
+			}
+			return
+		}
+	}
+}
+
 // handleRunDone 回合结束（含中断/错误）。
 func (m Model) handleRunDone(err error) (tea.Model, tea.Cmd) {
 	m.running = false
+	if err != nil && !errors.Is(err, context.Canceled) {
+		m.msgs = append(m.msgs, &MessageItem{Role: "", Content: "[错误] " + err.Error(), Rendered: "[错误] " + err.Error(), Done: true, Err: true})
+	}
+	m.refresh()
 	return m, nil
 }
 
@@ -219,8 +281,24 @@ func (m *Model) flushStream() {
 	m.stream = nil
 }
 
-// refresh 重建消息区内容并滚到底（Update 内调用；View 只读 viewport）。
+// refresh 重建消息区 + 状态栏并滚到底（Update 内调用；View 只读）。
 func (m *Model) refresh() {
+	m.refreshStatus()
 	m.viewport.SetContent(renderMessages(m))
 	m.viewport.GotoBottom()
+}
+
+// refreshStatus 从会话读状态栏缓存（View 只读缓存，保持纯函数）。
+func (m *Model) refreshStatus() {
+	if m.c == nil || m.c.active == nil {
+		return
+	}
+	st := m.c.active.State()
+	m.status.Model = m.c.active.Model()
+	m.status.SessionID = m.c.active.ID
+	m.status.Permission = ""
+	if st.Permission != nil {
+		m.status.Permission = st.Permission.Mode
+	}
+	m.status.TodoCount = len(st.Todos)
 }
