@@ -27,8 +27,21 @@ func TestToolStateMachine(t *testing.T) {
 	if !m.tools[0].Done || m.tools[0].Failed {
 		t.Fatalf("tool_result 后 tools[0] = %+v", m.tools[0])
 	}
-	if !strings.Contains(m.tools[0].Content, "[OK]") {
-		t.Fatalf("shell 折叠态应含 [OK]，got %q", m.tools[0].Content)
+	if !strings.Contains(m.tools[0].Content, "exit 0") {
+		t.Fatalf("shell compact state should contain exit 0, got %q", m.tools[0].Content)
+	}
+}
+
+func TestReadFileToolCanExpand(t *testing.T) {
+	m := New(nil)
+	tc := &messages.ToolCall{ID: "read-expand", Name: "read_file", Args: []byte(`{"path":"README.md"}`)}
+	m.onToolCall(tc)
+	m.onToolResult(agent.Event{ToolCall: tc, ToolResult: &messages.ToolResult{Success: true, Content: "first\nsecond\nthird"}})
+	if !m.tools[0].Expandable() {
+		t.Fatal("read_file should retain full output for expansion")
+	}
+	if !strings.Contains(m.tools[0].Full, "second") {
+		t.Fatalf("read_file full output = %q", m.tools[0].Full)
 	}
 }
 
@@ -37,7 +50,7 @@ func TestToolDispatchReadFile(t *testing.T) {
 	ts := &ToolStatus{Name: "read_file", Args: []byte(`{"path":"a.txt"}`), Collapsed: true}
 	res := &messages.ToolResult{Success: true, Content: "l1\nl2\nl3"}
 	applyToolResult(ts, res)
-	if !strings.Contains(ts.Content, "a.txt") || !strings.Contains(ts.Content, "3 行") {
+	if !strings.Contains(ts.Content, "a.txt") || !strings.Contains(ts.Content, "3 lines") {
 		t.Fatalf("read_file 折叠态 = %q", ts.Content)
 	}
 	if strings.Contains(ts.Content, "l1") {
@@ -55,7 +68,7 @@ func TestToolWriteFileDiff(t *testing.T) {
 	}
 	res := &messages.ToolResult{Success: true, Content: "Write File: x.txt"}
 	applyToolResult(ts, res)
-	if !strings.Contains(ts.Content, "覆盖 x.txt") {
+	if !strings.Contains(ts.Content, "updated x.txt") {
 		t.Fatalf("覆盖场景应标覆盖，got %q", ts.Content)
 	}
 	if !strings.Contains(ts.Content, "+changed") || !strings.Contains(ts.Content, "-line2") {
@@ -68,7 +81,7 @@ func TestToolWriteFileNew(t *testing.T) {
 	ts := &ToolStatus{Name: "write_file", Args: []byte(`{"path":"new.txt","content":"hi\n"}`), Collapsed: true}
 	res := &messages.ToolResult{Success: true, Content: "Write File: new.txt"}
 	applyToolResult(ts, res)
-	if !strings.Contains(ts.Content, "新建 new.txt") || strings.Contains(ts.Content, "+") {
+	if !strings.Contains(ts.Content, "created new.txt") || strings.Contains(ts.Content, "+") {
 		t.Fatalf("新建应无 diff，got %q", ts.Content)
 	}
 }
@@ -93,7 +106,7 @@ func TestToolListDir(t *testing.T) {
 	ts := &ToolStatus{Name: "list_dir", Args: []byte(`{"path":"."}`), Collapsed: true}
 	res := &messages.ToolResult{Success: true, Content: "dir\ta\nfile\tb\nfile\tc\n"}
 	applyToolResult(ts, res)
-	if !strings.Contains(ts.Content, "3 项") || !strings.Contains(ts.Content, "file\tb") {
+	if !strings.Contains(ts.Content, "3 items") || !strings.Contains(ts.Content, "a b c") {
 		t.Fatalf("list_dir 折叠态 = %q", ts.Content)
 	}
 }
@@ -103,7 +116,7 @@ func TestToolFailed(t *testing.T) {
 	ts := &ToolStatus{Name: "shell_command", Args: []byte(`{"command":"rm -rf x"}`), Collapsed: true}
 	res := &messages.ToolResult{Success: false, Content: "shell_command: 权限拒绝"}
 	applyToolResult(ts, res)
-	if !ts.Failed || !strings.Contains(ts.Content, "[ERR]") || !strings.Contains(ts.Content, "权限拒绝") {
+	if !ts.Failed || !strings.Contains(ts.Content, "权限拒绝") {
 		t.Fatalf("失败态 = %+v", ts)
 	}
 }
@@ -113,7 +126,9 @@ func TestViewToolBlock(t *testing.T) {
 	m := New(nil)
 	nm, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = nm.(Model)
-	m.tools = []*ToolStatus{{Summary: "shell_command: ls", Done: true, Content: "[OK] exit 0\nout", Collapsed: true}}
+	tool := &ToolStatus{ID: "c1", Summary: "shell_command: ls", Done: true, Content: "exit 0\nout", Collapsed: true}
+	m.tools = []*ToolStatus{tool}
+	m.items = []timelineItem{{kind: itemTool, tool: tool}}
 	m.refresh()
 	if !strings.Contains(m.View(), "shell_command: ls") {
 		t.Fatalf("View 应含工具块头")
@@ -135,10 +150,10 @@ func TestEscInterrupt(t *testing.T) {
 		t.Fatal("中断提示应写入 conversation")
 	}
 	last := c.active.Conversation().Messages[len(c.active.Conversation().Messages)-1]
-	if !strings.Contains(last.Content, "中断") {
+	if !strings.Contains(last.Content, "interrupted") {
 		t.Fatalf("最后一条应为中断提示，got %q", last.Content)
 	}
-	if !strings.Contains(m.View(), "已中断当前回合") {
+	if !strings.Contains(m.View(), "Interrupt requested") {
 		t.Fatalf("View 应含中断系统行")
 	}
 }

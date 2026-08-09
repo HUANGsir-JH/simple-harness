@@ -4,6 +4,21 @@
 
 ## 2026-08-09
 
+### TUI 折叠块点击与弹窗宽度修复 ✅（ADR-032）
+
+- **折叠块点击错配**（用户实测反馈）：根因是 `renderTimeline` 行号会计 off-by-one（cell 后只有一个空分隔行却按 +2 累加，块越多偏移越大）+ assistant 消息 hit 区间覆盖整个 cell。改为 `line += height + 1`，并让 `renderMessageItem` 返回 `messageCell{body, thinkingStart, thinkingEnd}`，只注册 thinking 块本身为点击区间。
+- **弹窗正文折行**（用户截图：`/model` 选项被拆成两行）：根因是 `modalStyle` 的 `Width` 含 padding 不含 border，实际内容宽比调用方假设的少 4 列。新增 `modalPanelWidth`/`modalInnerWidth` 作为唯一来源，选择器/审批/帮助三个弹窗统一取值；审批提示与帮助双列改为按可用宽度自适应。
+- **测试**：`TestHitRangesAlignWithRenderedLines`（断言 hit.start 行即块标题行、相邻区间不重叠）、`TestModalsFitPanelWidth`（6 种屏宽下断言弹窗每行宽度与总行数）；旧测试里补偿 off-by-one 的 `row++` 已删除。两个测试均已验证能在还原旧算法时失败。
+- **验证**：`go build ./...`、`go test ./...`、`go test -race ./internal/ui/tui`、`go vet ./...`、TUI e2e 四例、`go install ./cmd/harness` 全通过。
+
+### TUI redesign pass（`feat/tui-redesign`）
+
+- 从 `57eefe0` 建立独立分支，保留已验证的 agent/controller 协议，重做 UI 状态组织与视觉层。
+- 消息、工具、系统行统一为 timeline；resume 优先按 transcript ordinal 重建 command/thinking/tool 顺序，旧会话保留 conversation fallback。
+- 固定 header/main/auxiliary/composer/footer 布局，ASCII 状态与边框、颜色语义、窄屏自适应；选择器、审批、帮助为居中 modal。
+- 完成焦点切换、输入历史、斜杠补全、composer 复制、滚轮滚动、工具/思考点击展开、Esc 中断和 `runDone` 队列边界修复。
+- 新增响应式 View、鼠标工具展开和 `turn_done` 竞态回归测试；包级 race、全仓测试、PTY e2e、vet、build 已验证。
+
 ### TUI 阶段完成 ✅（ADR-030，替代 REPL）
 
 - **交付**（W1-W5）：bubbletea 全屏聊天式 TUI 替代 REPL——消息流式 + md 渲染（glamour 块完成渲染）、底部多行输入 + 队列（回合中排队、turn_done 逐条连跑）、工具折叠块按工具分派（read/write 单行元信息、write 覆盖 gotextdiff、apply_patch diff、list_dir/glob 枚举、update_todo checklist、shell 完整 command+输出）、审批弹窗（tuiApprover 桥 + y/s/n + Esc 拒绝中断）、斜杠命令弹窗选择器（/switch /model /effort /permission，选项实时从配置获取 + 右侧说明）、todo 常驻条（输入框上方、进行中-待办-完成排序 ≤5 项 + 统计）+ 队列条、/switch 消息区全量替换、命令落盘 transcript command 行（resume 呈现、不发模型）、Ctrl+C 复制语义、无 emoji 风格、单焦点 Tab 键鼠模型。

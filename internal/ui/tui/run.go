@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/agent-project/harness/internal/agent"
@@ -11,64 +12,129 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// RunTUI 启动 TUI（bubbletea Program，alt-screen 全屏；ADR-030）。
-// a/proj/cfg/sess/ctx 由 cmd 层装配（共享无状态 agent + 项目桶 + 配置 + 会话）。
-func RunTUI(a *agent.Agent, proj *session.Project, cfg provider.Config, sess *session.Session, ctx context.Context) error {
-	c := NewController(a, proj, cfg, sess, ctx)
-	m := New(c)
-	loadHistory(&m, sess.Conversation())
-	// 历史斜杠命令渲染为系统行（resume 呈现；模型不可见，ADR-030）。
-	if cmds, err := sess.Commands(); err == nil {
-		for _, c := range cmds {
-			m.msgs = append(m.msgs, &MessageItem{Role: "", Content: "[命令] " + c, Rendered: "[命令] " + c, Done: true})
-		}
+// RunTUI starts the full-screen interactive client.
+func RunTUI(a *agent.Agent, project *session.Project, cfg provider.Config, sess *session.Session, ctx context.Context, thinkingDisplay ...bool) error {
+	controller := NewController(a, project, cfg, sess, ctx)
+	model := New(controller)
+	if len(thinkingDisplay) > 0 {
+		model.showThinking = thinkingDisplay[0]
 	}
-	m.refresh()
+	loadSessionHistory(&model, sess)
+	model.refresh(true)
 
-	p := tea.NewProgram(m, tea.WithAltScreen())
-	c.setSend(p.Send)
-	_, err := p.Run()
-	c.CloseAll()
-	if err != nil {
+	program := tea.NewProgram(
+		model,
+		tea.WithAltScreen(),
+		tea.WithMouseCellMotion(),
+		tea.WithContext(ctx),
+	)
+	controller.setSend(program.Send)
+	defer controller.CloseAll()
+	if _, err := program.Run(); err != nil {
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return nil
+		}
 		return fmt.Errorf("tui: %w", err)
 	}
 	return nil
 }
 
-// loadHistory 从会话历史载入首屏（resume 历史可见；工具块重建 W3）。
-func loadHistory(m *Model, conv *messages.Conversation) {
-	for _, msg := range conv.Messages {
-		switch msg.Role {
-		case messages.RoleUser:
-			m.msgs = append(m.msgs, &MessageItem{Role: messages.RoleUser, Content: msg.Content, Rendered: msg.Content, Done: true})
-		case messages.RoleAssistant:
-			if msg.Content == "" && len(msg.ToolCalls) == 0 {
-				continue
+func loadSessionHistory(model *Model, sess *session.Session) {
+	if lines, err := sess.TranscriptLines(); err == nil && len(lines) > 0 {
+		loadTranscriptLines(model, lines)
+		return
+	}
+	loadHistory(model, sess.Conversation())
+}
+
+func loadTranscriptLines(model *Model, lines []session.Line) {
+	assistants := map[string]*MessageItem{}
+	for index, line := range lines {
+		switch line.Type {
+		case "user":
+			model.appendMessage(&MessageItem{ID: line.MsgID, Role: messages.RoleUser, Content: line.Content, Rendered: line.Content, Done: true})
+		case "thinking", "text":
+			id := line.MsgID
+			if id == "" {
+				id = fmt.Sprintf("transcript-%d", index)
 			}
-			rendered := renderMarkdown(msg.Content, m.width)
-			m.msgs = append(m.msgs, &MessageItem{
-				Role:     messages.RoleAssistant,
-				Content:  msg.Content,
-				Rendered: rendered,
-				Thinking: msg.Thinking,
-				Done:     true,
-			})
-		case messages.RoleTool:
-			// 历史工具结果简略显示（W3 折叠块重建）。
-			c := msg.Content
-			if c == "" && len(msg.ToolResults) > 0 {
-				c = fmt.Sprintf("%d 个工具结果", len(msg.ToolResults))
+			item := assistants[id]
+			if item == nil {
+				item = &MessageItem{ID: id, Role: messages.RoleAssistant, Done: true}
+				assistants[id] = item
+				model.appendMessage(item)
 			}
-			m.msgs = append(m.msgs, &MessageItem{Role: "", Content: c, Rendered: truncate(c, 120), Done: true})
+			if line.Type == "thinking" {
+				item.Thinking += line.Text
+			} else {
+				item.Content += line.Text
+				item.Rendered = renderMarkdown(item.Content, model.contentWidth)
+			}
+		case "tool_use":
+			call := &messages.ToolCall{ID: line.CallID, Name: line.Name, Args: line.Args}
+			model.onToolCall(call)
+		case "tool_result":
+			for _, tool := range model.tools {
+				if tool.ID == line.CallID {
+					success := line.Success != nil && *line.Success
+					applyToolResult(tool, &messages.ToolResult{Success: success, Content: line.Content})
+					break
+				}
+			}
+		case "command":
+			model.appendSystem("Command  "+line.Content, false)
 		}
 	}
 }
 
-// truncate 截断字符串（超长补省略号）。
-func truncate(s string, n int) string {
-	r := []rune(s)
-	if len(r) <= n {
-		return s
+// loadHistory builds the UI timeline from the model-visible conversation.
+func loadHistory(model *Model, conversation *messages.Conversation) {
+	for index, message := range conversation.Messages {
+		switch message.Role {
+		case messages.RoleUser:
+			model.appendMessage(&MessageItem{
+				ID:       message.ID,
+				Role:     messages.RoleUser,
+				Content:  message.Content,
+				Rendered: message.Content,
+				Done:     true,
+			})
+		case messages.RoleAssistant:
+			messageID := message.ID
+			if messageID == "" {
+				messageID = fmt.Sprintf("history-%d", index)
+			}
+			if message.Content != "" || message.Thinking != "" {
+				model.appendMessage(&MessageItem{
+					ID:       messageID,
+					Role:     messages.RoleAssistant,
+					Content:  message.Content,
+					Rendered: renderMarkdown(message.Content, model.contentWidth),
+					Thinking: message.Thinking,
+					Done:     true,
+				})
+			}
+			for i := range message.ToolCalls {
+				call := message.ToolCalls[i]
+				model.onToolCall(&call)
+			}
+		case messages.RoleTool:
+			for _, result := range message.ToolResults {
+				for _, tool := range model.tools {
+					if tool.ID == result.ToolCallID {
+						applyToolResult(tool, &messages.ToolResult{Success: result.Success, Content: result.Content})
+						break
+					}
+				}
+			}
+		}
 	}
-	return string(r[:n]) + "…"
+}
+
+func truncate(value string, limit int) string {
+	runes := []rune(value)
+	if len(runes) <= limit {
+		return value
+	}
+	return string(runes[:limit]) + "..."
 }

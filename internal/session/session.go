@@ -186,6 +186,11 @@ func (s *Session) Commands() ([]string, error) {
 	return loadCommands(s.historyDir)
 }
 
+// TranscriptLines returns the latest transcript segment for timeline UIs.
+func (s *Session) TranscriptLines() ([]Line, error) {
+	return LoadLines(s.historyDir)
+}
+
 // Writer 返回 transcript writer（CLI 转发 agent 事件用）。
 func (s *Session) Writer() *TranscriptWriter { return s.writer }
 

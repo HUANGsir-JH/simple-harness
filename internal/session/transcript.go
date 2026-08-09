@@ -23,7 +23,7 @@ const flushMarker = "__flush__"
 // Line 是 transcript 的一行（块级事件，ADR-025）。resume 按 ordinal 排序加载。
 type Line struct {
 	Ordinal   int64           `json:"ordinal"`
-	Type      string          `json:"type"` // meta|user|thinking|text|tool_use|tool_result|turn_start|turn_end
+	Type      string          `json:"type"` // meta|user|command|thinking|text|tool_use|tool_result|turn_start|turn_end
 	SessionID string          `json:"session_id,omitempty"`
 	CWD       string          `json:"cwd,omitempty"`
 	Model     string          `json:"model,omitempty"`
@@ -48,13 +48,13 @@ type Line struct {
 //     指令在 goroutine 内完成
 //   - 进程崩溃丢缓冲尾部几块（可接受，远好于回合结束才写）
 type TranscriptWriter struct {
-	ch      chan Line
-	dir     string // historys 目录
-	file    *os.File
-	segment int   // 当前文件序号（writer goroutine 内）
-	ordinal int64 // 行序号（writer goroutine 内）
-	turn    int   // 当前回合（OnAgentEvent 所在 goroutine，串行）
-	done    chan struct{}
+	ch        chan Line
+	dir       string // historys 目录
+	file      *os.File
+	segment   int   // 当前文件序号（writer goroutine 内）
+	ordinal   int64 // 行序号（writer goroutine 内）
+	turn      int   // 当前回合（OnAgentEvent 所在 goroutine，串行）
+	done      chan struct{}
 	closeOnce sync.Once // Close 幂等（REPL/RunTUI 双路径可能重复关闭）
 }
 

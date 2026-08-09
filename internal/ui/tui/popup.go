@@ -3,13 +3,15 @@ package tui
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/agent-project/harness/internal/agentstate"
 	"github.com/agent-project/harness/internal/session"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
-// popupKind 是弹窗选择器类型（/switch /model /effort /permission）。
 type popupKind int
 
 const (
@@ -19,14 +21,11 @@ const (
 	popupPermission
 )
 
-// popupItem 是选择器的一项（label 显示 / desc 右侧说明 / value 执行值）。
 type popupItem struct {
 	label string
-	desc  string
 	value string
 }
 
-// selectPopup 是斜杠命令弹窗选择器（↑/↓ 选 + Enter 确认 + Esc 取消）。
 type selectPopup struct {
 	kind   popupKind
 	title  string
@@ -34,116 +33,217 @@ type selectPopup struct {
 	cursor int
 }
 
-// runCommand 处理一条斜杠命令：无参弹窗选择器；带参/特殊命令直接执行。
+type commandItem struct {
+	name  string
+	short string
+}
+
+var commandCatalog = []commandItem{
+	{name: "switch", short: "Change session"},
+	{name: "model", short: "Change model"},
+	{name: "effort", short: "Set reasoning effort"},
+	{name: "permission", short: "Set approval policy"},
+	{name: "help", short: "Commands and keys"},
+	{name: "exit", short: "Leave Harness"},
+}
+
+func completionItems(value string) []commandItem {
+	prefix := strings.TrimPrefix(strings.TrimSpace(value), "/")
+	if strings.Contains(prefix, " ") {
+		return nil
+	}
+	items := make([]commandItem, 0, len(commandCatalog))
+	for _, item := range commandCatalog {
+		if strings.HasPrefix(item.name, prefix) {
+			items = append(items, item)
+		}
+	}
+	return items
+}
+
 func (m Model) runCommand(cmd command) (tea.Model, tea.Cmd) {
-	switch cmd.name {
-	case "exit":
+	if cmd.name == "exit" {
+		m.queue = nil
 		return m, tea.Quit
-	case "help":
-		m.msgs = append(m.msgs, &MessageItem{Role: "", Content: "命令: /switch（弹窗） /model /effort /permission /help /exit。Esc 中断回合；Ctrl+C 复制。", Rendered: "命令: /switch（弹窗） /model /effort /permission /help /exit。Esc 中断回合；Ctrl+C 复制。", Done: true})
-		m.refresh()
+	}
+	if cmd.name == "help" {
+		m.help = true
+		m.input.Blur()
+		m.refresh(false)
 		return m, nil
+	}
+	if m.c == nil {
+		return m.sysErr(fmt.Errorf("/%s requires a runtime controller", cmd.name)), nil
+	}
+
+	switch cmd.name {
 	case "switch":
 		if cmd.arg == "--last" {
 			if err := m.c.SwitchLast(); err != nil {
 				return m.sysErr(err), nil
 			}
 			m.reloadSession()
-			return m.sysOK("已切换到最新会话 " + m.c.active.ID), nil
+			return m.sysOK("Switched to " + shortSession(m.c.active.ID)), nil
 		}
 		if cmd.arg != "" {
 			if err := m.c.SwitchTo(cmd.arg); err != nil {
 				return m.sysErr(err), nil
 			}
 			m.reloadSession()
-			return m.sysOK("已切换到会话 " + m.c.active.ID), nil
+			return m.sysOK("Switched to " + shortSession(m.c.active.ID)), nil
 		}
-		return m.openPopup(popupSwitch, "切换会话", switchItems(m.c.Sessions())), nil
+		return m.openPopup(popupSwitch, "SESSIONS", switchItems(m.c.Sessions()), m.c.active.ID), nil
 	case "model":
-		return m.openPopup(popupModel, "切换模型", modelItems(m.c.Models())), nil
+		if cmd.arg != "" {
+			if err := m.c.SetModel(cmd.arg); err != nil {
+				return m.sysErr(err), nil
+			}
+			return m.sysOK("Model set to " + cmd.arg), nil
+		}
+		return m.openPopup(popupModel, "MODELS", modelItems(m.c.Models()), m.c.active.Model()), nil
 	case "effort":
-		return m.openPopup(popupEffort, "切换推理档位", effortItems(m.c.Efforts())), nil
+		if cmd.arg != "" {
+			if err := m.c.SetEffort(cmd.arg); err != nil {
+				return m.sysErr(err), nil
+			}
+			return m.sysOK("Effort set to " + cmd.arg), nil
+		}
+		current := m.c.active.State().ThinkingEffort
+		return m.openPopup(popupEffort, "REASONING EFFORT", effortItems(m.c.Efforts()), current), nil
 	case "permission":
-		return m.openPopup(popupPermission, "切换审批模式", permissionItems(m.c.PermissionModes())), nil
+		if cmd.arg != "" {
+			if err := m.c.SetPermission(cmd.arg); err != nil {
+				return m.sysErr(err), nil
+			}
+			return m.sysOK("Permission set to " + cmd.arg), nil
+		}
+		current := ""
+		if state := m.c.active.State().Permission; state != nil {
+			current = state.Mode
+		}
+		return m.openPopup(popupPermission, "PERMISSION", permissionItems(m.c.PermissionModes()), current), nil
 	default:
-		return m.sysErr(fmt.Errorf("未知命令 /%s（支持: /switch /model /effort /permission /help /exit）", cmd.name)), nil
+		return m.sysErr(fmt.Errorf("unknown command /%s", cmd.name)), nil
 	}
 }
 
-// openPopup 打开选择器弹窗（焦点自动抢占）。
-func (m Model) openPopup(kind popupKind, title string, items []popupItem) tea.Model {
+func (m Model) openPopup(kind popupKind, title string, items []popupItem, current string) tea.Model {
 	if len(items) == 0 {
-		return m.sysErr(fmt.Errorf("%s：无可用选项", title))
+		return m.sysErr(fmt.Errorf("%s has no available options", strings.ToLower(title)))
 	}
-	m.sel = &selectPopup{kind: kind, title: title, items: items}
-	m.refresh()
+	cursor := 0
+	for i, item := range items {
+		if item.value == current {
+			cursor = i
+			break
+		}
+	}
+	m.sel = &selectPopup{kind: kind, title: title, items: items, cursor: cursor}
+	m.input.Blur()
+	m.refresh(false)
 	return m
 }
 
-// confirmPopup 应用当前选择并关闭弹窗，返回成功消息或错误。
 func (m *Model) confirmPopup() (string, error) {
-	sel := m.sel
-	item := sel.items[sel.cursor]
-	switch sel.kind {
+	item := m.sel.items[m.sel.cursor]
+	switch m.sel.kind {
 	case popupSwitch:
 		if err := m.c.SwitchTo(item.value); err != nil {
 			return "", err
 		}
 		m.reloadSession()
-		return "已切换到会话 " + m.c.active.ID, nil
+		return "Switched to " + shortSession(m.c.active.ID), nil
 	case popupModel:
 		if err := m.c.SetModel(item.value); err != nil {
 			return "", err
 		}
-		return "已切换模型 " + item.value, nil
+		return "Model set to " + item.value, nil
 	case popupEffort:
 		if err := m.c.SetEffort(item.value); err != nil {
 			return "", err
 		}
-		return "已切换 effort " + item.value, nil
+		return "Effort set to " + item.value, nil
 	case popupPermission:
 		if err := m.c.SetPermission(item.value); err != nil {
 			return "", err
 		}
-		return "已切换审批模式 " + item.value, nil
+		return "Permission set to " + item.value, nil
+	default:
+		return "", fmt.Errorf("unsupported selector")
 	}
-	return "", nil
 }
 
-// sysOK 系统行（成功反馈）。
-func (m Model) sysOK(msg string) tea.Model {
-	m.msgs = append(m.msgs, &MessageItem{Role: "", Content: "[系统] " + msg, Rendered: "[系统] " + msg, Done: true})
-	m.refresh()
+func (m Model) sysOK(message string) tea.Model {
+	m.appendSystem(message, false)
+	m.toast = message
+	m.refresh(true)
 	return m
 }
 
-// sysErr 系统行（错误反馈）。
 func (m Model) sysErr(err error) tea.Model {
 	if err == nil {
 		return m
 	}
-	m.msgs = append(m.msgs, &MessageItem{Role: "", Content: "[错误] " + err.Error(), Rendered: "[错误] " + err.Error(), Done: true, Err: true})
-	m.refresh()
+	m.appendSystem(err.Error(), true)
+	m.toast = "Command failed"
+	m.refresh(true)
 	return m
 }
 
-// reloadSession 切换会话：消息区全量替换 + 工具/流式/队列/审批清空（ADR-030）。
 func (m *Model) reloadSession() {
+	m.items = nil
 	m.msgs = nil
 	m.tools = nil
 	m.stream = nil
 	m.queue = nil
 	m.appr = nil
-	loadHistory(m, m.c.active.Conversation())
-	m.refresh()
+	m.sel = nil
+	loadSessionHistory(m, m.c.active)
+	m.autoScroll = true
+	m.refresh(true)
 }
 
-// --- 弹窗数据源（实时从配置/会话获取，非硬编码）--------------------------------
+func renderPopup(sel *selectPopup, screenWidth, availableHeight int) string {
+	panelWidth := modalPanelWidth(screenWidth, 34, 64)
+	maxRows := maxInt(3, availableHeight-6)
+	start := 0
+	if len(sel.items) > maxRows {
+		start = sel.cursor - maxRows/2
+		if start < 0 {
+			start = 0
+		}
+		if start+maxRows > len(sel.items) {
+			start = len(sel.items) - maxRows
+		}
+	}
+	end := start + maxRows
+	if end > len(sel.items) {
+		end = len(sel.items)
+	}
+	listWidth := modalInnerWidth(panelWidth)
+	var rows []string
+	for i := start; i < end; i++ {
+		prefix := "  "
+		if i == sel.cursor {
+			prefix = "> "
+		}
+		row := ansi.Truncate(prefix+sel.items[i].label, maxInt(1, listWidth), "...")
+		if i == sel.cursor {
+			row = styleSelected.Width(listWidth).Render(row)
+		} else {
+			row = lipgloss.NewStyle().Width(listWidth).Render(row)
+		}
+		rows = append(rows, row)
+	}
+	content := styleAssistant.Render(sel.title) + "\n\n" + strings.Join(rows, "\n")
+	return modalStyle(panelWidth).Render(content)
+}
 
 func switchItems(sessions []session.SessionInfo) []popupItem {
 	items := make([]popupItem, 0, len(sessions))
-	for _, s := range sessions {
-		items = append(items, popupItem{label: s.ID, value: s.ID, desc: "会话"})
+	for i := len(sessions) - 1; i >= 0; i-- {
+		s := sessions[i]
+		items = append(items, popupItem{label: s.ID, value: s.ID})
 	}
 	return items
 }
@@ -151,15 +251,15 @@ func switchItems(sessions []session.SessionInfo) []popupItem {
 func modelItems(models []string) []popupItem {
 	items := make([]popupItem, 0, len(models))
 	for _, name := range models {
-		items = append(items, popupItem{label: name, value: name, desc: "模型"})
+		items = append(items, popupItem{label: name, value: name})
 	}
 	return items
 }
 
 func effortItems(efforts []string) []popupItem {
 	items := make([]popupItem, 0, len(efforts))
-	for _, e := range efforts {
-		items = append(items, popupItem{label: e, value: e, desc: "推理档位"})
+	for _, effort := range efforts {
+		items = append(items, popupItem{label: effort, value: effort})
 	}
 	return items
 }
@@ -167,29 +267,19 @@ func effortItems(efforts []string) []popupItem {
 func permissionItems(modes []string) []popupItem {
 	items := make([]popupItem, 0, len(modes))
 	for _, mode := range modes {
-		desc := map[string]string{
-			"readonly":   "只读放行，写操作/shell 询问",
-			"acceptedit": "只读+编辑放行，shell 询问",
-			"bypass":     "全部放行",
-		}[mode]
-		items = append(items, popupItem{label: mode, value: mode, desc: desc})
+		items = append(items, popupItem{label: mode, value: mode})
 	}
 	return items
 }
 
-// --- todo 常驻条数据（输入框上方，进行中-待办-完成排序）------------------------
-
-// sortTodos 排序：in_progress → pending → completed（ADR-030）。
 func sortTodos(todos []agentstate.TodoItem) []agentstate.TodoItem {
 	out := append([]agentstate.TodoItem(nil), todos...)
-	sort.SliceStable(out, func(i, j int) bool {
-		return todoOrder(out[i]) < todoOrder(out[j])
-	})
+	sort.SliceStable(out, func(i, j int) bool { return todoOrder(out[i]) < todoOrder(out[j]) })
 	return out
 }
 
-func todoOrder(t agentstate.TodoItem) int {
-	switch t.Status {
+func todoOrder(todo agentstate.TodoItem) int {
+	switch todo.Status {
 	case agentstate.TodoInProgress:
 		return 0
 	case agentstate.TodoPending:
