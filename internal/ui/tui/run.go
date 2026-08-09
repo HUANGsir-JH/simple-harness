@@ -6,21 +6,30 @@ import (
 
 	"github.com/agent-project/harness/internal/agent"
 	"github.com/agent-project/harness/internal/messages"
+	"github.com/agent-project/harness/internal/provider"
 	"github.com/agent-project/harness/internal/session"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
 // RunTUI 启动 TUI（bubbletea Program，alt-screen 全屏；ADR-030）。
-// a/sess/ctx 由 cmd 层装配（共享无状态 agent + 会话；SIGTERM ctx）。
-func RunTUI(a *agent.Agent, sess *session.Session, ctx context.Context) error {
-	c := NewController(a, sess, ctx)
+// a/proj/cfg/sess/ctx 由 cmd 层装配（共享无状态 agent + 项目桶 + 配置 + 会话）。
+func RunTUI(a *agent.Agent, proj *session.Project, cfg provider.Config, sess *session.Session, ctx context.Context) error {
+	c := NewController(a, proj, cfg, sess, ctx)
 	m := New(c)
 	loadHistory(&m, sess.Conversation())
+	// 历史斜杠命令渲染为系统行（resume 呈现；模型不可见，ADR-030）。
+	if cmds, err := sess.Commands(); err == nil {
+		for _, c := range cmds {
+			m.msgs = append(m.msgs, &MessageItem{Role: "", Content: "[命令] " + c, Rendered: "[命令] " + c, Done: true})
+		}
+	}
 	m.refresh()
 
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	c.setSend(p.Send)
-	if _, err := p.Run(); err != nil {
+	_, err := p.Run()
+	c.CloseAll()
+	if err != nil {
 		return fmt.Errorf("tui: %w", err)
 	}
 	return nil

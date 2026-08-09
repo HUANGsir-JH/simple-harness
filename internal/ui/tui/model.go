@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/agent-project/harness/internal/agent"
+	"github.com/agent-project/harness/internal/agentstate"
 	"github.com/agent-project/harness/internal/messages"
 	"github.com/agent-project/harness/internal/middleware"
 	"github.com/charmbracelet/bubbles/spinner"
@@ -36,6 +37,7 @@ type StatusBar struct {
 	SessionID  string
 	Permission string
 	TodoCount  int
+	Todos      []agentstate.TodoItem // 排序后（进行中-待办-完成），todo 常驻条用
 }
 
 // approvalPopup 是审批弹窗（输入区上方；y/s/n 直击键，Esc 拒绝 + 中断）。
@@ -58,6 +60,7 @@ type Model struct {
 	sp     spinner.Model
 	status StatusBar
 	appr   *approvalPopup // 非 nil = 审批弹窗（输入接管 y/s/n）
+	sel    *selectPopup   // 非 nil = 斜杠命令弹窗选择器（↑/↓ + Enter/Esc）
 
 	viewport viewport.Model // 消息区（滚动）
 	width    int
@@ -127,11 +130,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 }
 
-// handleKey 处理键盘事件（焦点模型：审批弹窗优先；弹窗/消息区 W4b 扩展）。
+// handleKey 处理键盘事件（焦点模型：审批弹窗 → 命令弹窗 → 普通）。
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// 审批弹窗：y/s/n 直击键 / Esc 拒绝 + 中断（输入被接管，不传 textarea）。
 	if m.appr != nil {
 		return m.handleApprovalKey(msg)
+	}
+	if m.sel != nil {
+		return m.handlePopupKey(msg)
 	}
 
 	switch msg.String() {
@@ -157,6 +162,31 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	return m, cmd
+}
+
+// handlePopupKey 处理弹窗选择器按键（↑/↓ 移动，Enter 确认，Esc 取消）。
+func (m Model) handlePopupKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "up", "k":
+		if m.sel.cursor > 0 {
+			m.sel.cursor--
+		}
+	case "down", "j":
+		if m.sel.cursor < len(m.sel.items)-1 {
+			m.sel.cursor++
+		}
+	case "enter":
+		msg, err := m.confirmPopup()
+		m.sel = nil
+		if err != nil {
+			return m.sysErr(err), nil
+		}
+		return m.sysOK(msg), nil
+	case "esc":
+		m.sel = nil
+	}
+	m.refresh()
+	return m, nil
 }
 
 // handleApprovalKey 处理审批弹窗按键（y 允许 / s 本会话记住 / n 拒绝 / Esc 拒绝+中断）。
@@ -187,28 +217,32 @@ func (m Model) handleApprovalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// submit 处理 Enter 提交：/exit 退出；/命令走命令处理（W4）；其余进队列或启动回合。
+// submit 处理 Enter 提交：/exit 立即退出；回合中进队列；空闲按内容分派
+// （/ 命令 → 命令处理 / 普通文本 → 启动回合，ADR-030 统一输入队列）。
 func (m Model) submit() (tea.Model, tea.Cmd) {
 	line := m.input.Value()
 	m.input.Reset()
 	if strings.TrimSpace(line) == "" {
 		return m, nil
 	}
-	switch line {
-	case "/exit":
+	if line == "/exit" {
 		return m, tea.Quit
-	case "/help":
-		m.msgs = append(m.msgs, &MessageItem{Role: messages.RoleUser, Content: line, Rendered: line, Done: true})
-		m.msgs = append(m.msgs, &MessageItem{Role: "", Content: "命令: /switch /model /effort /permission /help /exit（W4 弹窗选择器）", Rendered: "命令: /switch /model /effort /permission /help /exit", Done: true})
-		m.refresh()
-		return m, nil
 	}
-
-	// 回合中 → 进队列（队列条 UI W4）；空闲 → 启动回合。
 	if m.running {
 		m.queue = append(m.queue, line)
 		m.refresh()
 		return m, nil
+	}
+	return m.handleInput(line)
+}
+
+// handleInput 空闲输入分派：/ 命令 → 命令处理（弹窗，落盘）；普通 → 启动回合。
+func (m Model) handleInput(line string) (tea.Model, tea.Cmd) {
+	if cmd, ok := parseCommandLine(line); ok {
+		if m.c != nil {
+			m.c.active.AddCommand(line) // 命令落盘（ADR-030：resume 呈现、不发模型）
+		}
+		return m.runCommand(cmd)
 	}
 	return m.startRun(line)
 }
@@ -257,10 +291,14 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		m.flushStream()
 		m.running = false
 		m.refresh()
-		// 队列逐条连跑（ADR-030）：回合完成自动发下一条。
+		// 队列逐条连跑（ADR-030）：回合完成自动发下一条（/ 命令走命令处理 + 落盘）。
 		if len(m.queue) > 0 && m.c != nil {
 			next := m.queue[0]
 			m.queue = m.queue[1:]
+			if cmd, ok := parseCommandLine(next); ok {
+				m.c.active.AddCommand(next)
+				return m.runCommand(cmd)
+			}
 			return m, m.c.Run(next)
 		}
 		return m, nil
@@ -347,4 +385,5 @@ func (m *Model) refreshStatus() {
 		m.status.Permission = st.Permission.Mode
 	}
 	m.status.TodoCount = len(st.Todos)
+	m.status.Todos = sortTodos(st.Todos)
 }

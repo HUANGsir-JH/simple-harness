@@ -173,6 +173,17 @@ func (s *Session) AddUser(content string) {
 	s.WriteUser(msg)
 }
 
+// AddCommand 记录一条斜杠命令（transcript command 行；不进 conversation，
+// 模型不可见——对齐 thinking 存但不重放，ADR-030）。TUI resume 渲染系统行。
+func (s *Session) AddCommand(content string) {
+	s.writer.Write(Line{Type: "command", Content: content})
+}
+
+// Commands 返回本会话历史中的斜杠命令（resume 时 TUI 渲染系统行）。
+func (s *Session) Commands() ([]string, error) {
+	return loadCommands(s.historyDir)
+}
+
 // Writer 返回 transcript writer（CLI 转发 agent 事件用）。
 func (s *Session) Writer() *TranscriptWriter { return s.writer }
 

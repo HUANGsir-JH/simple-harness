@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/agent-project/harness/internal/agentstate"
 	"github.com/agent-project/harness/internal/messages"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -21,7 +22,8 @@ var (
 	styleHdr   = lipgloss.NewStyle().Foreground(lipgloss.Color("178")).Bold(true) // 工具块头黄
 )
 
-// View 渲染整个屏幕（纯函数）：消息区 + 状态栏 + 审批条 + 输入区。
+// View 渲染整个屏幕（纯函数）：消息区 + 状态栏 + todo/队列条 + 弹窗 + 输入区。
+// 底部区域（下→上）：输入框 → 队列条 → todo 条（ADR-030）。
 func (m Model) View() string {
 	var sb strings.Builder
 	if v := m.viewport.View(); v != "" {
@@ -30,8 +32,20 @@ func (m Model) View() string {
 	}
 	sb.WriteString(m.statusLine())
 	sb.WriteString("\n")
+	if tb := renderTodoBar(&m); tb != "" {
+		sb.WriteString(tb)
+		sb.WriteString("\n")
+	}
+	if qb := renderQueueBar(&m); qb != "" {
+		sb.WriteString(qb)
+		sb.WriteString("\n")
+	}
 	if m.appr != nil {
 		sb.WriteString(renderApproval(m.appr))
+		sb.WriteString("\n")
+	}
+	if m.sel != nil {
+		sb.WriteString(renderPopup(m.sel))
 		sb.WriteString("\n")
 	}
 	sb.WriteString(m.input.View())
@@ -46,6 +60,81 @@ func renderApproval(appr *approvalPopup) string {
 		line += " " + req.Summary
 	}
 	return line + "\n" + styleDim.Render("  模式 "+req.Mode+" | 允许(y) / 本会话记住(s) / 拒绝(n) / Esc 拒绝并中断")
+}
+
+// renderTodoBar 渲染 todo 常驻条（输入框上方；进行中-待办-完成排序，≤5 项 + 统计小字）。
+func renderTodoBar(m *Model) string {
+	todos := m.status.Todos
+	if len(todos) == 0 {
+		return ""
+	}
+	shown := todos
+	extra := ""
+	if len(todos) > 5 {
+		shown = todos[:5]
+		extra = fmt.Sprintf(" …(+%d)", len(todos)-5)
+	}
+	var parts []string
+	for _, t := range shown {
+		parts = append(parts, todoMark(t)+" "+t.Description)
+	}
+	var done, doing, pending int
+	for _, t := range todos {
+		switch t.Status {
+		case agentstate.TodoCompleted:
+			done++
+		case agentstate.TodoInProgress:
+			doing++
+		default:
+			pending++
+		}
+	}
+	return styleSys.Render("todo  "+strings.Join(parts, "  ")+extra) + "\n" +
+		styleDim.Render(fmt.Sprintf("     %d 完成 · %d 进行中 · %d 待办", done, doing, pending))
+}
+
+// todoMark 纯文本状态标记（无 emoji，ADR-030 风格约束）。
+func todoMark(t agentstate.TodoItem) string {
+	switch t.Status {
+	case agentstate.TodoCompleted:
+		return "[x]"
+	case agentstate.TodoInProgress:
+		return "[>]"
+	default:
+		return "[ ]"
+	}
+}
+
+// renderQueueBar 渲染队列条（输入框上方、todo 之下；待发送内容可见）。
+func renderQueueBar(m *Model) string {
+	if len(m.queue) == 0 {
+		return ""
+	}
+	var parts []string
+	for _, q := range m.queue {
+		parts = append(parts, q)
+	}
+	return styleDim.Render("待发送: " + strings.Join(parts, " | "))
+}
+
+// renderPopup 渲染命令弹窗选择器（↑/↓ 选，Enter 确认，Esc 取消）。
+func renderPopup(sel *selectPopup) string {
+	var sb strings.Builder
+	sb.WriteString(styleHdr.Render("["+sel.title+"]  ↑/↓ 选择 · Enter 确认 · Esc 取消") + "\n")
+	for i, it := range sel.items {
+		prefix := "  "
+		label := it.label
+		if it.desc != "" {
+			label += "  " + styleDim.Render("(" + it.desc + ")")
+		}
+		if i == sel.cursor {
+			prefix = "> "
+			sb.WriteString(styleHdr.Render(prefix+label) + "\n")
+		} else {
+			sb.WriteString(prefix + label + "\n")
+		}
+	}
+	return sb.String()
 }
 
 // statusLine 渲染底部状态栏（模型 | 权限 | todo | spinner）。

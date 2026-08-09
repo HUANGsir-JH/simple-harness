@@ -6,17 +6,21 @@ import (
 
 	"github.com/agent-project/harness/internal/agent"
 	"github.com/agent-project/harness/internal/middleware"
+	"github.com/agent-project/harness/internal/provider"
 	"github.com/agent-project/harness/internal/session"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
 // Controller 是 TUI 与 agent 运行时的桥（ADR-030 事件桥）。
-// 持 agent + 当前会话 + program.Send；回合启动/中断/事件转发均经它。
+// 持 agent + 项目桶 + 配置 + 会话注册表；回合启动/中断/事件转发/命令执行均经它。
 // agent 完全无状态（ADR-026）：会话状态经 rc 传入，切换会话 = 换 active。
 type Controller struct {
 	a      *agent.Agent
+	proj   *session.Project
+	cfg    provider.Config
 	active *session.Session
-	ctx    context.Context // 顶层 ctx（回合从它派生；SIGTERM/SIGINT cancel）
+	open   map[string]*session.Session
+	ctx    context.Context // 顶层 ctx（回合从它派生；SIGTERM cancel）
 	send   func(tea.Msg)   // program.Send（RunTUI 注入；并发安全）
 
 	mu     sync.Mutex
@@ -24,8 +28,15 @@ type Controller struct {
 }
 
 // NewController 构造桥。
-func NewController(a *agent.Agent, sess *session.Session, ctx context.Context) *Controller {
-	return &Controller{a: a, active: sess, ctx: ctx}
+func NewController(a *agent.Agent, proj *session.Project, cfg provider.Config, sess *session.Session, ctx context.Context) *Controller {
+	return &Controller{
+		a:      a,
+		proj:   proj,
+		cfg:    cfg,
+		active: sess,
+		open:   map[string]*session.Session{sess.ID: sess},
+		ctx:    ctx,
+	}
 }
 
 // setSend 注入 program.Send（bubbletea Program 创建后调用）。
