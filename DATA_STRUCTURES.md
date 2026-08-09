@@ -246,32 +246,100 @@ main select:
 
 runCmd（单轮）与 REPL 共用同一 `readStdinEvents + select` 骨架（TTY 时；非 TTY 无 inputCh，跑完即退）——不再用独立 Esc goroutine（其单字节监听会与审批读行竞争 stdin，ADR-029 改为统一事件循环）。
 
-### 3.9 工具审批的回合级机制：onActing before + channel 协调（ADR-029）
+### 3.9 工具审批：状态 / 策略 / 交互 三层设计（ADR-029）
 
-**审批挂载**：`ApprovalMiddleware` 挂 onActing（包裹单个工具执行），before 阶段调用纯函数 `Policy.Decide(call, mode, approved)` → 三档模式（readonly/acceptedit/bypass）+ shell 黑白名单 + 会话级记忆判定。**模式来源**（ADR-029 补充）：config `approval.mode` 是默认权限（可不配置 = acceptedit），**会话创建时播种**进 `AgentState.Permission.Mode`（`Project.Create(model, cwd, mode)`，`CreateInCWD` 透传 `App.defaultApprovalMode()`）；运行时 `/permission <mode>` 会话级切换（`Session.SetPermissionMode`，立即落盘）——审批模式完全由会话 state 决定，`ApprovalMiddleware.mode()` 从 rc.State.Permission.Mode 读取（有值即用，否则回退 DefaultMode）：
+权限系统拆成**三个正交维度**：状态层（权限状态存哪、怎么流动）、策略层（一次工具调用怎么判）、交互层（Ask 之后谁问用户、怎么问）。
 
-```
-onActing (ApprovalMiddleware before)
- ├─ Decide = Allow        → next（执行工具）
- ├─ Decide = Ask          → rc.Approver.Request(ApprovalRequest{工具名/摘要/模式})
- │    ├─ y (Allow)        → next
- │    ├─ s (AllowSession) → 记入 rc.State.Permission.Approved（随 AgentState 落盘）→ next
- │    └─ n (Deny) / 无 approver（非 TTY）→ 返回 middleware.DeniedError
- └─ Decide = Deny         → DeniedError
-DeniedError → agent.runToolBatch 调用层捕获 → 作为失败 tool_result 回填 → 循环继续（拒绝≠Fatal，不取消整批）
+**① 状态层：`AgentState.Permission`（会话级）**
+
+```go
+type PermissionState struct {
+    Mode     string   // readonly | acceptedit | bypass（三档）
+    Approved []string // 会话级记忆：工具名 / 规范化命令前缀
+}
 ```
 
-**channel 协调（CLI 层）**：REPL 单一读方原则下审批不能直接读 stdin。`channelApprover.Request` 把请求发到 reqCh → 主循环 `select` 消费 + 打印审批 UI + **下一行输入路由为答复**（y/s/n / Esc）：
+```
+会话创建（Project.Create(model, cwd, mode)）
+  └─ config approval.mode（空=acceptedit）→ 播种进 Permission.Mode   ← 唯一来自 config 的地方
+运行时（REPL /permission <mode>）
+  └─ Session.SetPermissionMode → 改 Permission.Mode → 立即落盘（对齐 /model /effort）
+批准记忆（审批时按 s）
+  └─ rememberApproved → Permission.Approved → SessionMiddleware after 落盘
+恢复（Resume）
+  └─ LoadFile → 两者原样恢复（会话级状态完全由会话决定，不依赖 config）
+```
+
+**关键点**：config 只在"创建那一刻"起作用（播种默认值），之后权限完全会话级——切到哪档、批准过什么，都跟着会话走。`ApprovalMiddleware.mode()` 优先 `rc.State.Permission.Mode`，无值才回退 `DefaultMode`（当前实际总有值，因创建即播种）。
+
+**② 策略层：`Decide(call, mode, approved)` 纯函数**
 
 ```
-agent goroutine: channelApprover.Request → reqCh <- {req, resp}
-main select:
- ├─ case req := <-reqCh  → pending = &req; 打印 "[审批] 工具名 摘要\n 允许(y)/本会话记住(s)/拒绝(n) > "
- └─ case ev := <-inputCh → pending != nil 时: 输入行 → parseApprovalDecision → resp <- 决策
-                           （ev.esc → resp <- Deny + cancel 本轮 runCtx）
+判定顺序：
+ 1. bypass          → Allow        （完全信任，全部放行）
+ 2. approved 命中    → Allow        （用户本会话明确批准过）
+ 3. 只读工具 + todo  → Allow        （read_file/list_dir/glob + update_todo）
+ 4. 编辑工具         → acceptedit/bypass → Allow；readonly → Ask
+ 5. shell_command    → 黑名单 Ask（rm -rf / sudo / curl|sh …）
+                       白名单 Allow（ls / cat / git status …）
+                       其它 Ask
+ 6. 未知工具         → Ask（保守）
 ```
 
-**非 TTY**（term.IsTerminal false / MakeRaw 失败）：不设 rc.Approver → `ApprovalMiddleware` 内 approver 为 nil → **自动拒绝**（回填模型换思路）。**审批记忆仅会话级**：`AgentState.Permission.Approved []string`（shell 用规范化命令前缀 `git status`，其它工具用工具名），SessionMiddleware after 落盘，resume 恢复。契约类型（Approver/ApprovalRequest/Decision/DeniedError）定义在 middleware 包（avoid 循环依赖）。
+`NormalizeCommand`（命令规范化）：trim + 折叠空白 + 取前 2 token，`git status --porcelain` → `git status`。**记忆、黑白名单共用同一 key**（`ApprovalKey`）：批准 `git status` 后带参命令也放行。
+
+**③ 交互层：Ask 之后经 channel 协调（CLI 层）**
+
+REPL 单一读方原则（ADR-028）下审批不能直接读 stdin。`channelApprover.Request` 把请求发到 reqCh → 主循环 `select` 消费 + 打印审批 UI + **下一行输入路由为答复**（y/s/n / Esc）：
+
+```
+agent goroutine: ApprovalMiddleware.OnActing
+ ├─ Decide = Allow → next（执行工具）
+ └─ Decide = Ask   → rc.Approver.Request（nil = 非 TTY → 自动拒绝）
+      channelApprover.Request → reqCh <- {req, resp}
+      main select:
+       ├─ case req := <-reqCh  → pending = &req; 打印 "[审批] 工具名 摘要\n 模式 <mode>｜允许(y)/本会话记住(s)/拒绝(n) > "
+       └─ case ev := <-inputCh → pending != nil 时: 输入行 → parseApprovalDecision → resp <- 决策
+                                 （ev.esc → resp <- Deny + cancel 本轮 runCtx）
+      y → Allow（执行）｜s → AllowSession（记入 Approved + 执行）｜n → Deny（回填）
+```
+
+REPL 与 runCmd 共用这套 `readStdinEvents + select` 骨架。契约类型（`Approver / ApprovalRequest / Decision / DeniedError`）定义在 middleware 包（avoid 循环依赖）。
+
+**④ 结果处置：三个出口**
+
+```
+Allow         → next（工具执行）→ 正常回填
+Ask + 拒绝    ──▶ middleware.DeniedError{Reason}
+Ask + 非TTY   ──▶ DeniedError{Reason: "…无法询问用户，已自动拒绝"}
+                 └─ agent.runToolBatch errors.As 捕获
+                    → ToolResult{Success:false, Content: Reason}
+                    → conversation（模型可见）+ transcript（审计）
+                    → 不取消整批、循环继续（拒绝 ≠ Fatal，ADR-006）
+```
+
+**关键设计**：审批拒绝用**独立 `DeniedError`，不是 ToolError**——"策略拒绝"与"工具执行失败"语义分离：`DeniedError` 天然回填、绝不触发 Fatal；工具自身 `RespondToModel`/`Fatal` 二分类不受影响。`Reason` 即回填给模型的 tool_result 内容（当前固定文案，模型靠它理解被拒原因）。
+
+**⑤ 完整时序（一次真实审批）**
+
+```
+用户输入 → agent.Run → 模型调 write_file（readonly 模式）
+  → ApprovalMiddleware.OnActing → Decide → Ask
+  → channelApprover.Request → reqCh
+  → 主循环打印 UI → 用户按 y → resp=Allow
+  → next → 工具执行 → 结果回填 → 模型看到成功 → 继续
+```
+
+**⑥ 已实现 vs 留增强**
+
+| 已实现 | 留增强（ADR-029 记录） |
+|---|---|
+| 三档模式 + config 播种 + `/permission` 切换 | 级联拒绝（拒绝时同批 pending 一并拒，opencode） |
+| shell 黑白名单 + 命令规范化（前 2 token） | bash 语法解析（tree-sitter / arity 前缀表） |
+| 会话级记忆（Approved，resume 恢复） | 全局 allowlist（跨会话持久"以后允许"） |
+| 拒绝回填 + 拒绝≠Fatal（DeniedError） | 拒绝反馈（用户填理由给模型改写，CorrectedError） |
+| 非 TTY 自动拒绝 + `--json` approval_request | guardian 自动审批（AI 审批者） |
+| e2e 真实 TTY 审批交互 | 复杂规则集 / 网络域名级审批 |
 
 ## 四、核心数据结构
 
@@ -648,6 +716,7 @@ classDiagram
 | `ApprovalMiddleware` ↔ rc.Approver | onActing before 审批（三档模式 + shell 黑白名单）；Ask 经 channelApprover 与主循环协调（单一读方），y/s/n 答复；非 TTY 自动拒绝（ADR-029） |
 | 审批拒绝 ↔ `DeniedError` | 独立错误类型（非 ToolError）：调用层捕获回填失败结果、不取消整批、循环继续（拒绝≠Fatal） |
 | 审批模式 ↔ `AgentState.Permission.Mode` | 会话创建时 config 默认播种 + `/permission` 切换；`ApprovalMiddleware.mode()` 从 rc.State 读（ADR-029） |
+| 权限设计总览 | 状态/策略/交互三层正交：`AgentState.Permission`（状态）→ `Decide` 纯函数（策略）→ `Approver`/channel（交互），完整设计见 §3.9（ADR-029） |
 | 审批记忆 ↔ `AgentState.Permission.Approved` | 仅会话级：`s` 批准后 key（工具名/规范化命令前缀）落盘，resume 恢复放行 |
 | `App` ↔ `Config/Resolved` | 配置统一入口：惰性单例缓存默认模型，`--config` 显式路径单独加载 |
 | `Conversation` ↔ `Message` ↔ `ToolResult` | 一条 tool_result 消息可合并多块（满足 anthropic 紧邻要求，ADR-024） |
