@@ -192,6 +192,7 @@
   4. **AgentState 注入机制**：独立 `internal/agentstate` 包（middleware 与 session 都只依赖它，避免循环引用）；`RuntimeContext.State *agentstate.AgentState` 字段；`session.StateMiddleware` 挂 onAgent（before 加载 / after 保存，对应 AgentScope call() load/save）；**工具 Handle 签名加 `rc *middleware.RuntimeContext`**（todo 等经 rc.State 读写）。
 - **理由**：项目分桶贴合"我在哪个项目用 harness"（resume 从 cwd 定位，FindProject 逐级向上）；块级事件流使中断零丢失、resume 渲染逐块回放；AgentState 独立包解循环依赖；todo 挂 state 是 AgentScope tasksContext 对位，为 todo 工具铺路。
 - **影响 ADR**：ADR-023 的 `sessions/` 扁平布局以本文为准；ADR-021 第 3 点"JSONL + AgentState 快照"细化为块级 transcript + 注入机制。
+- **修订（2026-08-09）**：`FindProject` 由"逐级向上匹配已存在桶"改为**精确匹配启动目录（pwd 结果）**。原因：项目根桶先存在时，子目录任务（如 `just-for-test/case03`）被归并进根桶，与"每个启动目录独立记录"的预期不符（实测 case03 会话落进 `D__agent-project_harness` 桶）。桶 = `<workspaces>/<EscapePath(cwd)>/<session-id>`，与 state.CWD 一致；`store_test.go` TestFindProject 相应更新。
 
 ## ADR-026：无状态 agent 架构 + 运行时切换（会话/模型/推理强度）（2026-08-08）
 

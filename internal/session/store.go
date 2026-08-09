@@ -122,8 +122,9 @@ func (s *Store) ProjectDir(projectPath string) string {
 	return filepath.Join(s.root, DirWorkspaces, EscapePath(projectPath))
 }
 
-// FindProject 从 cwd 逐级向上匹配已存在的项目桶：命中即返回该级（项目根），
-// 使 cwd 在项目子目录时也能定位到桶；无命中则用 cwd 自身（Session 创建时惰性建桶）。
+// FindProject 返回 cwd（启动时的 pwd）对应的项目桶。精确匹配：桶 = cwd 路径
+// 的转义（Session 创建时惰性建桶），不做向上探测——避免子目录任务被归并进
+// 已存在的上级桶（用户实测 case03 任务被吸入项目根桶，2026-08-09 改为精确）。
 func (s *Store) FindProject(cwd string) (*Project, error) {
 	if cwd == "" {
 		var err error
@@ -134,16 +135,6 @@ func (s *Store) FindProject(cwd string) (*Project, error) {
 	abs, err := filepath.Abs(cwd)
 	if err != nil {
 		return nil, fmt.Errorf("session: abs %s: %w", cwd, err)
-	}
-	for dir := abs; ; dir = filepath.Dir(dir) {
-		dirPath := s.ProjectDir(dir)
-		if fi, err := os.Stat(dirPath); err == nil && fi.IsDir() {
-			return &Project{Path: dir, Dir: dirPath}, nil
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir { // 到盘符根，不再上探
-			break
-		}
 	}
 	return &Project{Path: abs, Dir: s.ProjectDir(abs)}, nil
 }

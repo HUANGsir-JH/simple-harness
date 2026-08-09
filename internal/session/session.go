@@ -31,8 +31,8 @@ type Session struct {
 
 // Create 新建一个会话：建目录、写 meta 首行、初始化 agentstate.json。
 // cwd 是会话启动的进程工作目录（state.CWD 存它，resume 后模型可知会话
-// 从哪启动，ADR-028）；bucket 归属仍由 Project.Path（FindProject 项目根）
-// 决定——两者解耦：state.CWD = 启动目录，bucket = 项目根。
+// 从哪启动，ADR-028）；bucket 归属 = FindProject 对启动目录的精确匹配
+// （2026-08-09 起不做向上归并），故 state.CWD 与 bucket 都指向启动目录。
 // mode 是默认审批模式（config approval.mode 播种值；空 = 不固化，审批回退
 // 默认）。创建时固化进 AgentState.Permission.Mode，之后 /permission 切换改
 // 会话 state（resume 恢复）——审批模式完全由会话决定（ADR-029）。

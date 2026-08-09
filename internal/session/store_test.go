@@ -40,29 +40,28 @@ func TestFindProject(t *testing.T) {
 	root := t.TempDir()
 	s := NewAt(root)
 
-	// 预先建桶（模拟已存在项目）。
-	projPath := filepath.Join(root, "proj")
-	bucket := s.ProjectDir(projPath)
-	if err := os.MkdirAll(bucket, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	// cwd 在项目子目录 → 逐级向上命中项目根。
-	p, err := s.FindProject(filepath.Join(projPath, "sub", "dir"))
+	// 精确匹配：cwd 直接对应其桶（pwd 结果），不做向上探测。
+	cwd := filepath.Join(root, "proj", "sub", "dir")
+	p, err := s.FindProject(cwd)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.Path != projPath || p.Dir != bucket {
-		t.Errorf("命中错误: Path=%q Dir=%q, want Path=%q Dir=%q", p.Path, p.Dir, projPath, bucket)
+	wantDir := s.ProjectDir(cwd)
+	if p.Path != cwd || p.Dir != wantDir {
+		t.Errorf("精确桶错误: Path=%q Dir=%q, want Path=%q Dir=%q", p.Path, p.Dir, cwd, wantDir)
 	}
 
-	// 无已存在桶 → 用 cwd 自身（惰性）。
-	other := filepath.Join(root, "other")
-	p2, err := s.FindProject(other)
+	// 即使上级桶已存在（模拟旧行为会命中的情况），仍用 cwd 自身（不归并）。
+	parentBucket := s.ProjectDir(filepath.Join(root, "proj"))
+	if err := os.MkdirAll(parentBucket, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p2, err := s.FindProject(cwd)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p2.Path != other {
-		t.Errorf("无命中应使用 cwd: %+v", p2)
+	if p2.Path != cwd || p2.Dir != wantDir {
+		t.Errorf("不应向上归并到上级桶: Path=%q Dir=%q, want Path=%q Dir=%q", p2.Path, p2.Dir, cwd, wantDir)
 	}
 }
 

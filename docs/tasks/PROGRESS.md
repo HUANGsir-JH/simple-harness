@@ -4,6 +4,13 @@
 
 ## 2026-08-09
 
+### workspace 桶精确建桶修复 ✅（FindProject 去向上归并）
+
+- **现象**：用户报 case03 任务未在全局目录建 workspace 记录。排查发现**记录存在**但落进 `D__agent-project_harness`（项目根桶）：会话 `20260809T125025-74dce164`（agentstate.cwd = `D:\agent-project\harness\just-for-test\case03`，任务正常执行）。
+- **根因**：`FindProject` 从 cwd 逐级向上匹配**已存在的桶**（ADR-025 设计）；项目根桶 8月8 已建立，case03 上探命中它 → 被归并。case02（8月8 上午）时根桶未建，故有独立桶。
+- **修复**：`FindProject` 改为**精确匹配启动目录（pwd 结果）**，不做向上探测——桶 = `<workspaces>/<EscapePath(cwd)>/<session-id>`，与 state.CWD 一致。ADR-025 追加修订记录；`store_test.go` TestFindProject 更新（新增"上级桶已存在仍不归并"断言）。
+- **既有数据**：项目根桶的 3 个历史会话保留不动；进行中的 case03 会话仍在项目根桶，待进程退出后可把 `20260809T125025-74dce164` 移入 case03 桶（或保留）。
+
 ### cmd/harness 瘦身：ui 交互层下沉 + session_mgr 拆分 ✅
 
 - **背景**：用户指 cmd/harness 主入口包过重（9 生产文件 ~1080 行，repl.go 323 行），关切代码结构与长期可维护性。
