@@ -16,8 +16,8 @@ func main() {
 	}
 }
 
-// run 分发子命令。配置加载不在本层：需要配置的命令经 defaultApp/loadApp
-// 惰性初始化一次（ADR-026，见 runtime.go）。
+// run 分发子命令。配置加载不在本层：需要配置的命令经 app.Load/LoadFrom
+// 惰性初始化一次（进程级单例，见 internal/app）。
 func run(args []string) error {
 	// 在子命令分发前预先扫描全局 --json 参数，使
 	// `harness --json run` 与 `harness run --json` 都可用。

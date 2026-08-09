@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/agent-project/harness/internal/config"
 	"github.com/agent-project/harness/internal/messages"
 )
 
@@ -36,7 +37,7 @@ func TestAnthropicStreamTextDelta(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := newAnthropicClient(&Resolved{Model: "claude-sonnet-5", BaseURL: srv.URL, APIKey: "test-key"})
+	c := newAnthropicClient(&config.ProviderConfig{Model: "claude-sonnet-5", BaseURL: srv.URL, APIKey: "test-key"})
 	es, err := c.Stream(context.Background(), Request{Model: "claude-sonnet-5", Messages: []*messages.Message{NewTestUserMsg("hi")}})
 	if err != nil {
 		t.Fatalf("stream: %v", err)
@@ -88,7 +89,7 @@ func TestAnthropicStreamToolUse(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := newAnthropicClient(&Resolved{Model: "claude-sonnet-5", BaseURL: srv.URL, APIKey: "test-key"})
+	c := newAnthropicClient(&config.ProviderConfig{Model: "claude-sonnet-5", BaseURL: srv.URL, APIKey: "test-key"})
 	es, err := c.Stream(context.Background(), Request{Model: "claude-sonnet-5", Messages: []*messages.Message{NewTestUserMsg("read it")}})
 	if err != nil {
 		t.Fatalf("stream: %v", err)
@@ -133,7 +134,7 @@ func TestAnthropicStreamToolCallStreamingArgs(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := newAnthropicClient(&Resolved{Model: "claude-sonnet-5", BaseURL: srv.URL, APIKey: "test-key"})
+	c := newAnthropicClient(&config.ProviderConfig{Model: "claude-sonnet-5", BaseURL: srv.URL, APIKey: "test-key"})
 	es, err := c.Stream(context.Background(), Request{Model: "claude-sonnet-5", Messages: []*messages.Message{NewTestUserMsg("create")}})
 	if err != nil {
 		t.Fatalf("stream: %v", err)
@@ -181,7 +182,7 @@ func TestAnthropicStreamThinking(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := newAnthropicClient(&Resolved{Model: "claude-sonnet-5", BaseURL: srv.URL, APIKey: "test-key", ThinkingEnabled: true, ThinkingEffort: EffortMax})
+	c := newAnthropicClient(&config.ProviderConfig{Model: "claude-sonnet-5", BaseURL: srv.URL, APIKey: "test-key", ThinkingEnabled: true, ThinkingEffort: config.EffortMax})
 	es, err := c.Stream(context.Background(), Request{Model: "claude-sonnet-5", Messages: []*messages.Message{NewTestUserMsg("hi")}})
 	if err != nil {
 		t.Fatalf("stream: %v", err)
@@ -201,8 +202,8 @@ func TestAnthropicStreamThinking(t *testing.T) {
 	if !ok {
 		t.Fatalf("missing output_config param in body: %v", body)
 	}
-	if oc["effort"] != EffortMax {
-		t.Errorf("output_config.effort: got %v want %q", oc["effort"], EffortMax)
+	if oc["effort"] != config.EffortMax {
+		t.Errorf("output_config.effort: got %v want %q", oc["effort"], config.EffortMax)
 	}
 }
 
@@ -225,7 +226,7 @@ func TestAnthropicStreamThinkingDisabled(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := newAnthropicClient(&Resolved{Model: "claude-sonnet-5", BaseURL: srv.URL, APIKey: "test-key", ThinkingEnabled: false})
+	c := newAnthropicClient(&config.ProviderConfig{Model: "claude-sonnet-5", BaseURL: srv.URL, APIKey: "test-key", ThinkingEnabled: false})
 	es, err := c.Stream(context.Background(), Request{Model: "claude-sonnet-5", Messages: []*messages.Message{NewTestUserMsg("hi")}})
 	if err != nil {
 		t.Fatalf("stream: %v", err)
@@ -260,7 +261,7 @@ func TestAnthropicStreamThinkingDelta(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := newAnthropicClient(&Resolved{Model: "claude-sonnet-5", BaseURL: srv.URL, APIKey: "test-key"})
+	c := newAnthropicClient(&config.ProviderConfig{Model: "claude-sonnet-5", BaseURL: srv.URL, APIKey: "test-key"})
 	es, err := c.Stream(context.Background(), Request{Model: "claude-sonnet-5", Messages: []*messages.Message{NewTestUserMsg("hi")}})
 	if err != nil {
 		t.Fatalf("stream: %v", err)
@@ -305,13 +306,13 @@ func TestAnthropicRequestOverrides(t *testing.T) {
 	defer srv.Close()
 
 	// client 默认 thinking 关闭；Request 覆盖为开启 + effort max + 换模型。
-	c := newAnthropicClient(&Resolved{Model: "default-model", BaseURL: srv.URL, APIKey: "test-key", ThinkingEnabled: false})
+	c := newAnthropicClient(&config.ProviderConfig{Model: "default-model", BaseURL: srv.URL, APIKey: "test-key", ThinkingEnabled: false})
 	enabled := true
 	req := Request{
 		Messages:        []*messages.Message{NewTestUserMsg("hi")},
 		Model:           "override-model",
 		ThinkingEnabled: &enabled,
-		ThinkingEffort:  EffortMax,
+		ThinkingEffort:  config.EffortMax,
 	}
 	es, err := c.Stream(context.Background(), req)
 	if err != nil {
@@ -329,8 +330,8 @@ func TestAnthropicRequestOverrides(t *testing.T) {
 	if !ok {
 		t.Fatalf("missing output_config: %v", body)
 	}
-	if oc["effort"] != EffortMax {
-		t.Errorf("effort: got %v want %q", oc["effort"], EffortMax)
+	if oc["effort"] != config.EffortMax {
+		t.Errorf("effort: got %v want %q", oc["effort"], config.EffortMax)
 	}
 	if _, ok := body["thinking"]; ok {
 		t.Error("thinking 参数不应出现（开启时只传 output_config）")

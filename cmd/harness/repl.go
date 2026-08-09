@@ -7,6 +7,8 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/agent-project/harness/internal/agent"
+	"github.com/agent-project/harness/internal/app"
 	"github.com/agent-project/harness/internal/session"
 	"github.com/agent-project/harness/internal/ui/tui"
 	"golang.org/x/term"
@@ -23,11 +25,11 @@ func repl(jsonOut bool, thinkingDisplay ...bool) error {
 		return fmt.Errorf("交互模式需要终端（TUI 全屏），请用 `harness run <prompt>`（非交互单轮）")
 	}
 
-	app, err := defaultApp()
+	rt, err := app.Load()
 	if err != nil {
 		return err
 	}
-	a, err := app.buildAgent()
+	a, err := agent.Build(rt.Provider, rt.DefaultApprovalMode())
 	if err != nil {
 		return err
 	}
@@ -35,7 +37,7 @@ func repl(jsonOut bool, thinkingDisplay ...bool) error {
 	if err != nil {
 		return err
 	}
-	sess, err := session.CreateInCWD(app.Resolved.Model, app.defaultApprovalMode())
+	sess, err := session.CreateInCWD(rt.Provider.Model, rt.DefaultApprovalMode())
 	if err != nil {
 		return err
 	}
@@ -50,5 +52,5 @@ func repl(jsonOut bool, thinkingDisplay ...bool) error {
 	if len(thinkingDisplay) > 0 {
 		showThinking = thinkingDisplay[0]
 	}
-	return tui.RunTUI(a, proj, app.Config, sess, ctx, showThinking)
+	return tui.RunTUI(a, proj, rt.Config, sess, ctx, showThinking)
 }

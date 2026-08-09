@@ -6,8 +6,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/agent-project/harness/internal/config"
 	"github.com/agent-project/harness/internal/middleware/impl"
-	"github.com/agent-project/harness/internal/provider"
 	"github.com/agent-project/harness/internal/session"
 )
 
@@ -92,7 +92,7 @@ func (c *Controller) Models() []string {
 
 // SetModel 切换会话模型 + 重置档位为模型默认（ADR-026 运行时切换）。
 func (c *Controller) SetModel(name string) error {
-	res, err := provider.Resolve(c.cfg, name)
+	res, err := config.Resolve(c.cfg, name)
 	if err != nil {
 		return err
 	}
@@ -104,7 +104,7 @@ func (c *Controller) SetModel(name string) error {
 
 // Efforts 当前模型支持的推理档位（/effort 弹窗数据源，实时解析）。
 func (c *Controller) Efforts() []string {
-	res, err := provider.Resolve(c.cfg, c.active.Model())
+	res, err := config.Resolve(c.cfg, c.active.Model())
 	if err != nil {
 		return nil
 	}
@@ -113,7 +113,7 @@ func (c *Controller) Efforts() []string {
 
 // SetEffort 切换推理档位（校验在模型 efforts 内）。
 func (c *Controller) SetEffort(level string) error {
-	cur, err := provider.Resolve(c.cfg, c.active.Model())
+	cur, err := config.Resolve(c.cfg, c.active.Model())
 	if err != nil {
 		return err
 	}

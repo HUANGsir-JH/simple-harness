@@ -2,16 +2,18 @@ package provider
 
 import (
 	"fmt"
+
+	"github.com/agent-project/harness/internal/config"
 )
 
-// NewClient 从解析后的运行时配置构建流式 LLM 客户端。
+// NewClient 从解析后的生效配置构建流式 LLM 客户端。
 // 单 wire（anthropic Messages）：直接构造 anthropic 适配器。
-// 调用方应先调用 Resolve 得到 Resolved，再传入本函数。
+// 调用方应先调用 config.Resolve 得到 ProviderConfig，再传入本函数。
 //
 // 注意：client 只承载**连接**（base_url / api_key / 默认 thinking），**不含模型**。
 // 模型是请求参数（ADR-026），每次采样经 Request.Model 传入（来自 AgentState →
 // rc → sample）。client 被共享，跨会话/跨模型复用同一连接。
-func NewClient(res *Resolved) (Client, error) {
+func NewClient(res *config.ProviderConfig) (Client, error) {
 	if res == nil {
 		return nil, fmt.Errorf("provider: resolved config is nil")
 	}

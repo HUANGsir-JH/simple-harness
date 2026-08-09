@@ -10,7 +10,9 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/agent-project/harness/internal/agent"
 	"github.com/agent-project/harness/internal/agentstate"
+	"github.com/agent-project/harness/internal/app"
 	"github.com/agent-project/harness/internal/session"
 	"github.com/agent-project/harness/internal/ui/tui"
 	"golang.org/x/term"
@@ -66,11 +68,11 @@ func resumeCmd(args []string, jsonOut bool) error {
 		return err
 	}
 
-	app, err := defaultApp()
+	rt, err := app.Load()
 	if err != nil {
 		return err
 	}
-	a, err := app.buildAgent()
+	a, err := agent.Build(rt.Provider, rt.DefaultApprovalMode())
 	if err != nil {
 		return err
 	}
@@ -80,7 +82,7 @@ func resumeCmd(args []string, jsonOut bool) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM)
 	defer stop()
 
-	return tui.RunTUI(a, proj, app.Config, sess, ctx, !*noThinkingDisplay)
+	return tui.RunTUI(a, proj, rt.Config, sess, ctx, !*noThinkingDisplay)
 }
 
 // sessionsCmd 列出当前项目的会话。

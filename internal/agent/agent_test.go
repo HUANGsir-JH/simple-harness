@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/agent-project/harness/internal/config"
 	"github.com/agent-project/harness/internal/messages"
 	"github.com/agent-project/harness/internal/middleware"
 	"github.com/agent-project/harness/internal/provider"
@@ -442,7 +443,7 @@ func TestRunModelFromRC(t *testing.T) {
 	a := New(fc, "default-model") // agent 默认模型
 	rc := rcFor(newConversation())
 	rc.Model = "other-model"
-	rc.ThinkingEffort = provider.EffortMax
+	rc.ThinkingEffort = config.EffortMax
 	enabled := false
 	rc.ThinkingEnabled = &enabled
 
@@ -455,7 +456,7 @@ func TestRunModelFromRC(t *testing.T) {
 	if fc.LastReq.Model != "other-model" {
 		t.Errorf("Request.Model: got %q want other-model", fc.LastReq.Model)
 	}
-	if fc.LastReq.ThinkingEffort != provider.EffortMax {
+	if fc.LastReq.ThinkingEffort != config.EffortMax {
 		t.Errorf("Request.ThinkingEffort: got %q", fc.LastReq.ThinkingEffort)
 	}
 	if fc.LastReq.ThinkingEnabled == nil || *fc.LastReq.ThinkingEnabled {

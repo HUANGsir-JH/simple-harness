@@ -1,4 +1,4 @@
-package provider
+package config
 
 import (
 	"strings"
@@ -8,7 +8,7 @@ import (
 // TestValidateBadThinkingEffort 验证 thinking.efforts 中非法档位报错。
 func TestValidateBadThinkingEffort(t *testing.T) {
 	cfg := Config{
-		Providers: map[string]ProviderConfig{
+		Providers: map[string]ProviderSpec{
 			"p": {APIKey: "k", Models: map[string]Model{
 				"m": {Thinking: &Thinking{Efforts: []string{"turbo"}}},
 			}},
@@ -47,7 +47,7 @@ func TestValidateDefaultNotFound(t *testing.T) {
 // TestValidateNoModels 验证 provider 无 models 报错。
 func TestValidateNoModels(t *testing.T) {
 	cfg := Config{
-		Providers: map[string]ProviderConfig{
+		Providers: map[string]ProviderSpec{
 			"p": {APIKey: "k"}, // 无 models
 		},
 	}
@@ -60,7 +60,7 @@ func TestValidateNoModels(t *testing.T) {
 // TestValidateNegativeContextWindow 验证负 context_window 报错。
 func TestValidateNegativeContextWindow(t *testing.T) {
 	cfg := Config{
-		Providers: map[string]ProviderConfig{
+		Providers: map[string]ProviderSpec{
 			"p": {
 				APIKey: "k",
 				Models: map[string]Model{"m": {ContextWindow: -1}},
@@ -76,7 +76,7 @@ func TestValidateNegativeContextWindow(t *testing.T) {
 // TestValidateMissingKey 验证无 key 来源报错。
 func TestValidateMissingKey(t *testing.T) {
 	cfg := Config{
-		Providers: map[string]ProviderConfig{
+		Providers: map[string]ProviderSpec{
 			"p": {Models: map[string]Model{"m": {}}},
 		},
 	}
@@ -110,7 +110,7 @@ func TestValidateApprovalModeOK(t *testing.T) {
 // TestValidateMultipleErrors 验证一次返回全部错误（多行）。
 func TestValidateMultipleErrors(t *testing.T) {
 	cfg := Config{
-		Providers: map[string]ProviderConfig{
+		Providers: map[string]ProviderSpec{
 			"p": {
 				Models: map[string]Model{"m": {ContextWindow: -5}},
 			},

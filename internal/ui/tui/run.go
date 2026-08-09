@@ -6,14 +6,14 @@ import (
 	"fmt"
 
 	"github.com/agent-project/harness/internal/agent"
+	"github.com/agent-project/harness/internal/config"
 	"github.com/agent-project/harness/internal/messages"
-	"github.com/agent-project/harness/internal/provider"
 	"github.com/agent-project/harness/internal/session"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
 // RunTUI starts the full-screen interactive client.
-func RunTUI(a *agent.Agent, project *session.Project, cfg provider.Config, sess *session.Session, ctx context.Context, thinkingDisplay ...bool) error {
+func RunTUI(a *agent.Agent, project *session.Project, cfg config.Config, sess *session.Session, ctx context.Context, thinkingDisplay ...bool) error {
 	controller := NewController(a, project, cfg, sess, ctx)
 	model := New(controller)
 	if len(thinkingDisplay) > 0 {

@@ -5,8 +5,8 @@ import (
 	"sync"
 
 	"github.com/agent-project/harness/internal/agent"
+	"github.com/agent-project/harness/internal/config"
 	"github.com/agent-project/harness/internal/middleware"
-	"github.com/agent-project/harness/internal/provider"
 	"github.com/agent-project/harness/internal/session"
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -17,7 +17,7 @@ import (
 type Controller struct {
 	a      *agent.Agent
 	proj   *session.Project
-	cfg    provider.Config
+	cfg    config.Config
 	active *session.Session
 	open   map[string]*session.Session
 	ctx    context.Context // 顶层 ctx（回合从它派生；SIGTERM cancel）
@@ -28,7 +28,7 @@ type Controller struct {
 }
 
 // NewController 构造桥。
-func NewController(a *agent.Agent, proj *session.Project, cfg provider.Config, sess *session.Session, ctx context.Context) *Controller {
+func NewController(a *agent.Agent, proj *session.Project, cfg config.Config, sess *session.Session, ctx context.Context) *Controller {
 	return &Controller{
 		a:      a,
 		proj:   proj,

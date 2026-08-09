@@ -11,6 +11,7 @@ import (
 	"syscall"
 
 	"github.com/agent-project/harness/internal/agent"
+	"github.com/agent-project/harness/internal/app"
 	"github.com/agent-project/harness/internal/middleware"
 	"github.com/agent-project/harness/internal/session"
 	"github.com/agent-project/harness/internal/ui"
@@ -39,26 +40,26 @@ func runCmd(args []string, jsonOut bool) error {
 		return fmt.Errorf("run: prompt is required (harness run \"your prompt\"; 不带参数运行 `harness` 进入交互式)")
 	}
 
-	var app *App
+	var rt *app.App
 	var err error
 	if configPath != "" {
-		app, err = loadApp(configPath)
+		rt, err = app.LoadFrom(configPath)
 	} else {
-		app, err = defaultApp()
+		rt, err = app.Load()
 	}
 	if err != nil {
 		return err
 	}
-	res, err := app.resolveFlags(modelFlag, effortFlag, thinkingFlag, noThinkingFlag)
+	res, err := rt.ResolveFlags(modelFlag, effortFlag, thinkingFlag, noThinkingFlag)
 	if err != nil {
 		return err
 	}
-	a, err := app.buildAgent()
+	a, err := agent.Build(rt.Provider, rt.DefaultApprovalMode())
 	if err != nil {
 		return err
 	}
 
-	sess, err := session.CreateInCWD(res.Model, app.defaultApprovalMode())
+	sess, err := session.CreateInCWD(res.Model, rt.DefaultApprovalMode())
 	if err != nil {
 		return err
 	}

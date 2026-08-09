@@ -335,7 +335,7 @@ func modalInnerWidth(panelWidth int) int {
 
 func modalStyle(panelWidth int) lipgloss.Style {
 	return lipgloss.NewStyle().
-		Width(modalInnerWidth(panelWidth) + modalPaddingWidth).
+		Width(modalInnerWidth(panelWidth)+modalPaddingWidth).
 		Padding(1, 2).
 		Background(colorPanel).
 		Foreground(colorText).

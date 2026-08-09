@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/agent-project/harness/internal/agent"
+	"github.com/agent-project/harness/internal/config"
 	"github.com/agent-project/harness/internal/messages"
 	"github.com/agent-project/harness/internal/provider"
 	"github.com/agent-project/harness/internal/session"
@@ -42,7 +43,7 @@ func newTestController(t *testing.T, calls *atomic.Int32) *Controller {
 			}), nil
 		},
 	}
-	return NewController(agent.New(client, "test-model"), proj, provider.Config{}, sess, context.Background())
+	return NewController(agent.New(client, "test-model"), proj, config.Config{}, sess, context.Background())
 }
 
 // collectSend 收集 program.Send 的消息（模拟 bubbletea 事件循环）。

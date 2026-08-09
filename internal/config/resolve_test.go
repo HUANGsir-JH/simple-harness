@@ -1,4 +1,4 @@
-package provider
+package config
 
 import (
 	"slices"
@@ -16,7 +16,7 @@ func yamlUnmarshalStrict(data []byte, v any) error {
 func testConfig() Config {
 	return Config{
 		DefaultProvider: "deepseek",
-		Providers: map[string]ProviderConfig{
+		Providers: map[string]ProviderSpec{
 			"deepseek": {
 				BaseURL: "https://api.deepseek.com/",
 				APIKey:  "sk-deepseek",
@@ -97,7 +97,7 @@ func TestResolveModelNotFound(t *testing.T) {
 // TestResolveContextWindowDefault 验证未配置 context_window 回退默认。
 func TestResolveContextWindowDefault(t *testing.T) {
 	cfg := Config{
-		Providers: map[string]ProviderConfig{
+		Providers: map[string]ProviderSpec{
 			"p": {
 				APIKey: "k",
 				Models: map[string]Model{
@@ -119,7 +119,7 @@ func TestResolveContextWindowDefault(t *testing.T) {
 func TestResolveAPIKeyEnvFallback(t *testing.T) {
 	t.Setenv("MY_TEST_KEY", "env-key")
 	cfg := Config{
-		Providers: map[string]ProviderConfig{
+		Providers: map[string]ProviderSpec{
 			"p": {
 				EnvKey: "MY_TEST_KEY",
 				Models: map[string]Model{"m": {}},
@@ -139,7 +139,7 @@ func TestResolveAPIKeyEnvFallback(t *testing.T) {
 func TestResolveMissingKey(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "")
 	cfg := Config{
-		Providers: map[string]ProviderConfig{
+		Providers: map[string]ProviderSpec{
 			"p": {Models: map[string]Model{"m": {}}},
 		},
 	}
@@ -234,7 +234,7 @@ func TestResolveThinkingDefault(t *testing.T) {
 func TestResolveThinkingDisabled(t *testing.T) {
 	f := false
 	cfg := Config{
-		Providers: map[string]ProviderConfig{
+		Providers: map[string]ProviderSpec{
 			"p": {APIKey: "k", Models: map[string]Model{
 				"m": {Thinking: &Thinking{Enabled: &f}},
 			}},
@@ -253,7 +253,7 @@ func TestResolveThinkingDisabled(t *testing.T) {
 // 当前档位回退到第一个。
 func TestResolveThinkingEfforts(t *testing.T) {
 	cfg := Config{
-		Providers: map[string]ProviderConfig{
+		Providers: map[string]ProviderSpec{
 			"p": {APIKey: "k", Models: map[string]Model{
 				"m": {Thinking: &Thinking{Efforts: []string{EffortLow, EffortMax}}},
 			}},
@@ -275,7 +275,7 @@ func TestResolveThinkingEfforts(t *testing.T) {
 // TestResolveThinkingEffortsContainHigh 验证 high 在集内时当前档位保持 high。
 func TestResolveThinkingEffortsContainHigh(t *testing.T) {
 	cfg := Config{
-		Providers: map[string]ProviderConfig{
+		Providers: map[string]ProviderSpec{
 			"p": {APIKey: "k", Models: map[string]Model{
 				"m": {Thinking: &Thinking{Efforts: []string{EffortLow, EffortHigh, EffortMax}}},
 			}},

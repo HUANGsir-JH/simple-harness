@@ -2,14 +2,9 @@ package provider
 
 import (
 	"testing"
-)
 
-// TestDefaultAPIKeyEnv 验证惯例环境变量名。
-func TestDefaultAPIKeyEnv(t *testing.T) {
-	if got := DefaultAPIKeyEnv; got != "ANTHROPIC_API_KEY" {
-		t.Errorf("DefaultAPIKeyEnv: got %q want ANTHROPIC_API_KEY", got)
-	}
-}
+	"github.com/agent-project/harness/internal/config"
+)
 
 // TestFactoryNilResolved 验证 nil 配置报错。
 func TestFactoryNilResolved(t *testing.T) {
@@ -18,10 +13,10 @@ func TestFactoryNilResolved(t *testing.T) {
 	}
 }
 
-// TestFactoryAnthropicClient 验证 anthropic 客户端构建成功（key 来自 Resolved）。
+// TestFactoryAnthropicClient 验证 anthropic 客户端构建成功（key 来自 ProviderConfig）。
 // client 只承载连接不含模型（ADR-026），模型走 Request。
 func TestFactoryAnthropicClient(t *testing.T) {
-	c, err := NewClient(&Resolved{Model: "claude-sonnet-5", APIKey: "k"})
+	c, err := NewClient(&config.ProviderConfig{Model: "claude-sonnet-5", APIKey: "k"})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}

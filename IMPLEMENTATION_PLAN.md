@@ -24,7 +24,7 @@
 | 大工具结果 | **20K 阈值截断**（ADR-028）：head/tail 各 10K + 落盘 evictions/ + 路径提示；transcript 记完整、conversation 记 preview；read_file 豁免；**不做 overflow 安全网** |
 | 用户中断 | **Esc/Ctrl+C**（raw mode 事件循环 + 单一读方 channel，ADR-028）：cancel 本轮 runCtx + AddUser 提示落盘；非 TTY 降级 |
 | todo 工具 | **update_todo**（ADR-027）：全量替换 + 跨轮偏离提醒（TodoReminderMiddleware） |
-| 配置 | YAML（~/.harness/config.yaml + 项目级 config.local.yaml），加载/校验统一在 provider 包；`defaultApp()` 惰性单例（ADR-026） |
+| 配置 | YAML（~/.harness/config.yaml + 项目级 config.local.yaml），加载/校验统一在 **internal/config** 包；`app.Load()` 惰性单例（ADR-026，2026-08-09 配置层独立） |
 | thinking | 模型级配置（enabled + efforts）+ CLI `--effort/--thinking/--no-thinking` 运行时覆盖；按 anthropic 标准参数传递 |
 | 内置工具 | 7 个：read_file / list_dir / glob / write_file / shell_command / apply_patch / update_todo |
 | 压缩 / 子 agent / AGENTS.md / TUI / Hooks | **规划中（未实现）**，见"待办阶段" |
@@ -187,6 +187,7 @@ type Tool interface {
 - **todo 工具**（2026-08-08，ADR-027）：update_todo 全量替换 + TodoReminderMiddleware 跨轮偏离提醒。
 - **工具结果截断 + Esc 用户中断 + shell 长任务缓解 + state.CWD 修正**（2026-08-09，ADR-028）：ToolOutputMiddleware（20K head/tail + evictions/ 落盘）；raw mode 单一读方事件循环；shell 超时输出落盘 + 系统提示引导。
 - **阶段 3：审批**（2026-08-09，ADR-029）：approval 包三层设计 + ApprovalMiddleware + DeniedError + 会话级记忆 + config 播种 + `/permission` + channelApprover 协调；e2e 真实 TTY 审批交互。**错误重试非本阶段交付**（429 由 SDK 承担 ADR-012；流中断恢复独立待办）。
+- **配置层独立 + 装配根**（2026-08-09）：配置域从 provider 拆出为 `internal/config`（类型 + 加载 + 解析 + 校验），provider 回归单 wire；`internal/app` 进程级装配根（`App{Config, Provider}` 惰性单例，替代 cmd defaultApp）；`agent.Build(res, mode)` 装配工厂（buildAgent 从 cmd 下沉）；cmd 薄化为 `app.Load() + agent.Build()`。为 subagent 提供不同装配铺路。
 
 ### ⏳ 待办（未完成）
 

@@ -1,4 +1,4 @@
-package provider
+package config
 
 import (
 	"fmt"
@@ -37,8 +37,8 @@ func (c Config) Validate() error {
 		}
 	}
 
-	// approval.mode 合法值（与 impl 包 Modes 对齐；字面量避免 provider→middleware/impl
-	// 循环依赖——impl → middleware → provider 已存在）。
+	// approval.mode 合法值（与 impl 包 Modes 对齐；字面量避免 config→middleware/impl
+	// 依赖——impl 在上层）。
 	if c.Approval != nil && c.Approval.Mode != "" {
 		switch c.Approval.Mode {
 		case "readonly", "acceptedit", "bypass":
@@ -54,7 +54,7 @@ func (c Config) Validate() error {
 }
 
 // validateProvider 校验单个 provider。
-func validateProvider(name string, p ProviderConfig) []string {
+func validateProvider(name string, p ProviderSpec) []string {
 	var errs []string
 	prefix := "providers." + name
 

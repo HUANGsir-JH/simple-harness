@@ -283,3 +283,15 @@
   4. Ctrl+C 复制当前 composer 全文到系统剪贴板并给出短暂系统提示；不可用剪贴板时显示失败提示。状态标签、spinner 和边框采用 ASCII，颜色只表达语义。
   5. `resume --no-thinking-display` 与无子命令 `harness --no-thinking-display` 只影响 UI 展示，不修改 transcript 或模型上下文。
 - **理由**：timeline 与 transcript 是同一条可审计事件流，能够同时满足历史顺序和工具就地展示；以 goroutine 返回作为队列边界能消除事件桥的竞态；分区布局和 ASCII fallback 对 Windows ConPTY、窄屏和中文宽字符更稳定；复制 composer 是 Bubbles textarea 没有 selection API 时仍可交付的明确行为。
+
+## ADR-033：配置层独立 + 进程级装配根（2026-08-09）
+
+- **背景**：配置加载此前分散在 provider 包（LoadConfig/Resolve/Validate + Config/ProviderConfig 类型）与 cmd/harness（App 惰性单例 + buildAgent + resolveFlags）。agent 装配（buildAgent）挂在 cmd 的 App 上——未来 subagent 需要不同工具集/中间件/提示词装配时，若装配入口在 cmd，internal 的 subagent 定义够不到它，cmd 会退化成堆各 kind 全局的注册中心（依赖方向倒置）。
+- **选择**：
+  1. 新增 `internal/config`（最底层，只依赖 yaml + stdlib）：`Config/ProviderSpec/Model/Thinking/ApprovalConfig`（YAML 定义）+ `ProviderConfig`（解析后生效的扁平结构）+ `LoadConfig` + `Resolve` + `Validate` + 相关常量（Effort/DefaultAPIKeyEnv/DefaultContextWindow/DefaultEfforts/DefaultThinkingEffort），从 provider 整体迁出（含测试）。`Resolved` 更名 `ProviderConfig`（它就是 ProviderSpec + Model 拍平解析的结果），原 YAML 定义 `ProviderConfig` 更名 `ProviderSpec`（定义 vs 生效）。
+  2. provider 回归 ADR-022 的"单 anthropic wire"定位：只留 `ToolSpec/Request/Client/EventStream/Event` + `NewClient(*config.ProviderConfig)`。
+  3. 新增 `internal/app`（进程级装配根，惰性单例）：`App{Config, Provider}` + `Load()/LoadFrom()/DefaultApprovalMode()/ResolveFlags()`。它是后续 client/agent/subagent 工厂等进程级共享装配的字段扩展点——config 只是其一。
+  4. `buildAgent` 下沉为 `internal/agent.Build(res *config.ProviderConfig, defaultMode string)`（client + 内置工具 + 标准中间件链）。subagent 未来在此之外构造自定义装配，本质同样无状态可共享（ADR-026）。
+  5. cmd 薄化为 `rt, _ := app.Load(); a, _ := agent.Build(rt.Provider, rt.DefaultApprovalMode())`；删 `runtime.go/build.go/runtime_test.go`，测试迁 internal。
+- **理由**：机制下沉 internal（依赖单向 `config → provider → tools/middleware → agent`、`app → config`）；"1 个 client + N 个 per-kind agent 装配"比"cmd 堆全局"可扩展且方向正确；测试隔离（`app.LoadFrom` 造独立 App = 独立 agent）；保持惰性（version/help/sessions 不碰配置）。
+- **影响 ADR**：ADR-026 修订——`defaultApp()` → `app.Load()`，配置加载统一入口从 provider/cmd 改为 internal/config + internal/app。

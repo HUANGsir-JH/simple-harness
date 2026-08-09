@@ -1,4 +1,4 @@
-package provider
+package config
 
 import (
 	"fmt"
@@ -13,20 +13,7 @@ const DefaultContextWindow = 128000
 // DefaultEfforts 是模型未配置 thinking.efforts 时的默认档位集。
 var DefaultEfforts = []string{EffortLow, EffortHigh, EffortMax}
 
-// Resolved 是解析后的运行时配置：选定 provider + 模型。
-// 由 Resolve 产出，NewClient 直接消费。
-type Resolved struct {
-	ProviderID      string
-	BaseURL         string
-	APIKey          string
-	Model           string
-	ContextWindow   int
-	ThinkingEnabled bool
-	ThinkingEffort  string
-	ThinkingEfforts []string
-}
-
-// Resolve 从 Config 与可选的 --model 参数解析出运行时配置。
+// Resolve 从 Config 与可选的 --model 参数解析出生效的 ProviderConfig。
 //
 // 选择优先级：
 //   - provider：default_provider 指定；未指定取 providers 中排序后的第一个
@@ -35,7 +22,7 @@ type Resolved struct {
 //
 // context_window 取模型定义值；未配置（0）回退 DefaultContextWindow。
 // API key 解析：APIKey 字段 → EnvKey 环境变量 → DefaultAPIKeyEnv（ANTHROPIC_API_KEY）。
-func Resolve(cfg Config, modelFlag string) (*Resolved, error) {
+func Resolve(cfg Config, modelFlag string) (*ProviderConfig, error) {
 	providerID, p, err := resolveProvider(cfg)
 	if err != nil {
 		return nil, err
@@ -59,7 +46,7 @@ func Resolve(cfg Config, modelFlag string) (*Resolved, error) {
 		return nil, fmt.Errorf("provider %q: %w", providerID, err)
 	}
 
-	return &Resolved{
+	return &ProviderConfig{
 		ProviderID:      providerID,
 		BaseURL:         p.BaseURL,
 		APIKey:          apiKey,
@@ -95,14 +82,14 @@ func resolveThinking(m Model) (enabled bool, efforts []string, current string) {
 }
 
 // resolveProvider 选择 provider：default_provider 优先，否则取排序后第一个。
-func resolveProvider(cfg Config) (string, ProviderConfig, error) {
+func resolveProvider(cfg Config) (string, ProviderSpec, error) {
 	if len(cfg.Providers) == 0 {
-		return "", ProviderConfig{}, fmt.Errorf("providers: no providers configured")
+		return "", ProviderSpec{}, fmt.Errorf("providers: no providers configured")
 	}
 	if cfg.DefaultProvider != "" {
 		p, ok := cfg.Providers[cfg.DefaultProvider]
 		if !ok {
-			return "", ProviderConfig{}, fmt.Errorf("providers: default_provider %q not found", cfg.DefaultProvider)
+			return "", ProviderSpec{}, fmt.Errorf("providers: default_provider %q not found", cfg.DefaultProvider)
 		}
 		return cfg.DefaultProvider, p, nil
 	}
@@ -136,7 +123,7 @@ func resolveModel(models map[string]Model, modelFlag string) (string, error) {
 }
 
 // resolveAPIKey 解析 API key：APIKey 字段 → EnvKey 环境变量 → DefaultAPIKeyEnv。
-func resolveAPIKey(p ProviderConfig) (string, error) {
+func resolveAPIKey(p ProviderSpec) (string, error) {
 	if p.APIKey != "" {
 		return p.APIKey, nil
 	}

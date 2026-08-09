@@ -7,35 +7,41 @@
 
 ```mermaid
 flowchart TD
-    CMD[cmd/harness<br/>App / SessionManager<br/>CLI 装配 + REPL]
-    AG[internal/agent<br/>Agent 无状态 ReAct loop]
+    CMD[cmd/harness<br/>CLI dispatch + 命令编排]
+    APP[internal/app<br/>App 进程级装配根]
+    CFG[internal/config<br/>Config / ProviderConfig 配置域]
+    AG[internal/agent<br/>Agent 无状态 ReAct loop + Build]
     MW[internal/middleware<br/>RuntimeContext / Chain / 6 hook]
-    PV[internal/provider<br/>Config / Resolved / Client / Event]
+    PV[internal/provider<br/>Client / ToolSpec / Event wire]
     MSG[internal/messages<br/>Message / Conversation 统一模型]
     AST[internal/agentstate<br/>AgentState / TodoItem]
     SES[internal/session<br/>Store / Project / Session / Writer]
     TL[internal/tools<br/>Tool / Registry]
+    UI[internal/ui<br/>text/json 渲染 + tui/ 全屏 TUI]
     E2E[internal/e2e<br/>进程外测试]
 
-    CMD --> AG & SES & PV & TL
+    CMD --> APP & AG & SES & UI
+    APP --> CFG
+    UI --> AG & SES & CFG
     AG --> MW & PV & TL & MSG
     MW --> MSG & AST & PV
+    PV --> CFG
     SES --> AG & AST & MSG & MW
     TL --> MSG & MW & PV
     E2E --> SES
 
     classDef leaf fill:#e8f5e9,stroke:#2e7d32
-    class MSG,AST leaf
+    class MSG,AST,CFG leaf
 ```
 
-依赖约束（防环，ADR-025/026）：`agentstate` 独立成包，`middleware` 与 `session` 都只依赖它；`messages` 是叶子（核心层唯一操作模型）。
+依赖约束（防环，ADR-025/026）：`agentstate` 独立成包，`middleware` 与 `session` 都只依赖它；`messages` 是叶子（核心层唯一操作模型）；`config` 是最底层（只依赖 yaml+stdlib），provider/UI/app 都只消费它（ADR-033）。
 
 ## 二、一次 `agent.Run` 的数据流
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant CLI as cmd/harness (App)
+    participant CLI as cmd/harness
     participant SES as session.Session
     participant RC as middleware.RuntimeContext
     participant AG as agent.Agent
@@ -164,13 +170,13 @@ agent.Run（一个回合）
 
 两个带"运行时"意味但概念完全不同的对象：
 
-| 维度 | `cmd.App` | `middleware.RuntimeContext` |
+| 维度 | `app.App` | `middleware.RuntimeContext` |
 |---|---|---|
 | 作用域 | **进程级**：一次进程一份 | **调用级**：每次 Run 一份 |
-| 内容 | 配置（Config）+ 默认模型（Resolved） | 会话引用 + per-call 覆盖 |
-| 用途 | buildAgent / resolveFlags | 承载会话上下文，供 agent / middleware / 工具 |
-| 生命周期 | 惰性单例（defaultApp，进程存活期） | 每轮新建，Run 结束丢弃 |
-| 所在包 | cmd/harness | middleware（被 agent / session / tools 依赖） |
+| 内容 | 配置（config.Config）+ 生效 provider（config.ProviderConfig） | 会话引用 + per-call 覆盖 |
+| 用途 | 配置装配根（flags 校验 / 审批默认模式；未来 client/agent/subagent 工厂字段） | 承载会话上下文，供 agent / middleware / 工具 |
+| 生命周期 | 惰性单例（app.Load，进程存活期） | 每轮新建，Run 结束丢弃 |
+| 所在包 | internal/app | middleware（被 agent / session / tools 依赖） |
 
 ### 3.6 middleware hook 粒度：onAgent / onReasoning / onModelCall（包住什么）
 
@@ -448,9 +454,9 @@ classDiagram
     direction LR
     class Config {
         +string DefaultProvider
-        +map[string]ProviderConfig Providers
+        +map[string]ProviderSpec Providers
     }
-    class ProviderConfig {
+    class ProviderSpec {
         +string BaseURL
         +string EnvKey
         +string APIKey
@@ -464,7 +470,7 @@ classDiagram
         +*bool Enabled
         +[]string Efforts
     }
-    class Resolved {
+    class ProviderConfig {
         +string ProviderID
         +string BaseURL
         +string APIKey
@@ -489,14 +495,14 @@ classDiagram
         +json.RawMessage Parameters
     }
 
-    Config "1" *-- "many" ProviderConfig
-    ProviderConfig "1" *-- "many" Model
+    Config "1" *-- "many" ProviderSpec
+    ProviderSpec "1" *-- "many" Model
     Model "1" o-- "0..1" Thinking
-    Resolved ..> Model : Resolve() 解析默认
+    ProviderConfig ..> Model : Resolve() 解析生效
     Request ..> Model : per-call 覆盖
 ```
 
-**配置链路**：`provider.LoadConfig` → `Config` → `Resolve` → `Resolved`（默认模型，`App.Resolved` 缓存）→ `NewClient`。per-call 覆盖（ADR-026）：`Request.Model/ThinkingEnabled/ThinkingEffort`，`nil/空 = 继承 client 默认`。
+**配置链路**：`config.LoadConfig` → `config.Config` → `config.Resolve` → `config.ProviderConfig`（生效配置，`app.App.Provider` 缓存）→ `provider.NewClient`。装配：`app.Load()` 惰性单例 → `agent.Build(res, mode)`（client + 工具 + 标准中间件链，ADR-033）。per-call 覆盖（ADR-026）：`Request.Model/ThinkingEnabled/ThinkingEffort`，`nil/空 = 继承 client 默认`。
 
 ### 4.3 运行时上下文与中间件（middleware）
 
@@ -664,42 +670,44 @@ classDiagram
 
 **resume 语义**：只读最大序号文件（`history-<n>.jsonl`），按 ordinal 逐行重建 conversation（thinking 入 `Message.Thinking`，tool_result 合并）；`agentstate.json` 恢复非消息状态（含模型/档位）。
 
-## 五、CLI 层（cmd/harness）
+## 五、装配与交互层（internal/app + internal/ui/tui）
 
 ```mermaid
 classDiagram
     class App {
         +Config Config
-        +*Resolved Resolved
-        +buildAgent()
-        +resolveFlags(...)
+        +*ProviderConfig Provider
+        +Load()
+        +LoadFrom(path)
+        +DefaultApprovalMode()
+        +ResolveFlags(...)
     }
-    class SessionManager {
-        -*App app
+    class Controller {
         -*Agent a
         -*Project proj
+        -config.Config cfg
         -map[string]*Session open
         -*Session active
-        +switchTo(id)
-        +switchLast()
-        +handleCommand(cmd)
+        +SwitchTo(id)
+        +SwitchLast()
+        +Models()
+        +SetModel(name)
+        +Efforts()
+        +SetEffort(level)
+        +SetPermission(mode)
     }
-    class output {
-        <<interface>>
-        +start(t)
-        +event(ev)
+    class Agent {
+        +Build(res, defaultMode)
     }
-
     App "1" *-- "1" Config
-    App "1" *-- "1" Resolved
-    SessionManager "1" *-- "1" App
-    SessionManager "1" *-- "1" Agent
-    SessionManager "1" *-- "1" Project
-    SessionManager "1" *-- "many" Session : open 注册表
-    SessionManager "1" *-- "1" Session : active 激活会话
+    App "1" *-- "1" ProviderConfig
+    Controller "1" *-- "1" Agent
+    Controller "1" *-- "1" Project
+    Controller "1" *-- "many" Session : open 注册表
+    Controller "1" *-- "1" Session : active 激活会话
 ```
 
-**REPL 运行时切换**：`/switch <id>|--last`（换 `active`，未开则 Resume 入注册表）、`/model <name>`、`/effort <level>`、`/permission <readonly|acceptedit|bypass>`（都落 `AgentState` 立即持久化）。
+**TUI 运行时切换**：`/switch <id>|--last`（换 `active`，未开则 Resume 入注册表）、`/model <name>`、`/effort <level>`、`/permission <readonly|acceptedit|bypass>`（都落 `AgentState` 立即持久化；模型/档位列表实时从 `config` 解析）。
 
 ## 六、关键关系速查
 
@@ -718,5 +726,5 @@ classDiagram
 | 审批模式 ↔ `AgentState.Permission.Mode` | 会话创建时 config 默认播种 + `/permission` 切换；`ApprovalMiddleware.mode()` 从 rc.State 读（ADR-029） |
 | 权限设计总览 | 状态/策略/交互三层正交：`AgentState.Permission`（状态）→ `Decide` 纯函数（策略）→ `Approver`/channel（交互），完整设计见 §3.9（ADR-029） |
 | 审批记忆 ↔ `AgentState.Permission.Approved` | 仅会话级：`s` 批准后 key（工具名/规范化命令前缀）落盘，resume 恢复放行 |
-| `App` ↔ `Config/Resolved` | 配置统一入口：惰性单例缓存默认模型，`--config` 显式路径单独加载 |
+| `app.App` ↔ `config` | 进程级装配根：`app.Load()` 惰性单例缓存默认模型，`app.LoadFrom` 显式路径；`agent.Build(res, mode)` 装配共享 agent（ADR-033） |
 | `Conversation` ↔ `Message` ↔ `ToolResult` | 一条 tool_result 消息可合并多块（满足 anthropic 紧邻要求，ADR-024） |

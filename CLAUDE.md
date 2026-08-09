@@ -36,13 +36,15 @@ go test ./internal/e2e/ -count=1
 ## 代码架构
 
 ```
-cmd/harness/          # CLI 应用层：main（dispatch）/ runtime（统一配置 init）/ build（共享无状态 agent）/ run+resume+repl+session_mgr（子命令与 REPL 编排）
+cmd/harness/          # CLI 应用层：main（dispatch）/ run+resume+repl（命令编排，经 app.Load + agent.Build 装配，config/app 下沉 internal）
 internal/
+  config/             # ★ 配置域（最底层，只依赖 yaml+stdlib）：Config/ProviderSpec/Model/ProviderConfig 类型 + YAML 加载 + 解析 + 校验（provider 拆出，2026-08-09）
+  app/                # ★ 进程级装配根：App{Config, Provider} 惰性单例 + flags 校验 + 审批默认模式（未来扩展 client/agent/subagent 字段）
   ui/                 # ★ 用户交互层：渲染（text/json，run 单轮用）+ 审批解析（ParseApprovalDecision）+ **tui/**（bubbletea 全屏交互 UI 替代 REPL：Model/View/Update 纯函数 + 事件桥 + 审批桥，ADR-030）
-  agent/              # ★ 无状态 ReAct loop（采样→工具→回填，消息序列经 rc.Messages；ADR-026）+ 回合级事件（turn_done 为测试锚点）
+  agent/              # ★ 无状态 ReAct loop（采样→工具→回填，消息序列经 rc.Messages；ADR-026）+ 回合级事件（turn_done 为测试锚点）+ Build 装配工厂（client+工具+标准中间件链）
   middleware/         # ★ 框架 core：6 hook 扩展机制（onAgent/onReasoning/onToolCall/onActing/onModelCall onion + onSystemPrompt 管道）+ RuntimeContext（承载会话）+ 契约（Approver/ApprovalRequest/DeniedError，ADR-029）
   middleware/impl/    # ★ 内置中间件实现：工具说明注入 / 会话状态 load-save / todo 跨轮提醒（ADR-027）/ 工具结果截断 head/tail + evictions 落盘（ADR-028）/ 工具审批三档 + 黑白名单 + 会话记忆（ADR-029）
-  provider/           # 单 anthropic wire（ADR-022）+ 块事件适配 + per-call 覆盖（Request.Model/ThinkingEnabled/Effort，ADR-026）
+  provider/           # 单 anthropic wire（ADR-022）+ 块事件适配 + per-call 覆盖（Request.Model/ThinkingEnabled/Effort，ADR-026）；配置已拆至 config
   messages/           # 统一 Message 模型（含 Thinking）+ JSON 序列化
   tools/              # Tool 接口（Handle 带 rc）+ 注册表 + 7 内置工具（含 update_todo，ADR-027）
   agentstate/         # AgentState 快照（模型/thinking 档位/todo/权限/plan/摘要）+ 原子落盘
@@ -64,7 +66,7 @@ internal/
 7. **thinking 存但不重放**（ADR-025）：`Message.Thinking` 存审计，provider 重放 assistant 时忽略（免 anthropic 格式适配）。
 8. **UI 抽象**：`output` 接口（text 渲染器 + `--json` JSONL 事件）；事件回调双转发（渲染 + session 落盘）。
 9. **子 agent = 独立 session**（远期）：fork 只继承 user 消息 + 最终答案。并行已由无状态 agent + 共享 chain 并发安全支撑（ADR-026）。
-10. **无状态 agent + 运行时切换**（ADR-026）：agent 不持有会话，`Run(ctx, rc, onEvent)` 消息序列经 `rc.Messages`；**每 Run 新建 rc**，切换会话 = 换 active（REPL `/switch`）、并行 = 每 goroutine 一个 rc（共享 agent/chain 并发安全）。模型/thinking 档位 per-call 经 `Request.Model/ThinkingEnabled/ThinkingEffort` 覆盖（nil/空 = client 默认），会话级持久化在 AgentState（resume 恢复）；`/model`、`/effort` 运行时切换。配置统一 `defaultApp()` 惰性单例（`provider.LoadConfig` + `App{Config, Resolved}`）。
+10. **无状态 agent + 运行时切换**（ADR-026）：agent 不持有会话，`Run(ctx, rc, onEvent)` 消息序列经 `rc.Messages`；**每 Run 新建 rc**，切换会话 = 换 active（REPL `/switch`）、并行 = 每 goroutine 一个 rc（共享 agent/chain 并发安全）。模型/thinking 档位 per-call 经 `Request.Model/ThinkingEnabled/ThinkingEffort` 覆盖（nil/空 = client 默认），会话级持久化在 AgentState（resume 恢复）；`/model`、`/effort` 运行时切换。配置统一 `app.Load()` 惰性单例（`config.LoadConfig` + `config.Resolve` → `app.App{Config, Provider}`；agent 经 `agent.Build(res, mode)` 装配）。
 11. **TUI 交互**（ADR-030）：`internal/ui/tui`（bubbletea elm：Model/Update/View 纯函数可测）是唯一交互入口（`repl()` 留薄壳，REPL 已删）；agent 事件经 `onEvent → program.Send` 桥接（agent 核心零冲击，ADR-026 前提）；审批 `rc.Approver` 换 `TUIApprover`（接口不变，run 继续用 channelApprover）；**队列 = 用户输入**（prompt + `/` 命令统一排队，消费按前缀分派命令/发 agent）；命令落盘 transcript `command` 行但不进 conversation（模型不可见）；工具块按工具分派折叠展示；无 emoji 风格（`[OK]/[ERR]/[RUN]` + 颜色）；测试单测为主 + e2e 全面。
 
 ## 工作流约定

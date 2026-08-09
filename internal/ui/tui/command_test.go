@@ -6,18 +6,18 @@ import (
 	"testing"
 
 	"github.com/agent-project/harness/internal/agentstate"
+	"github.com/agent-project/harness/internal/config"
 	"github.com/agent-project/harness/internal/middleware"
 	"github.com/agent-project/harness/internal/middleware/impl"
-	"github.com/agent-project/harness/internal/provider"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 )
 
 // cfgWithModels 构造带模型的配置（弹窗数据源测试；APIKey 供 Resolve）。
-func cfgWithModels() provider.Config {
-	return provider.Config{Providers: map[string]provider.ProviderConfig{
-		"p": {APIKey: "test-key", Models: map[string]provider.Model{"m1": {}, "m2": {}}},
+func cfgWithModels() config.Config {
+	return config.Config{Providers: map[string]config.ProviderSpec{
+		"p": {APIKey: "test-key", Models: map[string]config.Model{"m1": {}, "m2": {}}},
 	}}
 }
 

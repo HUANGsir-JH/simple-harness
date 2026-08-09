@@ -4,6 +4,14 @@
 
 ## 2026-08-09
 
+### 配置层独立 + 进程级装配根 ✅（ADR-033）
+
+- **配置域拆出 provider**：新增 `internal/config`（最底层，只依赖 yaml+stdlib）——`Config/ProviderSpec/Model/Thinking/ApprovalConfig`（YAML 定义）+ `ProviderConfig`（解析后生效扁平结构，`Resolved` 更名）+ `LoadConfig` + `Resolve` + `Validate` + Effort/Default* 常量，从 provider 整体迁出（含 config_load/resolve/validate 测试）。provider 回归 ADR-022 的"单 anthropic wire"定位（ToolSpec/Request/Client/Event + `NewClient(*config.ProviderConfig)`）。
+- **新增 `internal/app`**（进程级装配根，惰性单例）：`App{Config, Provider}` + `Load()/LoadFrom()/DefaultApprovalMode()/ResolveFlags()`，替代 cmd 的 `defaultApp/loadApp/buildAgent/resolveFlags`；未来 client/agent/subagent 工厂作为字段挂这（config 只是其一）。
+- **buildAgent 下沉**：`internal/agent.Build(res *config.ProviderConfig, defaultMode string)`（client + 内置工具 + 标准中间件链），cmd 薄化为 `app.Load()` + `agent.Build()`。为 subagent 提供不同装配铺路（无状态可共享，ADR-026）。
+- **改动**：删 `cmd/harness/runtime.go/build.go/runtime_test.go`；tui/cmd/provider 引用 `provider.Config/Resolved` → `config.*`（Resolved → ProviderConfig、原 ProviderConfig → ProviderSpec）；agent 测试 `provider.EffortMax` → `config.EffortMax`。
+- **验证**：`go build ./...` + `go vet ./...` + `go test ./...`（含 e2e 全通过）；新 app/config 包测试固化 Load 单例契约与 ResolveFlags 校验。
+
 ### TUI 折叠块点击与弹窗宽度修复 ✅（ADR-032）
 
 - **折叠块点击错配**（用户实测反馈）：根因是 `renderTimeline` 行号会计 off-by-one（cell 后只有一个空分隔行却按 +2 累加，块越多偏移越大）+ assistant 消息 hit 区间覆盖整个 cell。改为 `line += height + 1`，并让 `renderMessageItem` 返回 `messageCell{body, thinkingStart, thinkingEnd}`，只注册 thinking 块本身为点击区间。

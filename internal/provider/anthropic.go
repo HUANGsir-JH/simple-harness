@@ -6,6 +6,8 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
+
+	"github.com/agent-project/harness/internal/config"
 )
 
 // anthropicClient 基于 Anthropic Messages API 实现 Client。
@@ -14,7 +16,7 @@ type anthropicClient struct {
 	client anthropic.MessageService
 }
 
-func newAnthropicClient(res *Resolved) *anthropicClient {
+func newAnthropicClient(res *config.ProviderConfig) *anthropicClient {
 	opts := []option.RequestOption{option.WithAPIKey(res.APIKey)}
 	// 某些环境（系统代理）会在出站请求注入 `Authorization: Bearer <无效值>`
 	// 头，DeepSeek 等兼容端点优先读 Authorization 导致 401。
@@ -55,7 +57,7 @@ func (a *anthropicClient) Stream(ctx context.Context, req Request) (EventStream,
 		MaxTokens: defaultMaxTokens,
 		Messages:  toAnthropicMessages(req.Messages),
 	}
-	// thinking 默认来自 client（Resolved），per-call 可覆盖。
+	// thinking 默认来自 client（ProviderConfig），per-call 可覆盖。
 	thinkingEnabled := a.thinkingEnabled
 	if req.ThinkingEnabled != nil {
 		thinkingEnabled = *req.ThinkingEnabled
