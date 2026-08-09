@@ -1,4 +1,4 @@
-package main
+package ui
 
 import (
 	"io"
@@ -8,8 +8,8 @@ import (
 )
 
 // drainEvents 收集 channel 事件直到关闭或超时（避免死等）。
-func drainEvents(ch <-chan inputEvent) []inputEvent {
-	var out []inputEvent
+func drainEvents(ch <-chan InputEvent) []InputEvent {
+	var out []InputEvent
 	for {
 		select {
 		case ev, ok := <-ch:
@@ -25,28 +25,28 @@ func drainEvents(ch <-chan inputEvent) []inputEvent {
 
 // TestReadStdinEventsLines 验证普通行输入 → line 事件。
 func TestReadStdinEventsLines(t *testing.T) {
-	ch := readStdinEvents(strings.NewReader("hello\nworld\r\n"), io.Discard)
+	ch := ReadStdinEvents(strings.NewReader("hello\nworld\r\n"), io.Discard)
 	evs := drainEvents(ch)
-	if len(evs) != 2 || evs[0].line != "hello" || evs[1].line != "world" {
+	if len(evs) != 2 || evs[0].Line != "hello" || evs[1].Line != "world" {
 		t.Fatalf("events: %+v", evs)
 	}
 }
 
 // TestReadStdinEventsEsc 验证 Esc(0x1b) → esc 事件。
 func TestReadStdinEventsEsc(t *testing.T) {
-	ch := readStdinEvents(strings.NewReader("ab\x1bcd\n"), io.Discard)
+	ch := ReadStdinEvents(strings.NewReader("ab\x1bcd\n"), io.Discard)
 	evs := drainEvents(ch)
 	// Esc 清空当前行：ab 被清掉，cd 成为新行 → 只有 1 个 line 事件，且之前有 esc 事件。
-	if len(evs) != 2 || !evs[0].esc || evs[1].line != "cd" {
+	if len(evs) != 2 || !evs[0].Esc || evs[1].Line != "cd" {
 		t.Fatalf("events: %+v", evs)
 	}
 }
 
 // TestReadStdinEventsCtrlC 验证 Ctrl+C(0x03) → esc 事件。
 func TestReadStdinEventsCtrlC(t *testing.T) {
-	ch := readStdinEvents(strings.NewReader("\x03"), io.Discard)
+	ch := ReadStdinEvents(strings.NewReader("\x03"), io.Discard)
 	evs := drainEvents(ch)
-	if len(evs) != 1 || !evs[0].esc {
+	if len(evs) != 1 || !evs[0].Esc {
 		t.Fatalf("events: %+v", evs)
 	}
 }
@@ -54,10 +54,10 @@ func TestReadStdinEventsCtrlC(t *testing.T) {
 // TestReadStdinEventsBackspace 验证退格删行尾 + 回显。
 func TestReadStdinEventsBackspace(t *testing.T) {
 	var echo strings.Builder
-	ch := readStdinEvents(strings.NewReader("abc\x7fd\n"), &echo)
+	ch := ReadStdinEvents(strings.NewReader("abc\x7fd\n"), &echo)
 	evs := drainEvents(ch)
 	// abc + 退格 → ab，再 d → abd
-	if len(evs) != 1 || evs[0].line != "abd" {
+	if len(evs) != 1 || evs[0].Line != "abd" {
 		t.Fatalf("events: %+v", evs)
 	}
 	// 回显含退格擦除序列。
@@ -68,9 +68,9 @@ func TestReadStdinEventsBackspace(t *testing.T) {
 
 // TestReadStdinEventsCtrlD 验证 Ctrl+D(0x04) → EOF 关闭 channel。
 func TestReadStdinEventsCtrlD(t *testing.T) {
-	ch := readStdinEvents(strings.NewReader("hi\x04"), io.Discard)
+	ch := ReadStdinEvents(strings.NewReader("hi\x04"), io.Discard)
 	evs := drainEvents(ch)
-	if len(evs) != 1 || evs[0].line != "hi" {
+	if len(evs) != 1 || evs[0].Line != "hi" {
 		t.Fatalf("events: %+v", evs)
 	}
 	// channel 应已关闭（drainEvents 返回而非超时）。
@@ -78,9 +78,9 @@ func TestReadStdinEventsCtrlD(t *testing.T) {
 
 // TestReadStdinEventsUnicode 验证中文（UTF-8 多字节）行输入不拆字。
 func TestReadStdinEventsUnicode(t *testing.T) {
-	ch := readStdinEvents(strings.NewReader("中文测试\n"), io.Discard)
+	ch := ReadStdinEvents(strings.NewReader("中文测试\n"), io.Discard)
 	evs := drainEvents(ch)
-	if len(evs) != 1 || evs[0].line != "中文测试" {
+	if len(evs) != 1 || evs[0].Line != "中文测试" {
 		t.Fatalf("events: %+v", evs)
 	}
 }

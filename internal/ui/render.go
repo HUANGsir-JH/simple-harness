@@ -1,4 +1,4 @@
-package main
+package ui
 
 import (
 	"encoding/json"
@@ -9,11 +9,11 @@ import (
 	"github.com/agent-project/harness/internal/messages"
 )
 
-// output 是最小渲染器抽象（完整 ui.Renderer 在阶段五引入；
+// Output 是最小渲染器抽象（完整 ui.Renderer 在阶段五引入；
 // 阶段二升级为订阅 agent 回合级事件，含 thinking/turn_done）。
-type output interface {
-	start(t *messages.Conversation)
-	event(ev agent.Event)
+type Output interface {
+	Start(t *messages.Conversation)
+	Event(ev agent.Event)
 }
 
 // ANSI 颜色（simple 渲染器；TUI 阶段六插拔）。
@@ -27,17 +27,17 @@ const (
 
 // --- 文本渲染器（默认）-----------------------------------------------------
 
-type textRenderer struct {
+type TextRenderer struct {
 	showThinking bool
 }
 
-func newTextRenderer(showThinking bool) *textRenderer {
-	return &textRenderer{showThinking: showThinking}
+func NewTextRenderer(showThinking bool) *TextRenderer {
+	return &TextRenderer{showThinking: showThinking}
 }
 
-func (r *textRenderer) start(*messages.Conversation) {}
+func (r *TextRenderer) Start(*messages.Conversation) {}
 
-func (r *textRenderer) event(ev agent.Event) {
+func (r *TextRenderer) Event(ev agent.Event) {
 	switch ev.Type {
 	case agent.EventThinkingDelta:
 		if !r.showThinking {
@@ -80,13 +80,13 @@ func toolResultSummary(s string) string {
 
 // --- JSON 渲染器（--json：机器可读的 JSONL 事件）-----------------------------
 
-type jsonRenderer struct{}
+type JSONRenderer struct{}
 
-func (jsonRenderer) start(t *messages.Conversation) {
+func (JSONRenderer) Start(t *messages.Conversation) {
 	emitJSON(map[string]any{"type": "conversation_start", "conversation": t.ID})
 }
 
-func (jsonRenderer) event(ev agent.Event) {
+func (JSONRenderer) Event(ev agent.Event) {
 	switch ev.Type {
 	case agent.EventThinkingDelta:
 		emitJSON(map[string]any{"type": "thinking_delta", "text": ev.Text})

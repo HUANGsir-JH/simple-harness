@@ -36,8 +36,9 @@ REPL（`harness` 无子命令进入）命令：`/switch <id>|--last` 切换会�
 ## 代码架构
 
 ```
-cmd/harness/          # CLI：main（dispatch）/ runtime（统一配置 init）/ build（共享无状态 agent）/ commands（run/resume/sessions + REPL）
+cmd/harness/          # CLI 应用层：main（dispatch）/ runtime（统一配置 init）/ build（共享无状态 agent）/ run+resume+repl+session_mgr（子命令与 REPL 编排）
 internal/
+  ui/                 # ★ 用户交互层：终端输入（raw mode 单一读方事件循环）+ 渲染（text/json）+ 审批交互（ChannelApprover/ApprovalPrompt）
   agent/              # ★ 无状态 ReAct loop（采样→工具→回填，消息序列经 rc.Messages；ADR-026）+ 回合级事件（turn_done 为测试锚点）
   middleware/         # ★ 框架 core：6 hook 扩展机制（onAgent/onReasoning/onToolCall/onActing/onModelCall onion + onSystemPrompt 管道）+ RuntimeContext（承载会话）+ 契约（Approver/ApprovalRequest/DeniedError，ADR-029）
   middleware/impl/    # ★ 内置中间件实现：工具说明注入 / 会话状态 load-save / todo 跨轮提醒（ADR-027）/ 工具结果截断 head/tail + evictions 落盘（ADR-028）/ 工具审批三档 + 黑白名单 + 会话记忆（ADR-029）
@@ -47,7 +48,7 @@ internal/
   agentstate/         # AgentState 快照（模型/thinking 档位/todo/权限/plan/摘要）+ 原子落盘
   session/            # workspace 项目分桶 + 块级 transcript 异步 writer + resume
   e2e/                # 进程外端到端测试（termtest）
-  # 规划中（未实现）：compact（压缩）/ agentsmd（AGENTS.md 注入）/ hooks（子进程，远期）；ui 内联 cmd/renderer.go（output 接口，TUI 规划）
+  # 规划中（未实现）：compact（压缩）/ agentsmd（AGENTS.md 注入）/ hooks（子进程，远期）；TUI（internal/ui 扩展，规划）
 ```
 
 ## 核心架构约束（来自 ADR，见 docs/tasks/DECISIONS.md）

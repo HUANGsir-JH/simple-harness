@@ -1,4 +1,4 @@
-package main
+package ui
 
 import (
 	"context"
@@ -32,7 +32,7 @@ func TestParseApprovalDecision(t *testing.T) {
 		{"  y  ", middleware.DecisionAllow, true}, // trim
 	}
 	for _, c := range cases {
-		got, ok := parseApprovalDecision(c.in)
+		got, ok := ParseApprovalDecision(c.in)
 		if ok != c.ok || (ok && got != c.want) {
 			t.Errorf("parse(%q) = (%v, %v), want (%v, %v)", c.in, got, ok, c.want, c.ok)
 		}
@@ -41,8 +41,8 @@ func TestParseApprovalDecision(t *testing.T) {
 
 // TestChannelApproverRoundTrip 验证请求→主循环答复→决策回传的完整协调。
 func TestChannelApproverRoundTrip(t *testing.T) {
-	reqCh := make(chan *approvalRequest, 1)
-	appr := newChannelApprover(reqCh)
+	reqCh := make(chan *ApprovalPrompt, 1)
+	appr := NewChannelApprover(reqCh)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
@@ -59,17 +59,17 @@ func TestChannelApproverRoundTrip(t *testing.T) {
 	}()
 
 	// 主循环收到请求。
-	var ar *approvalRequest
+	var ar *ApprovalPrompt
 	select {
 	case ar = <-reqCh:
 	case <-ctx.Done():
 		t.Fatal("请求未到达主循环")
 	}
-	if ar.req.ToolName != "shell_command" || ar.req.Summary != "git push" {
-		t.Errorf("请求内容: %+v", ar.req)
+	if ar.Req.ToolName != "shell_command" || ar.Req.Summary != "git push" {
+		t.Errorf("请求内容: %+v", ar.Req)
 	}
 	// 模拟用户输入 "s" → AllowSession。
-	ar.resp <- middleware.DecisionAllowSession
+	ar.Resp <- middleware.DecisionAllowSession
 	select {
 	case d := <-resCh:
 		if d != middleware.DecisionAllowSession {
@@ -84,8 +84,8 @@ func TestChannelApproverRoundTrip(t *testing.T) {
 
 // TestChannelApproverCtxCancel 验证 ctx canceled（Esc 中断）时返回 Deny + err。
 func TestChannelApproverCtxCancel(t *testing.T) {
-	reqCh := make(chan *approvalRequest, 1)
-	appr := newChannelApprover(reqCh)
+	reqCh := make(chan *ApprovalPrompt, 1)
+	appr := NewChannelApprover(reqCh)
 	ctx, cancel := context.WithCancel(context.Background())
 
 	resCh := make(chan struct{})
@@ -97,7 +97,7 @@ func TestChannelApproverCtxCancel(t *testing.T) {
 		}
 		close(resCh)
 	}()
-	<-reqCh // 请求到达主循环
+	<-reqCh  // 请求到达主循环
 	cancel() // 用户 Esc 中断
 	<-resCh
 }

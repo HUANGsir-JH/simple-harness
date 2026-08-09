@@ -13,6 +13,7 @@ import (
 	"github.com/agent-project/harness/internal/agent"
 	"github.com/agent-project/harness/internal/middleware"
 	"github.com/agent-project/harness/internal/session"
+	"github.com/agent-project/harness/internal/ui"
 	"golang.org/x/term"
 )
 
@@ -85,16 +86,16 @@ func runCmd(args []string, jsonOut bool) error {
 	rc := sess.RuntimeContext()
 	sess.AddUser(prompt)
 
-	var renderer output
+	var renderer ui.Output
 	if jsonOut {
-		renderer = jsonRenderer{}
+		renderer = ui.JSONRenderer{}
 	} else {
-		renderer = newTextRenderer(!noThinkingDisplay)
+		renderer = ui.NewTextRenderer(!noThinkingDisplay)
 	}
-	renderer.start(sess.Conversation())
+	renderer.Start(sess.Conversation())
 
 	onEvent := func(ev agent.Event) {
-		renderer.event(ev)
+		renderer.Event(ev)
 		sess.OnAgentEvent(ev) // 块级实时落盘
 	}
 
@@ -102,14 +103,14 @@ func runCmd(args []string, jsonOut bool) error {
 	// ADR-028/029）；非 TTY / MakeRaw 失败 → 不启用审批交互（自动拒绝）、
 	// 无 Esc 中断（跑完即退）。
 	fd := int(os.Stdin.Fd())
-	var inputCh <-chan inputEvent
-	var reqCh chan *approvalRequest
+	var inputCh <-chan ui.InputEvent
+	var reqCh chan *ui.ApprovalPrompt
 	if term.IsTerminal(fd) {
 		if old, err := term.MakeRaw(fd); err == nil {
 			defer func() { _ = term.Restore(fd, old) }()
-			inputCh = readStdinEvents(os.Stdin, os.Stdout)
-			reqCh = make(chan *approvalRequest, 8)
-			rc.Approver = newChannelApprover(reqCh)
+			inputCh = ui.ReadStdinEvents(os.Stdin, os.Stdout)
+			reqCh = make(chan *ui.ApprovalPrompt, 8)
+			rc.Approver = ui.NewChannelApprover(reqCh)
 		}
 	}
 
@@ -118,7 +119,7 @@ func runCmd(args []string, jsonOut bool) error {
 	runDone := make(chan error, 1)
 	go func() { runDone <- a.Run(runCtx, rc, onEvent) }()
 
-	var pending *approvalRequest
+	var pending *ui.ApprovalPrompt
 	for {
 		select {
 		case ev, ok := <-inputCh:
@@ -130,35 +131,35 @@ func runCmd(args []string, jsonOut bool) error {
 			}
 			// 审批挂起：输入路由为审批答复（y/s/n / Esc）。
 			if pending != nil {
-				if ev.esc {
-					pending.resp <- middleware.DecisionDeny
+				if ev.Esc {
+					pending.Resp <- middleware.DecisionDeny
 					pending = nil
 					cancel()
 					continue
 				}
-				line := strings.TrimSpace(ev.line)
+				line := strings.TrimSpace(ev.Line)
 				if line == "" {
-					printApprovalUI(pending.req)
+					ui.PrintApprovalUI(pending.Req)
 					continue
 				}
-				dec, ok := parseApprovalDecision(line)
+				dec, ok := ui.ParseApprovalDecision(line)
 				if !ok {
 					fmt.Printf("  无效输入（y/s/n）> ")
 					continue
 				}
-				pending.resp <- dec
+				pending.Resp <- dec
 				pending = nil
 				continue
 			}
-			if ev.esc {
+			if ev.Esc {
 				cancel() // 单轮 Esc/Ctrl+C 中断
 			}
 			// 普通行忽略（runCmd 无 REPL 命令）。
 		case req := <-reqCh:
 			pending = req
-			printApprovalUI(req.req)
+			ui.PrintApprovalUI(req.Req)
 			if jsonOut {
-				emitApprovalJSON(req.req)
+				ui.EmitApprovalJSON(req.Req)
 			}
 		case err := <-runDone:
 			if errors.Is(err, context.Canceled) {

@@ -4,6 +4,15 @@
 
 ## 2026-08-09
 
+### cmd/harness 瘦身：ui 交互层下沉 + session_mgr 拆分 ✅
+
+- **背景**：用户指 cmd/harness 主入口包过重（9 生产文件 ~1080 行，repl.go 323 行），关切代码结构与长期可维护性。
+- **判断**：臃肿本质不是文件多，而是 main 包承载了不属于应用层的 UI 机制（终端输入/渲染/审批展示）——renderer/approver/input 三文件只依赖 internal 类型、零 cmd 专属依赖，本该在 internal。
+- **拆分 1**：repl.go（323 行）拆出 `session_mgr.go`（SessionManager/switchTo/switchLast/replCommand/parseCommand/handleCommand），repl.go 只剩 repl + runREPL；`commands_test.go` 改名 `session_mgr_test.go`（其测试本就全是 SessionManager）。
+- **下沉 ui**：新建 `internal/ui`（用户交互层）——cmd 的 input.go/renderer.go/approver.go 整体移入：`readStdinEvents`→`ui.ReadStdinEvents`、`output`→`ui.Output`、`textRenderer`/`jsonRenderer`→`ui.TextRenderer`/`ui.JSONRenderer`、`approvalRequest`/`channelApprover`→`ui.ApprovalPrompt`/`ui.ChannelApprover`；接口方法与字段导出（Start/Event/Esc/Line/Req/Resp）；ANSI 常量/argsSummary/emitJSON 成 ui 包私有。两个测试随迁。
+- **结果**：cmd/harness 生产文件 9→7（main/runtime/build/run/resume/repl/session_mgr），全部是"装配 + 子命令编排 + REPL 业务循环"，无一条终端交互机制；`internal/ui` ~250 行独立交互层，阶段 6 TUI 在此扩展。依赖 ui→{middleware, agent, messages} 单向无环。
+- **验证**：全量 `go build && go vet && go test ./...` 绿 + `go test -race ./...` 绿。
+
 ### 项目结构可维护性重构 ✅（middleware core/impl 分层 + 文件拆分）
 
 - **背景**：用户评估结构可维护性。要点——① `cmd/harness/commands.go` 651 行混 5 关注点（run/REPL/输入/resume）；② `provider/anthropic.go` 341 行混 client/消息转换/流适配；③ `session/transcript.go` 写侧（异步 writer）与读侧（resume 重建）混；④ `middleware/approval.go`（跨包契约）与审批实现分散，用户指其"与中间件无关"；⑤ `messages/jsonl.go` 死代码（ADR-025 后无生产调用）；⑥ `agent/util.go` 单函数文件。

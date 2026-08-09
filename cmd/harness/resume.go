@@ -12,6 +12,7 @@ import (
 
 	"github.com/agent-project/harness/internal/agentstate"
 	"github.com/agent-project/harness/internal/session"
+	"github.com/agent-project/harness/internal/ui"
 )
 
 // resumeCmd 恢复会话（--last 或 <id>）并进入 REPL 继续。
@@ -80,11 +81,11 @@ func resumeCmd(args []string, jsonOut bool) error {
 	}
 	defer mgr.closeAll()
 
-	var renderer output
+	var renderer ui.Output
 	if jsonOut {
-		renderer = jsonRenderer{}
+		renderer = ui.JSONRenderer{}
 	} else {
-		renderer = newTextRenderer(true)
+		renderer = ui.NewTextRenderer(true)
 	}
 	return runREPL(ctx, mgr, renderer)
 }

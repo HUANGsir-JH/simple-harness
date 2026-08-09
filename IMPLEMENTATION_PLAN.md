@@ -33,8 +33,9 @@
 
 ```
 harness/
-├── cmd/harness/          # CLI：main（dispatch: run/resume/sessions/version/help）/ runtime（统一配置 init）/ build（共享无状态 agent）/ run+repl+input+resume（子命令与 REPL）/ approver（审批 channel 协调）/ renderer（output 接口 + --json）
+├── cmd/harness/          # CLI 应用层：main（dispatch: run/resume/sessions/version/help）/ runtime（统一配置 init）/ build（共享无状态 agent）/ run+resume+repl+session_mgr（子命令与 REPL 编排）
 ├── internal/
+│   ├── ui/               # ★ 用户交互层：终端输入（raw mode 单一读方事件循环）/ 渲染（text/json）/ 审批交互（ChannelApprover）
 │   ├── agent/            # ★ 无状态 ReAct loop（采样→工具→回填，消息经 rc.Messages；ADR-026）+ 回合级事件
 │   ├── middleware/       # ★ 框架 core：6 hook 扩展机制 + 洋葱链 + RuntimeContext（承载会话）+ 契约类型（Approver/ApprovalRequest/DeniedError）
 │   ├── middleware/impl/  # ★ 内置中间件实现（工具说明/会话状态 load-save/todo 提醒/工具截断/审批策略）
@@ -44,7 +45,7 @@ harness/
 │   ├── agentstate/       # AgentState 快照（模型/档位/todo/权限/CWD/plan/摘要）+ 原子落盘
 │   ├── session/          # workspace 项目分桶 + 块级 transcript 异步 writer + resume
 │   ├── e2e/              # 进程外端到端测试（termtest 真实 TTY + mock HTTP）
-│   └── # 规划中（未实现）：compact / agentsmd / hooks；ui 内联 cmd（output 接口，TUI 规划）
+│   └── # 规划中（未实现）：compact / agentsmd / hooks；TUI（internal/ui 扩展，规划）
 ├── config.example.yaml   # 配置示例
 └── docs/                 # 设计文档（DECISIONS/TASKS/PROGRESS + DATA_STRUCTURES）
 ```
@@ -170,9 +171,9 @@ type Tool interface {
 
 - PreToolUse / PermissionRequest / Stop 三点；子进程模型（stdin/stdout JSON + timeout）。**已被进程内 middleware 承载**（ADR-021），仅作为 middleware 的一种实现方式保留。
 
-### 11. UI（现状：cmd/output 接口；TUI 规划）
+### 11. UI（现状：internal/ui 交互层；TUI 规划）
 
-- `output` 接口（text 渲染器 + `--json` JSONL 事件），事件回调双转发（渲染 + transcript 落盘）。审批 UI 独立函数（approver.go）。
+- `internal/ui.Output` 接口（text 渲染器 + `--json` JSONL 事件），事件回调双转发（渲染 + transcript 落盘）。审批交互（ChannelApprover/ApprovalPrompt + 审批 UI）、raw mode 输入（ReadStdinEvents）同在 internal/ui。
 - 完整 TUI（ratatui 式）留阶段 6。
 
 ## 实施阶段（✅ 已完成 / ⏳ 待办，严格区分）
