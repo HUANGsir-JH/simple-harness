@@ -1,338 +1,214 @@
 # Go Agent Harness — 实施计划
 
+> 本文档是**当前权威状态**（与代码同步）。已定案的架构决策与核心设计写在下面，实现时遵循而非重新讨论；历史决策详情见 `docs/tasks/DECISIONS.md`（ADR-021~029）。实施阶段严格区分 **✅ 已完成** 与 **⏳ 待办**。任务跟踪在 `docs/tasks/{TASKS,PROGRESS}.md`。
+
 ## Context
 
-参照 OpenAI Codex CLI（`../codex/codex-rs`，已做两轮源码调研）的架构，用 Go 构建一个**可真实使用**的极简 agent harness（命令行形式）。定位为**通用框架**：未来可被 resume-agent 等其它项目引用。
+参照 OpenAI Codex CLI（`../codex/codex-rs`，Rust）+ AgentScope Java v2 的架构，用 Go 构建一个**可真实使用**的极简 agent harness（命令行）。定位为**通用框架**，未来可被 resume-agent 等其它项目引用。
 
-目标不是教学 MVP，而是能真实完成开发任务的框架：
-多后端（OpenAI / Anthropic / OpenAI-兼容）、会话恢复、并行工具调用、子 agent（含单向通信）、上下文压缩、AGENTS.md 注入、Hooks、分层审批。
+**现状（2026-08-09）**：阶段 1（骨架+消息+provider+最小 loop）→ 阶段 2（工具系统+并发+渲染+middleware 骨架+REPL）→ 阶段 2.5（Workspace+AgentState+会话落盘/resume）→ 架构重构（ADR-026 无状态 agent+运行时切换）→ todo 工具（ADR-027）→ 工具结果截断/用户中断/shell 缓解（ADR-028）→ **阶段 3 审批（ADR-029）全部完成 ✅**。待办：阶段 4 剩余（AGENTS.md 注入 + 系统提示词拼接 + 上下文压缩）、阶段 5（子 agent）、阶段 6（可选）。
 
-## 已确认决策
+## 已确认决策（当前生效）
 
 | 决策点 | 结论 |
 |---|---|
 | 语言 | Go |
-| LLM 后端 | 抽象为多后端；**配置结构体 + 1 个 HTTP 客户端**（codex 的 ConfiguredModelProvider 模式：base_url + env_key + wire_api，Anthropic/Ollama 无需独立实现） |
-| 客户端依赖 | 官方 SDK（openai-go、anthropic-sdk-go） |
-| wire 数量 | **只保留 anthropic Messages 一个 wire**（2026-08-07 决策：Responses 与 Chat Completions 都不要，openai wire 整体移除）——provider 单一 wire 最大 simple；代价：openai 兼容端点（DeepSeek openai 格式 / 阿里 qwen）不再支持，DeepSeek 只能走其 anthropic 兼容端点 |
-| 事件模型 | **分层**：provider 层 Event（采样级，4 类 → 扩展 thinking_delta/生命周期，信号基于两 SDK 各自能力）+ agent 层回合级事件（turn_done/tool_result）。不搞 AgentScope start/delta/end 三件套（2026-08-07 探索确认） |
-| 内部消息模型 | **统一 Message 类型**（role/content/tool_calls/tool_results），provider 适配转换 |
-| 会话存储 | JSONL 文件（每会话一个，追加写）+ 轻量 AgentState 快照，落在 **~/.harness/ 统一 workspace**（见"Workspace"行） |
-| CLI 交互 | Renderer 接口抽象，v1 简单流式渲染，TUI 后续插拔 |
-| 扩展机制 | **进程内 middleware**（onAgent / onReasoning / onActing / onModelCall / onSystemPrompt 五 hook，洋葱式）+ 链机制为核心扩展点；子进程 hooks 降级远期（2026-08-07 AgentScope 调研修订，替代原子进程 hook 方案） |
-| 权限审批 | 三档权限（readonly / acceptedit / bypass）+ 规则匹配引擎（保留扩展点）；**复杂规则匹配不强做**——middleware 挂载点天然承载后续演进（2026-08-07 确认） |
-| 系统提示词 | 动态拼接（AGENTS.md 注入 + 组装），作为 middleware 的 **onSystemPrompt** hook 实现 |
-| 会话状态 | JSONL 消息流（追加写，换后端零迁移）+ **轻量 AgentState 快照**（权限/todo/plan 指针/摘要 → 完整 resume）（2026-08-07 AgentScope 调研修订） |
-| Workspace | **~/.harness/ 项目分桶**（ADR-025，2026-08-08 修订）：workspaces/&lt;项目转义&gt;/&lt;session&gt;/{historys 块级 transcript, agentstate.json, plans} + 全局 agents.md/config.yaml；扩展目录三层（全局 subagents/tools.json/memory/logs / 项目 allowlist / 会话 evictions）；AGENTS.md 保持项目级向上搜索 + 全局 agents.md 拼接注入 |
-| Compaction 范围 | TokenBudget v1 保底 + 摘要式 + **大工具结果 eviction**（80K 落盘 + preview + read_file 指针）；**不做 overflow 安全网**（eviction 撑宽度后超限概率低）（2026-08-07 确认） |
-| 工具执行 | 并发执行全部 tool_call，结果按 call_id 回填 |
-| 子 agent | **内置几个子 agent**（general-purpose 等）+ **允许并行** + **状态跟踪**（pending/running/completed）；自定义声明式预留（不实现）；保留 fork 过滤 + 主→子单向（2026-08-07 确认，细节阶段五探讨） |
-| 内置工具 | 文件操作 + Shell 执行 + apply_patch（grep/搜索未选，可后续补）；**todo 工具单独开阶段做** |
-| 配置 | YAML 文件（~/.harness/config.yaml + 项目级）+ 环境变量覆盖 |
-| thinking 推理模式 | 模型级配置（`enabled` + `efforts` 档位集，默认启用/默认 high）；CLI `--effort` / `--thinking` / `--no-thinking` 运行时覆盖；按各 wire 标准参数传递（openai → reasoning.effort；anthropic → thinking + output_config.effort） |
-| 定位 | 通用框架（内部包导出、文档完善），项目名暂用 `harness` |
+| wire | **单 anthropic Messages wire**（ADR-022）：多后端 = 多 anthropic 兼容端点（base_url 覆盖），DeepSeek 走其 anthropic 兼容端点；不写多 provider 实现 |
+| 事件模型 | **分层**：provider 采样级（text/thinking **delta + 块完成** text_done/thinking_done + tool_call + done/error，无生命周期事件）+ agent 回合级（turn_start/turn_done/tool_call/tool_result/thinking_done/text_done，**带 MsgID** 关联块归属） |
+| 内部消息模型 | **统一 Message**（role/content/**thinking**/tool_calls/**tool_results 多块合并**/is_error），provider 适配转换；thinking 存审计不重放（ADR-025） |
+| 扩展机制 | **进程内 middleware**（6 hook：onAgent/onReasoning/onToolCall/onActing/onModelCall onion + onSystemPrompt transformer 链）+ 链机制为核心扩展点；**子进程 hooks 降级远期**（ADR-021） |
+| 权限审批 | **三档**（readonly/acceptedit/bypass）+ shell 黑白名单 + **会话级记忆**（Approved）+ config 播种 + `/permission` 切换（ADR-029）；复杂规则匹配不强做，middleware 扩展点承载 |
+| 会话存储 | **双轨**（ADR-025）：消息流 → **块级 transcript**（historys/history-N.jsonl，异步 writer + ordinal，压缩切新文件）；非消息状态 → **AgentState 快照**（模型/档位/todo/权限/CWD/plan/摘要）→ 完整 resume |
+| Workspace | **~/.harness/ 项目分桶**（ADR-025）：workspaces/&lt;项目转义&gt;/&lt;session&gt;/{historys, plans, agentstate.json, evictions} + 全局 config.yaml；evictions/ = 超长工具结果落盘（模型 read_file 读全量，ADR-028） |
+| 工具执行 | **并发执行**全部 tool_call（errgroup），结果按 call_id 合并成**一条** tool_result 消息回填（anthropic 紧邻要求，ADR-024） |
+| 大工具结果 | **20K 阈值截断**（ADR-028）：head/tail 各 10K + 落盘 evictions/ + 路径提示；transcript 记完整、conversation 记 preview；read_file 豁免；**不做 overflow 安全网** |
+| 用户中断 | **Esc/Ctrl+C**（raw mode 事件循环 + 单一读方 channel，ADR-028）：cancel 本轮 runCtx + AddUser 提示落盘；非 TTY 降级 |
+| todo 工具 | **update_todo**（ADR-027）：全量替换 + 跨轮偏离提醒（TodoReminderMiddleware） |
+| 配置 | YAML（~/.harness/config.yaml + 项目级 config.local.yaml），加载/校验统一在 provider 包；`defaultApp()` 惰性单例（ADR-026） |
+| thinking | 模型级配置（enabled + efforts）+ CLI `--effort/--thinking/--no-thinking` 运行时覆盖；按 anthropic 标准参数传递 |
+| 内置工具 | 7 个：read_file / list_dir / glob / write_file / shell_command / apply_patch / update_todo |
+| 压缩 / 子 agent / AGENTS.md / TUI / Hooks | **规划中（未实现）**，见"待办阶段" |
 
-## 架构总览
+## 架构总览（当前实际目录）
 
 ```
 harness/
-├── cmd/harness/          # 入口：run / resume / config 子命令
+├── cmd/harness/          # CLI：main（dispatch: run/resume/sessions/version/help）/ runtime（统一配置 init）/ build（共享无状态 agent）/ commands（run/resume + REPL）/ approver（审批 channel 协调）/ renderer（output 接口 + --json）
 ├── internal/
-│   ├── agent/            # ★ 纯 ReAct loop（采样→工具→回填）+ 事件流（不含任何工程能力）
-│   ├── middleware/       # ★ Middleware 接口（onAgent/onReasoning/onActing/onModelCall/onSystemPrompt）+ 洋葱链
-│   ├── provider/         # Provider 接口 + HTTP 客户端（仅 anthropic Messages wire，2026-08-07 移除 openai wire）
-│   ├── messages/         # 统一 Message 模型 + JSONL 序列化
-│   ├── tools/            # 工具注册表 + shell/file/apply_patch 实现
-│   ├── approval/         # 三档权限（readonly/acceptedit/bypass），onActing middleware + 会话级记忆（ADR-029，✅ 2026-08-09）
-│   ├── session/          # 会话（JSONL 追加写 + 轻量 AgentState 快照 + resume），落 ~/.harness/ workspace
-│   ├── compact/          # 上下文压缩（TokenBudget v1 + 摘要式 + 大结果 eviction），作为 onReasoning middleware
-│   ├── ui/               # Renderer 接口：simple（v1）/ tui（v2 插拔）
-│   ├── agentsmd/         # AGENTS.md 向上搜索 + 注入，作为 onSystemPrompt middleware 实现
-│   ├── hooks/            # （远期）子进程 hook，middleware 的一种实现
-│   └── config/           # YAML 配置加载 + 环境变量合并
-├── go.mod
-└── docs/                 # 设计文档
+│   ├── agent/            # ★ 无状态 ReAct loop（采样→工具→回填，消息经 rc.Messages；ADR-026）+ 回合级事件
+│   ├── middleware/       # ★ 6 hook 扩展机制 + 洋葱链 + RuntimeContext（承载会话）+ 契约类型（Approver/DeniedError）+ TodoReminder/ToolOutput/Approval 中间件
+│   ├── provider/         # 单 anthropic wire + 块事件适配 + per-call 覆盖（Request.Model/ThinkingEnabled/Effort）
+│   ├── messages/         # 统一 Message 模型（含 Thinking）+ JSONL 序列化
+│   ├── tools/            # Tool 接口（Handle 带 rc）+ 注册表 + 7 内置工具
+│   ├── agentstate/       # AgentState 快照（模型/档位/todo/权限/CWD/plan/摘要）+ 原子落盘
+│   ├── approval/         # 审批策略（三档 + 黑白名单 + Decide 纯函数）+ ApprovalMiddleware
+│   ├── session/          # workspace 项目分桶 + 块级 transcript 异步 writer + 无状态 SessionMiddleware + resume
+│   ├── e2e/              # 进程外端到端测试（termtest 真实 TTY + mock HTTP）
+│   └── # 规划中（未实现）：compact / agentsmd / hooks；ui 内联 cmd（output 接口，TUI 规划）
+├── config.example.yaml   # 配置示例
+└── docs/                 # 设计文档（DECISIONS/TASKS/PROGRESS + DATA_STRUCTURES）
 ```
 
 ## 核心设计
 
-### 0. Middleware（进程内扩展机制 · 2026-08-07 新增）
+> 已实现部分写**当前实现**（与代码一致）；未实现部分标注"规划"。
 
-参照 AgentScope 的第一支柱：**capabilities 叠加在 reasoning loop 上，不揉进 loop 里**。agent 核心循环只做 采样→工具→回填；压缩/权限/记忆/AGENTS.md 注入全部作为 middleware 挂载。
+### 0. Middleware（进程内扩展机制，ADR-021）
+
+capabilities 叠加在 reasoning loop 上，不揉进 loop：压缩/权限/提醒/AGENTS.md 注入全部作为 middleware 挂载。
 
 ```go
+// 6 hook。前五者洋葱（next 前 = before、返回后 = after），onSystemPrompt 是
+// transformer 链（前输出 → 后输入）。具体签名见 internal/middleware/chain.go。
 type Middleware interface {
-    OnAgent(ctx, in AgentInput, next Next[AgentInput])                          // 包一层完整回复（洋葱）
-    OnReasoning(ctx, in ReasoningInput, next Next[ReasoningInput])              // 包一个推理轮（洋葱）
-    OnActing(ctx, in ActingInput, next Next[ActingInput])                       // 包一次工具执行（洋葱）→ 权限扩展点
-    OnModelCall(ctx, in ModelCallInput, next Next[ModelCallInput])              // 包一次模型调用（洋葱）
-    OnSystemPrompt(ctx, current string) string                                  // 组装系统提示（transformer 链）
+    OnAgent(ctx, rc, AgentInput, next) error        // 包一整个 agent.Run（回合）
+    OnReasoning(ctx, rc, ReasoningInput, next) error // 包一次采样轮
+    OnToolCall(ctx, rc, ToolCallInput, next) error   // 包一批工具调用（发起→执行→回填）
+    OnActing(ctx, rc, ActingInput, next) error       // 包单个工具执行
+    OnModelCall(ctx, rc, ModelCallInput, next) error // 包一次模型 API 调用（最内层）
+    OnSystemPrompt(ctx, rc, current string) (string, error) // 组装系统提示（transformer）
 }
 ```
 
-- **两种类型**：前四者是 **onion**（`next.apply(input)` 进入内层，前后都可插逻辑、可观察事件流）；`onSystemPrompt` 是 **transformer**（前输出 → 后输入，从左到右）。
-- **挂载点用途映射**：`onActing` = 工具权限扩展点（阶段三 approval 挂这）；`onSystemPrompt` = 系统提示词动态拼接 + AGENTS.md 注入（阶段四 agentsmd 挂这）；`onReasoning` = 上下文压缩（阶段四 compact 挂这）。
-- **阶段落地**：阶段二只搭**挂载点骨架**（链机制 + 事件流走通，中间件本体为空实现），避免阶段二就把工程能力写进 agent.go。
+- **挂载点映射**：`onActing` = 工具审批（ApprovalMiddleware，ADR-029）；`onToolCall` = 工具结果截断（ToolOutputMiddleware，ADR-028）；`onReasoning` = todo 偏离提醒（TodoReminder，ADR-027）+ 压缩（规划）；`onSystemPrompt` = 工具说明注入（ToolInstructions）+ AGENTS.md（规划）；`onAgent` = 会话状态 load/save（SessionMiddleware）。
+- **注入机制**：`RuntimeContext`（rc）per-call 新建承载会话（Messages/State/StatePath/Model/Thinking*/Approver）；中间件从 rc 读写，**无状态可并发**（共享 chain 多 goroutine 安全，ADR-026）。
+- **事件分层**：provider 采样级（delta + 块完成 + tool_call + done/error）→ agent 回合级（带 MsgID 关联块归属）→ 渲染器/transcript 双转发。
 
-**事件模型（分层 · 2026-08-07 探索确认）**：不引入 AgentScope 的 start/delta/end 三件套，按两层分工：
-
-- **provider 层 `Event`（采样级，贴近 SDK）**：现有 4 类（text_delta / tool_call / done / error）→ 扩展：
-  - `thinking_delta`——推理文本（anthropic 完整流式 thinking_delta）
-  - 生命周期 `start` / `done` / `failed` / `incomplete`——信号来源：anthropic message_start/stop + error（失败是阶段四 overflow 安全网的触发信号）
-- **agent 层回合级事件（阶段二新建）**：`turn_done`（回合结束 = 测试锚点）、`tool_result`（工具执行结果，provider 不感知执行）等，渲染器 / `--json` / TUI 订阅
-
-### 1. 统一消息模型（`internal/messages/`）
+### 1. 统一消息模型（internal/messages/）
 
 ```go
 type Message struct {
-    ID       string      `json:"id"`
-    Role     string      `json:"role"`   // user | assistant | tool_result | developer
-    Content  string      `json:"content,omitempty"`
-    ToolCalls []ToolCall `json:"tool_calls,omitempty"` // assistant 消息携带
-    ToolCallID string    `json:"tool_call_id,omitempty"` // tool_result 关联
-}
-
-type ToolCall struct {
-    ID       string          `json:"id"`
-    Name     string          `json:"name"`
-    Args     json.RawMessage `json:"args"`
-    Result   *ToolResult     `json:"result,omitempty"`
+    ID          string            `json:"id,omitempty"`
+    Role        Role              // user | assistant | tool | developer
+    Content     string            // assistant 文本
+    Thinking    string            // assistant 推理（存审计不重放，ADR-025）
+    ToolCalls   []ToolCall        // assistant 携带
+    ToolCallID  string            // tool 消息关联
+    ToolResults []ToolResultBlock // tool 消息携带（多块合并，anthropic 紧邻要求）
+    IsError     bool              // 单块 tool result 失败标记
 }
 ```
 
-- 核心层只操作统一模型；provider 适配层负责 ↔ 原生格式转换（`openai.go` / `anthropic.go`）
-- JSONL 会话文件直接存统一模型，**换后端零迁移**
+- 核心层只操作统一模型；provider 适配层 ↔ anthropic 原生格式。
+- **transcript（磁盘）= 块级事件流**（tool_use / tool_result 各一行，并发结果独立行）；**conversation（模型输入）= 合并消息**（一条 tool 消息多块）。resume 时 appendToolResult 合并（ADR-025）。
 
-### 2. Provider 抽象（`internal/provider/`）
+### 2. Provider（internal/provider/，ADR-022）
 
-```go
-type Provider interface {
-    BaseURL() string
-    APIKey() string          // 从 env 读取
-    WireAPI() WireAPI        // "responses" | "chat"
-    ContextWindow(model string) int   // 模型目录（硬编码 map，可后续扩展）
-}
+- **单 anthropic wire**：`client.Stream(ctx, Request) (EventStream, error)`；Request 含 Model/Instructions/Messages/Tools/Thinking*/MaxOutputTokens。多后端 = 多 anthropic 兼容端点（base_url + api_key/env_key），配置驱动。
+- **块事件适配**：流式 delta → 渲染；块完成（thinking_done/text_done）→ 组装 Message.Thinking/Content（ADR-025）；tool_call → 收集。
+- **per-call 覆盖**（ADR-026）：Request.Model/ThinkingEnabled/ThinkingEffort，nil/空 = client 默认；会话级持久化在 AgentState。
+- **重试**（ADR-012）：依赖 anthropic SDK 内置退避（429/5xx）；不自研。
 
-type LLMClient interface {
-    Stream(ctx context.Context, req StreamRequest) (<-chan StreamEvent, error)
-}
+### 3. Agent Loop（internal/agent/，ADR-026）
 
-type StreamEvent struct {
-    Type     EventType   // TextDelta | ToolCallDone | TurnComplete | Error
-    Text     string
-    ToolCall *ToolCall
-    Error    error
-}
+**无状态**：`Run(ctx, rc, onEvent)` 从 rc.Messages 读消息序列并追加；不持有会话，每 Run 新建 rc。
+
+```
+Run（onAgent 包裹：SessionMiddleware load/save）
+  循环：
+    reasoning（onReasoning 包裹）→ sample（onModelCall 包裹 Stream）
+      → 收集 thinking/text/tool_call → assistant 消息追加
+    toolCalls 为空 → 回合结束（turn_done）
+    否则 runToolBatch（onToolCall 包裹）：
+      并发执行每个 tool_call（onActing 包裹：审批 before）
+      → 结果按 call_id 收集 → 合并成一条 tool_result 消息回填
 ```
 
-- **不写多 provider 实现**：一个配置结构体（base_url / env_key / wire_api）+ 一个 HTTP 客户端
-- 重试：指数退避 + 抖动（200ms × 2^n，0.9~1.1 随机），流重试上限 10、请求重试上限 4（对应 codex `responses_retry.rs`）
-- 错误分类：可重试（429/5xx）→ 退避重试；ContextWindowExceeded → 触发压缩；不可重试 → 冒泡
+- **错误二分类**：工具错误 `RespondToModel`（回填循环继续）/ `Fatal`（终止）；**审批拒绝 = 独立 `DeniedError`**（回填、不取消整批、循环继续，ADR-029）。
+- **用户中断**：Esc/Ctrl+C（raw mode 单一读方）→ cancel 本轮 runCtx → AddUser 提示落盘（ADR-028）。
 
-### 3. Agent Loop（`internal/agent/`）
-
-```go
-// 一次 turn = 从用户消息到 agent 最终回复
-for {
-    events := llm.Stream(ctx, history, tools, model)
-    sawToolCall := false
-    for ev := range events {
-        switch ev.Type {
-        case TextDelta:     renderer.Write(ev.Text)
-        case ToolCallDone:  sawToolCall = true; go executeTool(ev.ToolCall) // 并发
-        case TurnComplete:  /* 结束判定 */
-        }
-    }
-    if !sawToolCall { break }   // 无 tool_call → turn 结束
-    // 工具结果按 call_id 回填历史 → 下一轮 sampling
-}
-```
-
-- **结束判定**：本轮无 tool_call → 结束（对应 codex `needs_follow_up` 语义）
-- **错误二分类**（codex 最重要的语义）：
-  - `RespondToModel`（工具报错 → 文本回填历史，循环继续）
-  - `Fatal`（终止 turn）
-- **并行工具**：errgroup 并发执行全部 tool_call，任一失败只影响自己；结果按 call_id 排序回填（语义等价 codex FuturesOrdered）
-- 用户中断：`signal.NotifyContext(SIGINT)` 贯穿全局 ctx
-- **无 max_turns 硬限制**（防死循环靠压缩 + 用户中断，同 codex）
-
-### 4. 工具系统（`internal/tools/`）
+### 4. 工具系统（internal/tools/）
 
 ```go
 type Tool interface {
     Name() string
-    Spec() ToolSpec          // name + description + parameters JSON Schema
-    Handle(ctx context.Context, callID string, args json.RawMessage) (ToolResult, error)
+    Spec() provider.ToolSpec      // name + description + parameters JSON Schema
+    Handle(ctx, rc, callID string, args json.RawMessage) (ToolResult, error) // rc 供读状态
 }
 ```
 
-- 注册表：`map[string]Tool` + 有序列表（模型可见顺序稳定）
-- 错误约定：返回 `*ToolError{RespondToModel bool, Message string}` —— false=可回模型继续，true=Fatal
-- 结果统一包装为 `{success: bool, text: string}` 文本回填，输出截断（20k 字符）
-- 内置工具：
-  - `read_file`（路径+行范围）
-  - `list_dir` / `glob`
-  - `shell_command`（command/workdir/timeout_ms/输出截断）
-  - `apply_patch`（diff 语言，语法说明注入系统提示）
+- 注册表：有序列表（模型可见顺序稳定）；错误 `*ToolError{RespondToModel, Message}`。
+- 内置 7 工具：read_file / list_dir / glob / write_file / shell_command / apply_patch / update_todo。
+- **工具结果截断**：工具返回完整结果，截断策略在 ToolOutputMiddleware（onToolCall after，20K head/tail + evictions/ 落盘，ADR-028）。
 
-### 5. 审批（`internal/approval/`）
+### 5. 审批（internal/approval/，ADR-029）
 
-- 三态策略（对应 codex `AskForApproval`）：`UnlessTrusted`（默认）/ `OnRequest` / `Never`
-- 黑白名单（搬 codex `BANNED_PREFIX_SUGGESTIONS` 表 + 只读安全命令白名单）：
-  - 危险：`rm -f`、`sudo`、`curl|sh`、`chmod -R`、`mkfs` 等 → 询问
-  - 安全只读：`ls`、`cat`、`git status` 等 → 自动放行
-- TTY 检测：非 TTY 自动拒绝；TTY 弹 Y/n/remember 三选
-- remember 写入 `~/.harness/allowlist.json`
-- **拒绝 ≠ Fatal**：拒绝后作为普通 tool 错误文本回填模型，模型换思路重试
+**三层正交设计**（完整版见 `DATA_STRUCTURES.md §3.9`）：
 
-### 6. 会话存储（`internal/session/`）
+- **状态层**：`AgentState.Permission{Mode, Approved}`（会话级）；config `approval.mode` 创建时播种，`/permission` 运行时切换，`s` 批准记入 Approved，resume 恢复。
+- **策略层**：纯函数 `Decide(call, mode, approved)` → Allow/Ask/Deny。判定顺序：bypass → 会话记忆命中 → 只读/todo → 编辑（按模式）→ shell（黑名单 Ask / 白名单 Allow / 其它 Ask）→ 未知 Ask。命令规范化（前 2 token，`git status --porcelain`→`git status`），记忆与黑白名单共用 key。
+- **交互层**：`Approver` 接口（CLI 注入 rc.Approver；nil = 非 TTY 自动拒绝）。`channelApprover` 经 reqCh 与 REPL/runCmd 主循环协调（单一读方），打印 UI + 下一行输入路由为 y/s/n。
+- **拒绝 ≠ Fatal**：拒绝返回 `middleware.DeniedError`，agent 调用层捕获回填（不取消整批）。
 
-- 每会话一个 JSONL 文件：`~/.harness/sessions/<timestamp>-<id>.jsonl`
-- 追加写 + `os.O_APPEND`，存统一 Message 模型
-- resume：读文件反序列化 → 按 provider 格式重发历史
-- 子命令：`run` / `resume <id>|--last` / `config`
+### 6. 会话存储（internal/session/，ADR-025）
 
-### 7. 上下文压缩（`internal/compact/`）
+- **双轨**：消息流 → 块级 transcript（historys/history-N.jsonl，异步 writer 单 goroutine FIFO + ordinal；压缩切新文件 `NewSegment`）；非消息状态 → agentstate.json（SessionMiddleware onAgent load/save，每次 Run 进出）。
+- **项目分桶**：`~/.harness/workspaces/<项目转义>/<session-id>/{historys, plans, agentstate.json, evictions}`；bucket = FindProject 项目根，`state.CWD` = 会话启动目录（ADR-028，两者解耦）。
+- **resume**：只读最大序号 transcript 文件逐行重建 + LoadFile 恢复 AgentState。
 
-- **v1（TokenBudget 式）**：token 估算超限（`min(autoCompactLimit, contextWindow) - 缓冲`）→ 清空历史保留系统提示 + 最近 N 条消息 + 一条 `[对话已压缩，继续任务]` 占位。约 10 行。
-- **v2（摘要式）**：单独调 LLM 生成摘要，保留最近用户消息（对应 codex 默认方案）
-- 触发时机：turn 开始前（PreTurn）+ 采样后超限（MidTurn）
+### 7. 规划：上下文压缩（internal/compact/）
 
-### 8. 子 Agent（`internal/agent/subagent.go`）
+- **v1 TokenBudget**：token 超限 → 清历史保留最近 N 条 + 占位；**v2 摘要式**：LLM 生成摘要 + 保留最近用户消息。
+- 触发：turn 开始前（PreTurn）+ 采样后超限（MidTurn）；触发时 `NewSegment` 切新文件，seed = 摘要+保留。
+- **不做 overflow 安全网**（eviction 撑宽度，ADR-009/028）。
+- 作为 onReasoning middleware 挂载（ADR-021 挂载映射）。
+- **注意**：大工具结果 eviction（20K 落盘 evictions/）已由 ADR-028 完成，不属于本模块。
 
-- `spawn_agent` 工具参数：`task_name` + `message`（fork 开关可选）
-- 子 agent = 独立 session + 独立历史（goroutine 跑自己的 turn 循环）
-- **fork 过滤**（抄 codex `keep_forked_rollout_item`）：只继承父的 user 消息 + assistant 最终答案，**丢弃工具调用细节**
-- **单向消息传递**：主 agent 通过 `send_message` 工具向子 agent 发消息，子 agent 把消息作为 user 消息注入其历史继续 turn
-- 完成通知：子 agent 完成后，结果作为文本注入父 agent 上下文（模型自己决定是否 spawn 下一个）
-- 简化：无 mailbox / wait_agent / 多 agent 并发上限（semaphore 可选）、无昵称/路径树
+### 8. 规划：子 Agent（internal/agent/subagent.go）
 
-### 9. AGENTS.md（`internal/agentsmd/`）
+- 内置几个子 agent（general-purpose 等）+ 并行执行 + 状态跟踪（pending/running/completed）；自定义声明式（subagents/*.md）预留。
+- `spawn_agent` 工具；子 agent = 独立 session + 独立历史（goroutine）；fork 过滤（只继承 user + 最终答案）；`send_message` 单向通信；完成结果注入父上下文。
+- 简化：无 mailbox / wait_agent / 并发上限（semaphore 可选）/ 昵称/路径树。
+- 并行已由无状态 agent + 共享 chain 并发安全支撑（ADR-026）。
 
-- 从 cwd 向上找项目根（`.git` 等 marker）→ 从根到 cwd 收集所有 AGENTS.md → 拼接（`--- project-doc ---` 分隔）→ 注入 developer 消息
-- 预算：200KB 截断
-- 约 50 行，价值极高
+### 9. 规划：AGENTS.md 注入（internal/agentsmd/）
 
-### 10. Hooks（`internal/hooks/`）
+- 从 cwd 向上找项目根 → 收集 AGENTS.md → 拼接注入（作为 onSystemPrompt middleware）；预算 200KB 截断。
+- 与系统提示词动态拼接（ToolInstructions + 后续组装）同属阶段 4。
 
-- v1 只做 3 个点：
-  - **PreToolUse**：工具执行前，stdin 传 `{tool_name, tool_input}`，stdout 读 `{decision: approve|block, reason}`
-  - **PermissionRequest**：审批时，输出 `{behavior: allow|deny}`
-  - **Stop**：turn 结束时通知
-- 子进程模型：`exec.Command` + stdin JSON / stdout JSON + timeout（对应 codex `hook_runtime.rs` 协议）
-- 配置：`.harness/hooks.json`
+### 10. 规划：Hooks（子进程，远期）
 
-### 11. UI Renderer（`internal/ui/`）
+- PreToolUse / PermissionRequest / Stop 三点；子进程模型（stdin/stdout JSON + timeout）。**已被进程内 middleware 承载**（ADR-021），仅作为 middleware 的一种实现方式保留。
 
-```go
-type Renderer interface {
-    Start(session *Session)
-    WriteText(delta string)
-    WriteToolCall(call *ToolCall)
-    WriteToolResult(result *ToolResult)
-    WriteApprovalRequest(req ApprovalRequest) (ReviewDecision, error)
-    WriteError(err error)
-    Flush()
-}
-```
+### 11. UI（现状：cmd/output 接口；TUI 规划）
 
-- v1：`simple` 渲染器（ANSI 彩色输出 + 文本流式）
-- v2：`tui` 渲染器插拔替换（接口不变）
-- `--json` 模式输出事件 JSONL（排障利器，直接复用 Renderer 接口另一实现）
+- `output` 接口（text 渲染器 + `--json` JSONL 事件），事件回调双转发（渲染 + transcript 落盘）。审批 UI 独立函数（approver.go）。
+- 完整 TUI（ratatui 式）留阶段 6。
 
-## 规划调整（2026-08-06 用户补充，记录，实现时探讨）
+## 实施阶段（✅ 已完成 / ⏳ 待办，严格区分）
 
-- **阶段二增补**：除工具调用外，一并实现**完整简单的终端渲染**（文本流式 + 工具调用展示）；编写时考虑好**工具权限框架设计**，预留扩展点（为阶段三铺路）
-- **阶段三权限/审批改为三档**：`readonly` / `acceptedit` / `bypass`；**规则匹配引擎保留扩展点**即可（替代原 UnlessTrusted/OnRequest/Never 三态）
-- **系统提示词动态拼接**：当前 agent.go 硬编码 `Instructions: "You are a helpful coding agent."`，需要动态拼接；新建一个阶段或并入现有阶段（建议并入阶段四，与 AGENTS.md 注入一起做提示词组装）
-- **todo 工具**：阶段二之后**单独开一个阶段**实现，不做进工具系统阶段
+### ✅ 已完成（历史，详见 TASKS.md/PROGRESS.md）
 
-- **（2026-08-07）AgentScope 调研 → 架构修订**：用户提供 AgentScope Java v2 llms.txt（`agent-scope-llms.txt`），通读其 20 篇核心文档后经问答确认 4 项架构决策（详见决策表 + 核心设计 0 + ADR-021）：
-  1. **扩展机制**：进程内 middleware（5 hook，洋葱式）替代子进程 hooks 作为核心扩展点；子进程 hooks 降级远期
-  2. **agent 架构**：纯 ReAct loop + middleware 挂载点骨架，capabilities 不揉进 loop（阶段二即搭骨架）
-  3. **会话状态**：JSONL 消息流 + 轻量 AgentState 快照（权限/todo/plan 指针/摘要 → 完整 resume）
-  4. **权限**：保持三档，复杂规则匹配引擎不强做——middleware 挂载点承载后续演进
+- **阶段 1：骨架 + 统一消息模型 + Provider + 最小 loop**（2026-08-04）：messages / provider / 最小 loop；真实 API `harness run "你好"` 通过。
+- **阶段 2：工具系统 + 并发执行 + 终端渲染 + middleware 挂载点骨架**（2026-08-07）：移除 openai wire（ADR-022）；tools 包 + 7 工具（当时 6 个）；并行执行 + call_id 回填；`output` 渲染 + `--json`；REPL；**自动化测试方案落地**（termtest 进程外 e2e + mock HTTP）。
+- **阶段 2.5：Workspace + AgentState + 会话落盘/resume**（2026-08-08，ADR-025）：项目分桶 + 块级 transcript 异步 writer + AgentState 注入机制 + 块完成事件 + `resume/sessions` 命令。
+- **架构重构：无状态 agent + 运行时切换 + 配置统一 init**（2026-08-08，ADR-026）：`Run(ctx, rc, onEvent)`；`/switch /model /effort`；`defaultApp()` 惰性单例。
+- **todo 工具**（2026-08-08，ADR-027）：update_todo 全量替换 + TodoReminderMiddleware 跨轮偏离提醒。
+- **工具结果截断 + Esc 用户中断 + shell 长任务缓解 + state.CWD 修正**（2026-08-09，ADR-028）：ToolOutputMiddleware（20K head/tail + evictions/ 落盘）；raw mode 单一读方事件循环；shell 超时输出落盘 + 系统提示引导。
+- **阶段 3：审批**（2026-08-09，ADR-029）：approval 包三层设计 + ApprovalMiddleware + DeniedError + 会话级记忆 + config 播种 + `/permission` + channelApprover 协调；e2e 真实 TTY 审批交互。**错误重试非本阶段交付**（429 由 SDK 承担 ADR-012；流中断恢复独立待办）。
 
-- **（2026-08-07 续）移除 openai wire + 事件模型分层**（用户决策 + 两 SDK 能力探索）：
-  1. **移除 openai wire（Responses 与 Chat Completions 都不要），只留 anthropic Messages**：provider 单一 wire 最大 simple，thinking/事件形状唯一；代价是 openai 兼容端点（DeepSeek openai 格式 / 阿里 qwen）不再支持，DeepSeek 只能走其 anthropic 兼容端点
-  2. **事件模型分层**：provider 层 Event 扩展（thinking_delta + 生命周期 start/done/failed/incomplete，信号源自 anthropic message_start/stop + error）+ agent 层回合级事件（turn_done / tool_result）。不搞 AgentScope start/delta/end 三件套
+### ⏳ 待办（未完成）
 
-- **（2026-08-07 续 2）workspace / compaction / 子 agent 三点确认**（AgentScope 调研第三轮）：
-  1. **Workspace**：`~/.harness/` 统一目录（sessions/subagents/tools.json/memory/plans 收敛一处），AGENTS.md 项目级向上搜索保留（两源拼接注入）
-  2. **Compaction**：TokenBudget v1 + 摘要式 + 大工具结果 eviction；**不做 overflow 安全网**（eviction 撑住宽度后超限概率低，砍被动抢救）
-  3. **子 agent**：**内置几个**（general-purpose 等）+ **并行** + **状态跟踪**（pending/running/completed）；自定义声明式（subagents/*.md）预留扩展点；细节阶段五探讨
+- **阶段 4（剩余）：系统提示词拼接 + AGENTS.md 注入 + 上下文压缩**
+  - `agentsmd`（onSystemPrompt：项目级 AGENTS.md 向上搜索 + 全局拼接 + 动态系统提示词组装）
+  - `compact`（onReasoning：TokenBudget v1 + 摘要式 + 触发时 `NewSegment` 切段；不做 overflow 安全网）
+  - 注：大工具结果 eviction 已完成（ADR-028），不属于本阶段。
+- **阶段 5：子 agent（内置 + 并行 + 状态 + 单向通信）**
+  - 内置子 agent + `spawn_agent` + 状态跟踪 + fork 过滤 + `send_message` 单向。
+  - 注：Renderer/config/CLI 子命令/docs 已由前述阶段完成，不属于本阶段。
+- **阶段 6（可选）：TUI 渲染器 / 摘要式压缩 / grep 工具 / 双向通信**
 
-## 实施阶段
+### 明确不做 / 降级
 
-### 阶段 1：骨架 + 统一消息模型 + Provider + 最小 loop ✅ 已完成（2026-08-04）
-**目标**：项目初始化（go.mod + 目录结构）、`messages` 包（统一 Message 模型 + JSONL 序列化）、`provider` 包（Provider/LLMClient 接口 + OpenAI Responses/chat 适配 + Anthropic 适配 + 重试）、最小 agent loop（单次采样，无工具）
-**成功标准**：`harness run "你好"` 能从真实 API 拿到流式回复 ✅（DeepSeek 兼容端点验证通过）
-**测试**：provider 单测（mock HTTP）✅；loop 单测（mock LLMClient 返回固定事件流）✅
-
-> 阶段 1 详细设计见 `docs/tasks/TASKS.md`（单元 1.1~1.9 全部完成）。重试项：两 SDK 内置退避重试（ADR-012）。thinking 推理模式（ADR-020）：模型级配置 + 双 wire 标准参数 + CLI 运行时覆盖，真实 API 双 wire 验证通过。
-
-### 阶段 2：工具系统 + 并发执行 + 终端渲染 + middleware 挂载点骨架 ✅ 已完成（2026-08-07）
-**目标**：**移除 openai wire** ✅（删除 openai.go 及相关测试，config/校验/枚举/loadConfig 调整，provider 只留 anthropic；真实 API 复验 deepseek-claude）；`tools` 包（Tool 接口 + 注册表 + 错误二分类）、内置工具（read_file/list_dir/glob/write_file/shell_command/apply_patch）、并行执行 + call_id 回填、完整简单的终端渲染（thinking + 工具调用展示 + --json）；**agent 重构为纯 ReAct loop + middleware 挂载点骨架**（链机制 + 事件流走通，onActing 即预留的工具权限扩展点）；**`harness` 交互式 REPL**
-**成功标准**：`harness run "读取当前目录文件列表并告诉我"` 能触发工具调用并正确回填；**多轮工具调用闭环 + 终端渲染完整可跑 —— 阶段二完成 = 一个可用的简单终端 CLI agent 循环**
-**测试**：各工具单测（临时目录）；loop 并发执行测试（mock 3 个 tool_call 验证并发 + 回填顺序）
-
-**自动化测试方案（2026-08-06 调研 + 决策）**：
-- **分层**：
-  1. 进程内逻辑测试：`go test` + FakeClient（agent 循环正确性，主力）
-  2. 进程外端到端回归：**ActiveState/termtest** 驱动真实 harness 进程，LLM 端点指向 **mock HTTP server**（确定性，不依赖 LLM 非确定性输出）——回归测试不用真实 LLM 端点
-  3. **真实 API 冒烟**（方案 B 决策）：CI 末尾跑 2-3 条真实调用（DeepSeek 便宜），宽松断言（退出码 0、有 assistant_message、无 error 事件），验证协议兼容/参数被接受/链路通
-  4. CI 编排（GitHub Actions 或现有 CI），长跑测试全程 timeout 兜底（防 agent 死循环挂死）
-- **关键设计**：agent 层输出**回合边界事件**（`--json` 的 `turn_done`），作为自动化测试的断言锚点——这是工具无法替代的设计责任
-- **工具选型理由**：termtest = expect 语义（SendLine/Expect/ExpectExitCode）+ vt10x 虚拟终端渲染模拟（匹配"用户看到的内容"）+ **Windows 原生 ConPTY**（本项目 Windows 环境）+ Go 同语言
-- **后续可选**：录制回放（首次真实 API 录响应，之后回放），兼得真实性与确定性，实现成本高，后续阶段再评估
-- **待验证**：termtest 驱动 harness 的集成 demo（Windows 下跑通 `SendLine → Expect → ExpectExitCode`）
-
-### 阶段 2.5：Workspace + AgentState + 会话落盘/resume ✅ 已完成（2026-08-08）
-**目标**：把原阶段四的 workspace + AgentState **提前**（用户决策：todo 挂 state 持久化 + 每次运行记录落盘，ADR-025）。**项目分桶目录**（`~/.harness/workspaces/<项目转义>/<session-id>/{historys, plans, agentstate.json}`，全局 agents.md/config.yaml）；**块级 transcript + 异步 writer**（thinking/text/tool 各一行 + ordinal，单 goroutine FIFO 保序；压缩切新文件 API 预留）；**AgentState 注入机制**（独立 agentstate 包 + `RuntimeContext.State` + `session.SessionMiddleware` + 工具 Handle 加 rc）；provider/agent **块完成事件**（thinking_done/text_done，Message.Thinking 存不重放）；CLI `resume --last|<id>` / `sessions`。
-**成功标准**：`harness run` 落盘；`harness resume --last` 恢复；`harness sessions` 列表 —— 全部达成 ✅（真实 API 冒烟 + e2e + 单测）
-**测试**：session 包单测（escape/Store/AgentState/SessionMiddleware/writer 顺序并发/切分/重建）+ e2e 3 用例 + 真实冒烟
-
-### 架构重构（ADR-026，2026-08-08 ✅）：无状态 agent + 运行时切换 + 配置统一 init
-**目标**：对齐 AgentScope 无状态 agent（agent 无状态，会话全由 RuntimeContext + AgentState 承载）；支持运行时切换会话（`/switch`）/模型（`/model`）/推理档位（`/effort`）；配置统一 `provider.LoadConfig` + `defaultRuntime()` 惰性单例。**并行 agent 架构已可扩展**（共享 agent/chain 并发安全，零共享可变状态），实际多 agent 编排留阶段五。
-
-### todo 工具（update_todo + 偏离提醒）✅ 已完成（2026-08-08，ADR-027）
-**目标**：`update_todo` 工具（全量替换语义，模型填 position 维护顺序，AgentScope tasksContext 对位），经 `rc.State.Todos` 读写，SessionMiddleware（无状态，rc.StatePath）after 落盘；工具结果回填 + `TodoReminderMiddleware`（onReasoning：todo 非空但模型连续 ≥10 次 model call 未更新 → 请求消息尾部注入提醒临时副本，不污染 conversation）。参考 codex `update_plan`（全量替换）+ opencode `todowrite`（持久化 + 详尽 prompt 引导）。**todo 数据结构已改为 `{Position, Description, Status}`**（删 ID；`ReplaceTodos` 按 position 稳定排序 + `RenderTodos` 渲染，替换原 AddTodo/UpdateTodoStatus）。
-
-### 阶段 3：审批（三档，onActing middleware）✅ 已完成（2026-08-09）
-**目标**：`approval` 包实现三档权限（readonly / acceptedit / bypass）+ 黑白名单 + TTY 交互 + 会话级记忆，**以 onActing middleware 挂载**（拒绝 ≠ Fatal，`middleware.DeniedError` 回填模型）；规则匹配引擎保留扩展点（复杂匹配不强做）
-**成功标准**：危险命令按权限档位放行/确认/拒绝；middleware 链能拦截工具执行 —— 达成 ✅（approval 包单测 + agent 集成 + e2e 真实 TTY 审批交互 + 会话级记忆落盘 + config 播种 /permission 切换）
-**测试**：审批策略单测（黑白名单匹配）✅；middleware 链单测 ✅；agent 集成（拒绝回填不 Fatal）✅；session 固化/切换 + /permission 命令 ✅
-**错误重试（非本阶段交付）**：历史目标里的"错误重试"与审批无关，已拆出——**429 重试依赖 SDK 内置退避**（ADR-012 架构决策，SDK 已承担，无需自研代码）；**流中断恢复（流式断连补充处理）未做**，为独立待办（真实 API 冒烟观察）。
-
-### 阶段 4（剩余）：系统提示词拼接 + AGENTS.md + 压缩
-**目标**：`agentsmd` 包（**作为 onSystemPrompt middleware** 注入：项目级 AGENTS.md 向上搜索 + 全局 `agents.md` 拼接，阶段 2.5 已建 agents.md 占位，配合动态系统提示词组装）；`compact` 包（TokenBudget v1 + 摘要式 + **大工具结果 eviction** 落盘会话目录 evictions/，作为 onReasoning middleware；压缩触发时调用 `transcript.NewSegment` 切新文件，seed = 摘要+保留，**不做 overflow 安全网**）
-**成功标准**：AGENTS.md 注入生效；系统提示词动态组装；长会话自动压缩（切新 transcript 段）；超大工具结果落盘 + read_file 指针
-**测试**：agentsmd 单测（临时目录向上搜索 + 全局拼接）；compact 单测（token 估算超限触发 + eviction 阈值触发 + NewSegment 衔接）
-
-### 阶段 5：子 Agent（内置 + 并行 + 状态）+ CLI 完善 + 文档
-**目标**：**内置几个子 agent**（general-purpose 等）+ **并行执行** + **状态跟踪**（pending/running/completed）+ `send_message` 单向通信（fork 过滤保留）；自定义声明式（subagents/*.md）预留扩展点；Renderer 接口完成（simple 渲染器 + --json 模式）、config 包（YAML 加载）、CLI 子命令完善、docs/ 设计文档
-**成功标准**：`harness run "用子 agent 分析这个目录结构"` 端到端跑通；并行子 agent 状态可查；`--json` 输出结构化事件；config 文件可配置
-**测试**：子 agent 单测（mock provider 验证 spawn 流程 + 状态迁移）；CLI 端到端测试；config 单测
-
-### 阶段 6（后续可选）：TUI 渲染器 / 摘要式压缩 / grep 工具 / send_message 双向
+- 子进程 Hooks → 进程内 middleware 承载（ADR-021）
+- 复杂规则匹配引擎 / 全局 allowlist / 级联拒绝 / 拒绝反馈 / guardian 自动审批 → middleware 扩展点或留增强（ADR-029）
+- overflow 安全网 → 不做（eviction 撑宽度）
+- openai wire → 已移除（ADR-022）
+- 多 provider 抽象 → 单 anthropic wire（ADR-022）
 
 ## 验证方案
 
-- **单元测试**：每阶段成功标准列出的测试用例（`go test ./...`）
-- **端到端（真实 API）**：配置好 provider 后跑：
-  1. `harness run "你好"` — 基础对话
-  2. `harness run "创建一个 hello.go 并运行"` — 工具闭环（shell + write）
-  3. `harness resume --last` — 会话恢复
-  4. `harness run --json "..."` — 结构化事件输出
-  5. 危险命令触发审批 — 权限验证
-- **mock 测试**：agent loop 用 mock LLMClient 验证循环终止、并行、错误回填
-
-## 依赖清单
-
-| 依赖 | 用途 |
-|---|---|
-| github.com/openai/openai-go | OpenAI Responses API |
-| github.com/anthropics/anthropic-sdk-go | Anthropic API |
-| github.com/spf13/cobra | CLI 子命令 |
-| gopkg.in/yaml.v3 | 配置解析 |
-| （可选）github.com/spf13/viper | 配置 + 环境变量合并 |
+- **单元测试**：各包 `go test ./...`；中间件/策略纯函数优先（approval.Decide、evictContent 等）。
+- **进程外 e2e**：`go test ./internal/e2e/ -count=1`（termtest 真实 TTY + mock HTTP，确定性）；锚点 = `turn_done` 事件；审批交互 SendLine y/s/n。
+- **真实 API 冒烟**（CI 末尾 2-3 条，宽松断言）：`harness run` 基础对话 / 工具闭环 / `resume --last` / `--json` 结构化事件 / 危险命令触发审批（按 config 模式）。
+- **测试隔离**：workspace 相关测试用 `HARNESS_HOME=<临时目录>`。
