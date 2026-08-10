@@ -119,10 +119,55 @@ func isDangerous(cmd string) bool {
 }
 
 // isSafe 判定命令是否命中只读安全白名单（前缀匹配）。
+//
+// 只对"单一简单命令"放行：含 shell 元字符（; | & > < $( ` 等）的命令行可能
+// 是管道/重定向/命令组合，前缀匹配会误放行破坏性命令（如 echo pwned > key、
+// ls && curl ... | sh，Bug02）；find 携带 -delete/-exec 等危险参数也排除
+// （find / -delete 无元字符，元字符过滤堵不住）。
 func isSafe(cmd string) bool {
+	if hasShellMeta(cmd) {
+		return false
+	}
+	if findIsDangerous(cmd) {
+		return false
+	}
 	lc := strings.ToLower(strings.TrimSpace(cmd))
 	for _, p := range safeCommandPrefixes {
 		if strings.HasPrefix(lc, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// shellMetaChars 是白名单禁用的 shell 元字符/组合符：白名单只放行单一简单
+// 命令，含这些符号说明有管道/重定向/命令组合/命令替换，前缀匹配不可信。
+var shellMetaChars = []string{"&&", "||", ";", "|", "&", ">", "<", "$(", "`"}
+
+// hasShellMeta 判定命令行是否含 shell 元字符。
+func hasShellMeta(cmd string) bool {
+	for _, m := range shellMetaChars {
+		if strings.Contains(cmd, m) {
+			return true
+		}
+	}
+	return false
+}
+
+// findDangerArgs 是 find 命令的危险参数（删除/执行/交互确认）。find 在白名单
+// 里按前缀放行，但 -delete / -exec / -ok 可破坏或执行任意内容，必须排除
+// （Bug02：find / -delete 无元字符，元字符过滤堵不住）。
+var findDangerArgs = map[string]bool{"-delete": true, "-exec": true, "-execdir": true, "-ok": true}
+
+// findIsDangerous 判定 find 命令是否携带危险参数。仅当命令首 token 是 find 时
+// 检查（白名单语义），词边界匹配避免误命中 -executive 之类。
+func findIsDangerous(cmd string) bool {
+	fields := strings.Fields(strings.ToLower(strings.TrimSpace(cmd)))
+	if len(fields) == 0 || fields[0] != "find" {
+		return false
+	}
+	for _, f := range fields[1:] {
+		if findDangerArgs[f] {
 			return true
 		}
 	}
