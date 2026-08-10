@@ -3,7 +3,6 @@ package tui
 import (
 	"fmt"
 	"slices"
-	"sort"
 	"strings"
 
 	"github.com/agent-project/harness/internal/config"
@@ -74,20 +73,15 @@ func (c *Controller) SwitchLast() error {
 	return c.SwitchTo(info.ID)
 }
 
-// Models 模型列表（/model 弹窗数据源；从配置收集，实时获取非硬编码）。
+// Models 模型列表（/model 弹窗数据源；只列当前 provider（default_provider）的
+// 模型——config.Resolve 只在该 provider 内查找，列出跨 provider 模型会选不中，
+// Bug05，2026-08-10）。
 func (c *Controller) Models() []string {
-	seen := map[string]bool{}
-	var out []string
-	for _, pc := range c.cfg.Providers {
-		for name := range pc.Models {
-			if !seen[name] {
-				seen[name] = true
-				out = append(out, name)
-			}
-		}
+	names, err := config.ProviderModels(c.cfg)
+	if err != nil {
+		return nil
 	}
-	sort.Strings(out)
-	return out
+	return names
 }
 
 // SetModel 切换会话模型 + 重置档位为模型默认（ADR-026 运行时切换）。

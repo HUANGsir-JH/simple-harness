@@ -134,3 +134,19 @@ func resolveAPIKey(p ProviderSpec) (string, error) {
 	}
 	return "", fmt.Errorf("no API key (set api_key, env_key %q, or %s)", envKey, DefaultAPIKeyEnv)
 }
+
+// ProviderModels 返回当前生效 provider（default_provider，未指定取排序后第一
+// 个）的模型名列表（排序）。/model 弹窗数据源：Resolve 只在该 provider 内
+// 查找模型，跨 provider 列出会选不中（Bug05，2026-08-10）。
+func ProviderModels(cfg Config) ([]string, error) {
+	_, p, err := resolveProvider(cfg)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(p.Models))
+	for name := range p.Models {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names, nil
+}

@@ -263,3 +263,31 @@ func TestResolveThinkingEffortsContainHigh(t *testing.T) {
 		t.Errorf("thinking effort: got %q want %q", r.ThinkingEffort, EffortHigh)
 	}
 }
+
+// TestProviderModels 验证只列当前 provider（default_provider）的模型（Bug05：
+// /model 弹窗列跨 provider 模型会选不中，Resolve 只在该 provider 内查找）。
+func TestProviderModels(t *testing.T) {
+	cfg := Config{
+		DefaultProvider: "alpha",
+		Providers: map[string]ProviderSpec{
+			"alpha": {APIKey: "k", Models: map[string]Model{"a2": {}, "a1": {}}},
+			"beta":  {APIKey: "k", Models: map[string]Model{"b1": {}}},
+		},
+	}
+	names, err := ProviderModels(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(names, []string{"a1", "a2"}) {
+		t.Errorf("ProviderModels = %v, want [a1 a2]", names)
+	}
+	// 无 default_provider：取排序后第一个 provider（alpha）。
+	cfg.DefaultProvider = ""
+	names, err = ProviderModels(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(names, []string{"a1", "a2"}) {
+		t.Errorf("无 default 时 ProviderModels = %v, want [a1 a2]", names)
+	}
+}

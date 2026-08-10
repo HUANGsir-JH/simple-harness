@@ -61,6 +61,33 @@ func TestCommandPopupModel(t *testing.T) {
 	}
 }
 
+// TestCommandModelsOnlyCurrentProvider 验证 /model 弹窗只列当前 provider
+// （default_provider）的模型——跨 provider 模型列出也选不中（Bug05）。
+func TestCommandModelsOnlyCurrentProvider(t *testing.T) {
+	c := newTestController(t, nil)
+	c.cfg = config.Config{
+		DefaultProvider: "alpha",
+		Providers: map[string]config.ProviderSpec{
+			"alpha": {APIKey: "k", Models: map[string]config.Model{"a1": {}, "a2": {}}},
+			"beta":  {APIKey: "k", Models: map[string]config.Model{"b1": {}}},
+		},
+	}
+	m := New(c)
+	m.input.SetValue("/model")
+	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = nm.(Model)
+	if m.sel == nil {
+		t.Fatal("应打开模型弹窗")
+	}
+	var got []string
+	for _, it := range m.sel.items {
+		got = append(got, it.value)
+	}
+	if strings.Join(got, ",") != "a1,a2" {
+		t.Fatalf("Models 应只列当前 provider 的模型，got %v", got)
+	}
+}
+
 // TestCommandPopupEsc Esc 取消弹窗（不执行）。
 func TestCommandPopupEsc(t *testing.T) {
 	c := newTestController(t, nil)
