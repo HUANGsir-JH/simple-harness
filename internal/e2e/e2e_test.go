@@ -42,6 +42,14 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
+// sendKeys 模拟用户在 TUI 里输入一行并回车。termtest.SendLine 追加 OS 行尾
+// （POSIX 为 \n），bubbletea 把 LF 当作 ctrl+j 而非 enter（enter = CR \r），
+// 导致输入被打进输入框却不提交（Bug01，2026-08-10）。TUI 测试统一用它；
+// run 模式走 ReadStdinEvents（input.go 认 \r/\n 两种行尾），保持 SendLine。
+func sendKeys(cp *termtest.ConsoleProcess, s string) {
+	cp.SendUnterminated(s + "\r")
+}
+
 // sse 格式化 Anthropic 风格 SSE 事件（SDK 按 event: 字段路由）。
 func sse(eventType, data string) string {
 	return "event: " + eventType + "\ndata: " + data + "\n\n"
@@ -153,12 +161,12 @@ func TestTUIInteractiveE2E(t *testing.T) {
 	if _, err := cp.Expect("Ask anything"); err != nil {
 		t.Fatalf("expect TUI 输入区: %v", err)
 	}
-	cp.SendLine("你好")
+	sendKeys(cp, "你好")
 	// mock 首轮 list_dir 工具 + 次轮文本回复。
 	if _, err := cp.Expect("目录已列出"); err != nil {
 		t.Fatalf("expect reply: %v", err)
 	}
-	cp.SendLine("/exit")
+	sendKeys(cp, "/exit")
 	if _, err := cp.ExpectExitCode(0); err != nil {
 		t.Fatalf("expect exit 0: %v", err)
 	}
@@ -186,12 +194,12 @@ func TestTUIApprovalE2E(t *testing.T) {
 	if _, err := cp.Expect("Ask anything"); err != nil {
 		t.Fatalf("expect TUI 输入区: %v", err)
 	}
-	cp.SendLine("写一个文件")
+	sendKeys(cp, "写一个文件")
 	// 审批弹窗出现（readonly 下 write_file 询问）。
 	if _, err := cp.Expect("PERMISSION REQUIRED"); err != nil {
 		t.Fatalf("expect approval popup: %v", err)
 	}
-	cp.SendLine("y")
+	sendKeys(cp, "y")
 	if _, err := cp.Expect("文件已写入"); err != nil {
 		t.Fatalf("expect reply: %v", err)
 	}
@@ -199,7 +207,7 @@ func TestTUIApprovalE2E(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(workDir, "out.txt")); err != nil {
 		t.Errorf("write_file 未执行: %v", err)
 	}
-	cp.SendLine("/exit")
+	sendKeys(cp, "/exit")
 	if _, err := cp.ExpectExitCode(0); err != nil {
 		t.Fatalf("expect exit 0: %v", err)
 	}
@@ -236,7 +244,7 @@ func TestTUIResumeE2E(t *testing.T) {
 	if _, err := cp.Expect("目录已列出"); err != nil {
 		t.Fatalf("resume 首屏应含历史回复: %v", err)
 	}
-	cp.SendLine("/exit")
+	sendKeys(cp, "/exit")
 	if _, err := cp.ExpectExitCode(0); err != nil {
 		t.Fatalf("expect exit 0: %v", err)
 	}
@@ -264,7 +272,7 @@ func TestTUIExitsE2E(t *testing.T) {
 	if _, err := cp.Expect("Ask anything"); err != nil {
 		t.Fatalf("expect TUI 输入区: %v", err)
 	}
-	cp.SendLine("/exit")
+	sendKeys(cp, "/exit")
 	if _, err := cp.ExpectExitCode(0); err != nil {
 		t.Fatalf("expect exit 0: %v", err)
 	}
