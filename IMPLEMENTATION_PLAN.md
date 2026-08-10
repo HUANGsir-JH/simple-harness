@@ -25,7 +25,7 @@
 | 用户中断 | **Esc/Ctrl+C**（raw mode 事件循环 + 单一读方 channel，ADR-028）：cancel 本轮 runCtx + AddUser 提示落盘；非 TTY 降级 |
 | todo 工具 | **update_todo**（ADR-027）：全量替换 + 跨轮偏离提醒（TodoReminderMiddleware） |
 | 配置 | YAML（~/.harness/config.yaml + 项目级 config.local.yaml），加载/校验统一在 **internal/config** 包；`app.Load()` 惰性单例（ADR-026，2026-08-09 配置层独立） |
-| thinking | 模型级配置（enabled + efforts）+ CLI `--effort/--thinking/--no-thinking` 运行时覆盖；按 anthropic 标准参数传递 |
+| thinking | **默认开启**（ADR-034，2026-08-10 删 enabled 配置项）；模型配置只留 efforts（档位集）+ CLI `--effort/--thinking/--no-thinking` 覆盖 + TUI `/thinking` 会话切换（持久化 AgentState，nil = 默认开启）；按 anthropic 标准参数传递 |
 | 内置工具 | 7 个：read_file / list_dir / glob / write_file / shell_command / apply_patch / update_todo |
 | 压缩 / 子 agent / AGENTS.md / TUI / Hooks | **规划中（未实现）**，见"待办阶段" |
 

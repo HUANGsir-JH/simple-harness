@@ -98,6 +98,54 @@ func TestCommandPermissionPopup(t *testing.T) {
 	}
 }
 
+// TestCommandThinkingPopup /thinking → 弹窗含 on/off + 确认切换（2026-08-10
+// 删配置 enabled，thinking 默认开启，开关为会话级偏好）。
+func TestCommandThinkingPopup(t *testing.T) {
+	c := newTestController(t, nil)
+	m := New(c)
+	m.input.SetValue("/thinking")
+	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = nm.(Model)
+	if m.sel == nil || len(m.sel.items) != 2 {
+		t.Fatalf("thinking 弹窗应有 2 项，sel = %+v", m.sel)
+	}
+	// 默认开启 → current = enabled（光标在第一项）。
+	if m.sel.cursor != 0 {
+		t.Fatalf("默认 thinking 开启，cursor 应在 enabled，got %d", m.sel.cursor)
+	}
+	// ↓ 到 disabled → Enter 确认 → SetThinking(false) 持久化 AgentState。
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = nm.(Model)
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = nm.(Model)
+	st := m.c.active.State()
+	if st.ThinkingEnabled == nil || *st.ThinkingEnabled {
+		t.Fatalf("thinking 应切为 disabled，got %+v", st.ThinkingEnabled)
+	}
+	if !strings.Contains(m.View(), "Thinking disabled") {
+		t.Fatalf("View 应含系统行")
+	}
+}
+
+// TestCommandThinkingArg /thinking off 直接设（参数分支，对齐 /permission 双通道）。
+func TestCommandThinkingArg(t *testing.T) {
+	c := newTestController(t, nil)
+	m := New(c)
+	m.input.SetValue("/thinking off")
+	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = nm.(Model)
+	if m.sel != nil {
+		t.Fatal("带参数不应开弹窗")
+	}
+	st := m.c.active.State()
+	if st.ThinkingEnabled == nil || *st.ThinkingEnabled {
+		t.Fatalf("thinking 应关闭，got %+v", st.ThinkingEnabled)
+	}
+	if !strings.Contains(m.View(), "Thinking disabled") {
+		t.Fatalf("View 应含系统行")
+	}
+}
+
 // TestQueueCommand run 期间提交 / 命令 → 进队列；runDone 消费 → 弹窗（非发 agent）。
 func TestQueueCommand(t *testing.T) {
 	var calls atomic.Int32

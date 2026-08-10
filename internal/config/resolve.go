@@ -39,7 +39,7 @@ func Resolve(cfg Config, modelFlag string) (*ProviderConfig, error) {
 		cw = m.ContextWindow
 	}
 
-	thinkingEnabled, thinkingEfforts, thinkingEffort := resolveThinking(m)
+	thinkingEfforts, thinkingEffort := resolveThinking(m)
 
 	apiKey, err := resolveAPIKey(p)
 	if err != nil {
@@ -52,24 +52,22 @@ func Resolve(cfg Config, modelFlag string) (*ProviderConfig, error) {
 		APIKey:          apiKey,
 		Model:           model,
 		ContextWindow:   cw,
-		ThinkingEnabled: thinkingEnabled,
 		ThinkingEffort:  thinkingEffort,
 		ThinkingEfforts: thinkingEfforts,
 	}, nil
 }
 
 // resolveThinking 解析模型的 thinking 配置。
-//   - enabled：默认启用（Enabled nil → true）
 //   - efforts：默认 DefaultEfforts；配置了则用配置值（支持集，供 --effort 校验）
 //   - current：当前生效档位，默认 DefaultThinkingEffort（high）；
 //     若 high 不在 efforts 中，取 efforts 第一个
-func resolveThinking(m Model) (enabled bool, efforts []string, current string) {
-	enabled = true
+//
+// thinking 默认开启（2026-08-10 删 enabled 配置项）：enabled 是会话级偏好，
+// 由 AgentState.ThinkingEnabled 持久化（nil = 默认开启）、/thinking 切换，
+// 不在此解析。
+func resolveThinking(m Model) (efforts []string, current string) {
 	efforts = DefaultEfforts
 	if m.Thinking != nil {
-		if m.Thinking.Enabled != nil {
-			enabled = *m.Thinking.Enabled
-		}
 		if len(m.Thinking.Efforts) > 0 {
 			efforts = m.Thinking.Efforts
 		}

@@ -31,7 +31,7 @@ func newAnthropicClient(res *config.ProviderConfig) *anthropicClient {
 			baseURL:         res.BaseURL,
 			apiKey:          res.APIKey,
 			contextWindow:   res.ContextWindow,
-			thinkingEnabled: res.ThinkingEnabled,
+			thinkingEnabled: true, // thinking 默认开启（2026-08-10 删 enabled 配置项）
 			thinkingEffort:  res.ThinkingEffort,
 		},
 		client: c.Messages,
@@ -57,7 +57,8 @@ func (a *anthropicClient) Stream(ctx context.Context, req Request) (EventStream,
 		MaxTokens: defaultMaxTokens,
 		Messages:  toAnthropicMessages(req.Messages),
 	}
-	// thinking 默认来自 client（ProviderConfig），per-call 可覆盖。
+	// thinking 默认开启（client 侧 true），per-call 可经 rc 覆盖（/thinking、
+	// --thinking/--no-thinking 写 AgentState → rc）。
 	thinkingEnabled := a.thinkingEnabled
 	if req.ThinkingEnabled != nil {
 		thinkingEnabled = *req.ThinkingEnabled

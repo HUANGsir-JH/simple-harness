@@ -54,7 +54,10 @@ func runCmd(args []string, jsonOut bool) error {
 	if err != nil {
 		return err
 	}
-	a, err := agent.Build(rt.Provider, rt.DefaultApprovalMode())
+	// 用 res（--model/--effort 覆盖后的生效配置）装配 agent：client 的 thinking
+	// effort 与请求模型必须同源，否则 --model 指定的模型会带上默认模型的配置
+	// （Bug04，2026-08-10 审查证实 thinking 泄漏）。
+	a, err := agent.Build(res, rt.DefaultApprovalMode())
 	if err != nil {
 		return err
 	}

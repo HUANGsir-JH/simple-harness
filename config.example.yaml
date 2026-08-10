@@ -9,9 +9,12 @@
 # 兼容端点（Anthropic 官方、DeepSeek anthropic 兼容等），只需 base_url 覆盖。
 # 每个模型可配：
 #   context_window  token 数（不配则默认 128000）
-#   thinking        推理模式：
-#     enabled: true   # 是否启用，默认 true（不配即启用）
+#   thinking        推理模式：thinking 默认开启，无 enabled 配置项
 #     efforts: [low, high, max]  # 模型支持的档位集（默认三档）
+#
+# thinking 开关是会话级偏好（默认开启，2026-08-10 删 enabled 配置项）：
+# 运行时用 TUI /thinking（on/off）或 run --thinking / --no-thinking 切换，
+# 持久化在会话 AgentState，resume 恢复。
 #
 # 运行时覆盖（CLI 优先于模型配置）：
 #   harness run --effort max "..."       # 选档位（须在模型 efforts 内）
@@ -48,5 +51,4 @@ providers:
           efforts: [low, high, max]
       claude-haiku-4-5:
         context_window: 1000000
-        thinking:
-          enabled: false        # 关闭 thinking 示例
+        # thinking 默认开启；如需关闭：TUI 内 /thinking off 或 run --no-thinking

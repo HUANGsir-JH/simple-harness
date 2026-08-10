@@ -99,8 +99,6 @@ func writeConfigTo(t *testing.T, baseURL, path string) string {
     models:
       m:
         context_window: 128000
-        thinking:
-          enabled: false
 `, baseURL)
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -313,8 +311,6 @@ func writeConfigApprovalTo(t *testing.T, baseURL, path, mode string) string {
     models:
       m:
         context_window: 128000
-        thinking:
-          enabled: false
 approval:
   mode: %s
 `, baseURL, mode)

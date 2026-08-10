@@ -182,7 +182,7 @@ func TestAnthropicStreamThinking(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := newAnthropicClient(&config.ProviderConfig{Model: "claude-sonnet-5", BaseURL: srv.URL, APIKey: "test-key", ThinkingEnabled: true, ThinkingEffort: config.EffortMax})
+	c := newAnthropicClient(&config.ProviderConfig{Model: "claude-sonnet-5", BaseURL: srv.URL, APIKey: "test-key", ThinkingEffort: config.EffortMax})
 	es, err := c.Stream(context.Background(), Request{Model: "claude-sonnet-5", Messages: []*messages.Message{NewTestUserMsg("hi")}})
 	if err != nil {
 		t.Fatalf("stream: %v", err)
@@ -226,8 +226,11 @@ func TestAnthropicStreamThinkingDisabled(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := newAnthropicClient(&config.ProviderConfig{Model: "claude-sonnet-5", BaseURL: srv.URL, APIKey: "test-key", ThinkingEnabled: false})
-	es, err := c.Stream(context.Background(), Request{Model: "claude-sonnet-5", Messages: []*messages.Message{NewTestUserMsg("hi")}})
+	// client 默认 thinking 开启；per-call 覆盖关闭（Request.ThinkingEnabled，
+	// /thinking、--no-thinking 写 AgentState → rc 的路径）。
+	disabled := false
+	c := newAnthropicClient(&config.ProviderConfig{Model: "claude-sonnet-5", BaseURL: srv.URL, APIKey: "test-key"})
+	es, err := c.Stream(context.Background(), Request{Model: "claude-sonnet-5", Messages: []*messages.Message{NewTestUserMsg("hi")}, ThinkingEnabled: &disabled})
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
@@ -305,8 +308,8 @@ func TestAnthropicRequestOverrides(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	// client 默认 thinking 关闭；Request 覆盖为开启 + effort max + 换模型。
-	c := newAnthropicClient(&config.ProviderConfig{Model: "default-model", BaseURL: srv.URL, APIKey: "test-key", ThinkingEnabled: false})
+	// thinking 默认开启；Request 显式覆盖 enabled/effort/model（per-call 覆盖机制，ADR-026）。
+	c := newAnthropicClient(&config.ProviderConfig{Model: "default-model", BaseURL: srv.URL, APIKey: "test-key"})
 	enabled := true
 	req := Request{
 		Messages:        []*messages.Message{NewTestUserMsg("hi")},

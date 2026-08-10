@@ -134,6 +134,12 @@ func (c *Controller) SetPermission(mode string) error {
 	return c.active.SetPermissionMode(mode)
 }
 
+// SetThinking 切换会话 thinking 开关（/thinking，持久化 AgentState；
+// 2026-08-10 删配置 enabled，开关纯会话级，默认开启）。
+func (c *Controller) SetThinking(enabled bool) error {
+	return c.active.SetThinkingEnabled(&enabled)
+}
+
 // CloseAll flush 所有打开的会话 transcript。
 func (c *Controller) CloseAll() {
 	for _, s := range c.open {

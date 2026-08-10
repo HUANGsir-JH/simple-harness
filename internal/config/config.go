@@ -45,13 +45,15 @@ type ProviderSpec struct {
 // ProviderConfig 是解析后的生效 provider 配置：Resolve 选定 provider + model 后
 // 把 ProviderSpec 与 Model 合并拍平的扁平结构。由 Resolve 产出，provider.NewClient
 // / agent.Build 直接消费；App 持有一份作为进程级默认。
+//
+// thinking 默认开启，无 ThinkingEnabled 字段：enabled 是会话级偏好
+// （AgentState.ThinkingEnabled，nil = 默认开启，/thinking 切换，ADR-034）。
 type ProviderConfig struct {
 	ProviderID      string
 	BaseURL         string
 	APIKey          string
 	Model           string
 	ContextWindow   int
-	ThinkingEnabled bool
 	ThinkingEffort  string
 	ThinkingEfforts []string
 }
@@ -61,16 +63,18 @@ type Model struct {
 	// ContextWindow 是该模型的上下文窗口（token 数）；
 	// 0 表示使用 DefaultContextWindow。
 	ContextWindow int `yaml:"context_window,omitempty"`
-	// Thinking 是该模型的 thinking（推理模式）配置；
-	// 未配置时默认启用 thinking、档位 high（见 DefaultThinkingEffort）。
+	// Thinking 是该模型的 thinking（推理模式）配置；thinking 默认开启，
+	// 未配置时档位 high（见 DefaultThinkingEffort）。
 	Thinking *Thinking `yaml:"thinking,omitempty"`
 }
 
 // Thinking 是模型级 thinking（推理模式）配置。传递按 anthropic Messages
 // SDK 标准参数（thinking + output_config.effort），不对具体后端特化。
+//
+// thinking 默认开启（2026-08-10 删 enabled 配置项）：开关是会话级偏好，
+// 用户可在会话运行时用 /thinking 关闭（持久化 AgentState.ThinkingEnabled，
+// nil = 默认开启）；模型配置只声明 Efforts（支持的档位集）。
 type Thinking struct {
-	// Enabled 是否启用 thinking；nil（未配置）表示启用。
-	Enabled *bool `yaml:"enabled,omitempty"`
 	// Efforts 是模型支持的推理档位集（EffortLow / EffortHigh / EffortMax），
 	// 覆盖默认档位集 DefaultEfforts；未配置回退默认。
 	// 运行时 --effort 只能在 Efforts 内选择。

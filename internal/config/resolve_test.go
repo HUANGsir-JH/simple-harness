@@ -176,7 +176,6 @@ providers:
       deepseek-v4-flash:
         context_window: 128000
         thinking:
-          enabled: false
           efforts: [low, high, max]
       deepseek-v4:
         context_window: 256000
@@ -205,47 +204,22 @@ providers:
 	if flash.Thinking == nil {
 		t.Fatal("deepseek-v4-flash: thinking not parsed")
 	}
-	if flash.Thinking.Enabled == nil || *flash.Thinking.Enabled {
-		t.Errorf("deepseek-v4-flash thinking.enabled: %+v", flash.Thinking.Enabled)
-	}
 	if !slices.Equal(flash.Thinking.Efforts, []string{EffortLow, EffortHigh, EffortMax}) {
 		t.Errorf("deepseek-v4-flash thinking.efforts: got %v", flash.Thinking.Efforts)
 	}
 }
 
-// TestResolveThinkingDefault 验证未配置 thinking 时默认启用、默认支持集、档位 high。
+// TestResolveThinkingDefault 验证未配置 thinking 时默认档位 high、默认支持集。
 func TestResolveThinkingDefault(t *testing.T) {
 	r, err := Resolve(testConfig(), "") // 模型均未配置 thinking
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
-	}
-	if !r.ThinkingEnabled {
-		t.Error("thinking: expected enabled by default")
 	}
 	if r.ThinkingEffort != DefaultThinkingEffort {
 		t.Errorf("thinking effort: got %q want %q", r.ThinkingEffort, DefaultThinkingEffort)
 	}
 	if !slices.Equal(r.ThinkingEfforts, DefaultEfforts) {
 		t.Errorf("thinking efforts: got %v want default %v", r.ThinkingEfforts, DefaultEfforts)
-	}
-}
-
-// TestResolveThinkingDisabled 验证 enabled: false 生效。
-func TestResolveThinkingDisabled(t *testing.T) {
-	f := false
-	cfg := Config{
-		Providers: map[string]ProviderSpec{
-			"p": {APIKey: "k", Models: map[string]Model{
-				"m": {Thinking: &Thinking{Enabled: &f}},
-			}},
-		},
-	}
-	r, err := Resolve(cfg, "")
-	if err != nil {
-		t.Fatalf("Resolve: %v", err)
-	}
-	if r.ThinkingEnabled {
-		t.Error("thinking: expected disabled")
 	}
 }
 

@@ -295,3 +295,14 @@
   5. cmd 薄化为 `rt, _ := app.Load(); a, _ := agent.Build(rt.Provider, rt.DefaultApprovalMode())`；删 `runtime.go/build.go/runtime_test.go`，测试迁 internal。
 - **理由**：机制下沉 internal（依赖单向 `config → provider → tools/middleware → agent`、`app → config`）；"1 个 client + N 个 per-kind agent 装配"比"cmd 堆全局"可扩展且方向正确；测试隔离（`app.LoadFrom` 造独立 App = 独立 agent）；保持惰性（version/help/sessions 不碰配置）。
 - **影响 ADR**：ADR-026 修订——`defaultApp()` → `app.Load()`，配置加载统一入口从 provider/cmd 改为 internal/config + internal/app。
+
+## ADR-034：thinking 默认开启——删 enabled 配置项 + /thinking 命令（2026-08-10）
+
+- **背景**：架构审查（2026-08-10）证实 `run --model` 装配错参数导致 thinking 配置泄漏（Bug04）：`run.go` 用 `rt.Provider`（默认模型配置）构建 client，请求却发往 `--model` 指定的模型，该模型的 `thinking.enabled/effort` 被忽略。修复讨论中用户提出更简方案：thinking 默认开启，彻底删掉 enabled 配置项，开关改为纯会话级偏好。
+- **选择**：
+  1. **删 `config.Thinking.Enabled` 与 `ProviderConfig.ThinkingEnabled`**：thinking 默认开启（client 侧恒 true，`anthropicClient.thinkingEnabled=true`），配置不再能声明"某模型默认关思考"。
+  2. **开关降级为会话级偏好**：`AgentState.ThinkingEnabled`（nil = 默认开启）持久化，新增 TUI `/thinking` 命令（on/off 弹窗选择器，对齐 /permission /effort）运行时切换；`--thinking/--no-thinking`（run）保留。
+  3. **`/model` 一致性**：切换模型只同步 effort（新模型默认，原有行为），enabled 保持会话用户设置（无配置可循，天然一致）。
+  4. **Bug04 根修**：`run.go` `agent.Build(res, ...)`（res = ResolveFlags 覆盖后的生效配置），client 与请求模型同源。
+- **理由**：enabled 从"模型能力声明"降级为"纯会话偏好"，语义清晰（thinking 是 anthropic 原生能力，默认开启符合 agent 常规）；/model 一致性自动解决；config 少一个项。破坏性：现有 config 的 `enabled: false` 失效（宽松解析忽略）→ 该模型默认开启 thinking，用 `--no-thinking` 或 `/thinking off` 替代。
+- **影响 ADR**：ADR-025 修订——`AgentState.ThinkingEnabled` 语义从"继承 client 默认（配置）"改为"nil = 默认开启"；ADR-030 命令集新增 `/thinking`；ADR-026 per-call 覆盖（rc.ThinkingEnabled）不变。

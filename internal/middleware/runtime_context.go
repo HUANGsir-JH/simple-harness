@@ -35,7 +35,8 @@ type RuntimeContext struct {
 	// ThinkingEffort 是 per-call 推理档位覆盖（空 = client 默认档位）。
 	ThinkingEffort string
 
-	// ThinkingEnabled 是 per-call thinking 开关覆盖（nil = client 默认）。
+	// ThinkingEnabled 是 per-call thinking 开关覆盖（nil = 默认开启；client 恒
+	// 默认开，2026-08-10 删配置 enabled）。
 	ThinkingEnabled *bool
 
 	// Approver 是审批交互器（阶段三权限，ADR-029）。CLI 注入实现

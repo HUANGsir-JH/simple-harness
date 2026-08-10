@@ -19,6 +19,7 @@ const (
 	popupModel
 	popupEffort
 	popupPermission
+	popupThinking
 )
 
 type popupItem struct {
@@ -42,6 +43,7 @@ var commandCatalog = []commandItem{
 	{name: "switch", short: "Change session"},
 	{name: "model", short: "Change model"},
 	{name: "effort", short: "Set reasoning effort"},
+	{name: "thinking", short: "Toggle thinking on/off"},
 	{name: "permission", short: "Set approval policy"},
 	{name: "help", short: "Commands and keys"},
 	{name: "exit", short: "Leave Harness"},
@@ -122,6 +124,24 @@ func (m Model) runCommand(cmd command) (tea.Model, tea.Cmd) {
 			current = state.Mode
 		}
 		return m.openPopup(popupPermission, "PERMISSION", permissionItems(m.c.PermissionModes()), current), nil
+	case "thinking":
+		if cmd.arg != "" {
+			switch cmd.arg {
+			case "on":
+				if err := m.c.SetThinking(true); err != nil {
+					return m.sysErr(err), nil
+				}
+				return m.sysOK("Thinking enabled"), nil
+			case "off":
+				if err := m.c.SetThinking(false); err != nil {
+					return m.sysErr(err), nil
+				}
+				return m.sysOK("Thinking disabled"), nil
+			default:
+				return m.sysErr(fmt.Errorf("unknown /thinking arg %q (on|off)", cmd.arg)), nil
+			}
+		}
+		return m.openPopup(popupThinking, "THINKING", thinkingItems(), thinkingCurrent(m.c.active.State())), nil
 	default:
 		return m.sysErr(fmt.Errorf("unknown command /%s", cmd.name)), nil
 	}
@@ -168,6 +188,11 @@ func (m *Model) confirmPopup() (string, error) {
 			return "", err
 		}
 		return "Permission set to " + item.value, nil
+	case popupThinking:
+		if err := m.c.SetThinking(item.value == "on"); err != nil {
+			return "", err
+		}
+		return "Thinking " + item.label, nil
 	default:
 		return "", fmt.Errorf("unsupported selector")
 	}
@@ -270,6 +295,23 @@ func permissionItems(modes []string) []popupItem {
 		items = append(items, popupItem{label: mode, value: mode})
 	}
 	return items
+}
+
+func thinkingItems() []popupItem {
+	return []popupItem{
+		{label: "enabled", value: "on"},
+		{label: "disabled", value: "off"},
+	}
+}
+
+// thinkingCurrent 返回当前 thinking 开关对应的弹窗 value（on/off）。
+// nil = 默认开启（AgentState.ThinkingEnabled 未显式设置，2026-08-10 起
+// 删配置 enabled，thinking 默认开启）。
+func thinkingCurrent(state *agentstate.AgentState) string {
+	if state != nil && state.ThinkingEnabled != nil && !*state.ThinkingEnabled {
+		return "off"
+	}
+	return "on"
 }
 
 func sortTodos(todos []agentstate.TodoItem) []agentstate.TodoItem {
