@@ -306,3 +306,15 @@
   4. **Bug04 根修**：`run.go` `agent.Build(res, ...)`（res = ResolveFlags 覆盖后的生效配置），client 与请求模型同源。
 - **理由**：enabled 从"模型能力声明"降级为"纯会话偏好"，语义清晰（thinking 是 anthropic 原生能力，默认开启符合 agent 常规）；/model 一致性自动解决；config 少一个项。破坏性：现有 config 的 `enabled: false` 失效（宽松解析忽略）→ 该模型默认开启 thinking，用 `--no-thinking` 或 `/thinking off` 替代。
 - **影响 ADR**：ADR-025 修订——`AgentState.ThinkingEnabled` 语义从"继承 client 默认（配置）"改为"nil = 默认开启"；ADR-030 命令集新增 `/thinking`；ADR-026 per-call 覆盖（rc.ThinkingEnabled）不变。
+
+## ADR-035：workspace 边界（软）+ Decide 参数感知 + 多路径审批记忆（2026-08-10）
+
+- **背景**：架构审查 Bug03——5 个文件工具（read_file/list_dir/glob/write_file/apply_patch）把模型给的路径原样交给 os，无规范化/前缀校验/`..`穿越检查，`state.CWD`（会话启动目录）是死字段；叠加审批后 `Decide` 对 classRead 任何模式无条件 Allow（最严 readonly 下仍可无审批读 /etc/passwd、~/.ssh/id_rsa）。另：审批粒度只看工具名（`ApprovalKey` 对非 shell 工具返回工具名，批准一次 write_file 后本会话写任何路径不再询问；Decide 无法表达"允许读项目内、不允许读项目外"）。
+- **参考**：opencode 用 patterns（相对 worktree 路径）+ Wildcard 匹配，apply_patch 提取全部文件路径逐个判定；codex 内置文件工具边界靠 OS sandbox 硬边界（审批不覆盖），不采纳（无 sandbox 基础设施）。
+- **选择**：
+  1. **软边界**：`resolveInWorkspace` 只把相对路径规范化为绝对（以 state.CWD 为基），**不拒绝越界**——越界判定交审批（范围内按 class 规则 / 范围外 Ask，bypass 不受限）。词法校验（filepath.Clean），不解析符号链接（symlink 逃逸 v1 已知局限）。工具层与审批层同源（都读 rc.State.CWD），"相对路径基准"一致。
+  2. **Decide 参数感知**：`action{class, targets}` + ws 参数（ApprovalMiddleware 从 rc.State.CWD 读入）。classRead 范围内 Allow / 越界 Ask；classEdit 越界 Ask（软边界优先）/ 范围内按模式；apply_patch 提取 patch 内全部文件路径判定，任一越界 → Ask。shell/todo/未知按原规则。
+  3. **ApprovalKey 多路径**：文件工具 key = `<tool>:<绝对路径>`（apply_patch 每个文件路径一条），Decide 判定时**全部命中 approved 才 Allow**；"本会话记住"（AllowSession）把全部 key 写入 AgentState.Permission.Approved。shell 保持 NormalizeCommand 命令粒度。
+  4. **EvictContent/MaxOutputChars 下沉 tools 包**：断 tools→impl 反向依赖环（Bug03 需 impl→tools 报错暴露）。
+- **理由**："workspace 划定默认范围，审批负责范围之外交给人判断"（审查报告结论）——硬边界要么全允许要么全拒绝，用户无法参与；软边界让越界读/写进审批，合法越界（读外部配置、写 /tmp 输出）可批准，记忆粒度对齐 opencode multi-pattern。
+- **影响 ADR**：ADR-025——`AgentState.Permission.Approved` 的 key 语义从"工具名/命令前缀"扩展为"`<工具>:<绝对路径>` 多 key"；ADR-029——`Decide` 签名加 ws 参数、`ApprovalKey` 拆多 key `approvalKeys`；ADR-028——`EvictContent` 从 impl 移到 tools。

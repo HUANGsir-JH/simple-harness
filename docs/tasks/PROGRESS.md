@@ -2,6 +2,19 @@
 
 > 按日期追加，最新在上。记录：进展、阻塞、问题、经验。
 
+## 2026-08-10
+
+### 架构审查 10 项缺陷修复（ADR-034/035，Bug01-09 ✅）
+
+- **来源**：`docs/reviews/architecture-review-2026-08-10.html`（13,147 行全仓审查，10 项经可执行探针证实）。逐 bug 与用户讨论修复方向，每个单独提交。
+- **已完成**：Bug01 e2e SendLine→sendKeys(CR)；Bug02 shell 白名单前拒元字符 + find 危险参数；Bug04 删 thinking.enabled 默认开启 + /thinking 命令（ADR-034）；Bug05 Models() 只列当前 provider；Bug06 writer 写后关 panic + shell 杀进程组（POSIX Setpgid，Windows no-op）；Bug07 apply_patch 歧义检测 + @@ 定位 + 两阶段事务；Bug08 resume 读侧跳过坏行；Bug09 RunTUI 等 run goroutine 退出。
+- **Bug03（最大块，ADR-035）**：
+  - `tools/workspace.go` 新增 `ResolvePath/InWorkspace/ResolveInWorkspace`：相对路径以 `state.CWD`（会话启动目录）为基解析为绝对，**软边界**（只规范化不拒绝，越界交审批）。5 个文件工具接入，`state.CWD` 死字段复活；`applyPatch` 加 ws 参数逐路径解析。
+  - `Decide` 参数感知：加 ws 参数，`action{class, targets}`；classRead 范围内 Allow/越界 Ask、classEdit 越界 Ask/范围内按模式、apply_patch 提取全部文件路径（任一越界 Ask）；bypass 不受限（用户显式确认）。
+  - `ApprovalKey` 拆多 key：文件工具 `<tool>:<绝对路径>`，全部命中 approved 才 Allow（对齐 opencode multi-pattern）；批准"本会话记住"全部写入 AgentState。
+  - `EvictContent/MaxOutputChars` 下沉 tools 包：断 tools→impl 反向依赖环（#105 前置项）。
+- **验证**：`go build/vet/test ./...` 全绿（含 e2e/TUI 强制重跑）；新增 policy 边界测试 20+ 用例、workspace 单测、工具 CWD 解析测试；shell 超时落盘测试修 flaky（PowerShell 冷启动放宽 timeout）。
+
 ## 2026-08-09
 
 ### 配置层独立 + 进程级装配根 ✅（ADR-033）
