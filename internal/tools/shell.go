@@ -29,7 +29,7 @@ func (ShellCommandTool) Name() string { return "shell_command" }
 func (ShellCommandTool) Spec() provider.ToolSpec {
 	return provider.ToolSpec{
 		Name:        "shell_command",
-		Description: "在 shell 中执行命令并返回输出（stdout+stderr 合并）。Windows 用 PowerShell，POSIX 用 sh -c。命令非零退出或超时返回错误文本（超时输出的完整版会保存到 evictions/ 目录，错误信息含路径）。",
+		Description: "在 shell 中执行命令并返回输出（stdout+stderr 合并）。Windows 用 PowerShell，POSIX 用 sh -c。命令非零退出或超时返回错误文本（输出超长时完整版会保存到 evictions/ 目录并用 read_file 提示，错误信息含路径）。",
 		Parameters: json.RawMessage(`{
 			"type": "object",
 			"properties": {
