@@ -48,13 +48,19 @@ type Line struct {
 //     指令在 goroutine 内完成
 //   - 进程崩溃丢缓冲尾部几块（可接受，远好于回合结束才写）
 type TranscriptWriter struct {
-	ch        chan Line
-	dir       string // historys 目录
-	file      *os.File
-	segment   int   // 当前文件序号（writer goroutine 内）
-	ordinal   int64 // 行序号（writer goroutine 内）
-	turn      int   // 当前回合（OnAgentEvent 所在 goroutine，串行）
-	done      chan struct{}
+	ch      chan Line
+	dir     string
+	file    *os.File
+	segment int   // 当前文件序号（writer goroutine 内）
+	ordinal int64 // 行序号（writer goroutine 内）
+	turn    int   // 当前回合（OnAgentEvent 所在 goroutine，串行）
+	done    chan struct{}
+	// mu 保护 "closed 检查 + 发送" 的原子性（Bug06(a)）：Write/Flush/NewSegment
+	// 持锁发送，Close 持锁设 closed + close(ch)，杜绝"发送到已关闭 channel"
+	// 的 panic（写后关）。closeOnce 只保证 Close 自身幂等。
+	mu     sync.Mutex
+	closed bool
+
 	closeOnce sync.Once // Close 幂等（REPL/RunTUI 双路径可能重复关闭）
 }
 
@@ -86,7 +92,13 @@ func NewTranscriptWriter(historyDir string) (*TranscriptWriter, error) {
 }
 
 // Write 入队一行（FIFO）。缓冲满时阻塞，保证不丢。
+// 关闭后静默丢弃（Bug06(a)：写后关不再 panic，ADR-025 尽力而为写侧）。
 func (w *TranscriptWriter) Write(line Line) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.closed {
+		return
+	}
 	w.ch <- line
 }
 
@@ -116,16 +128,25 @@ func (w *TranscriptWriter) OnAgentEvent(ev agent.Event) {
 }
 
 // NewSegment 切一个新 transcript 文件（压缩点：新文件以摘要+保留开头）。
-// 调用方随后写入 seed 消息。经 channel 保序完成。
+// 调用方随后写入 seed 消息。经 channel 保序完成。关闭后 no-op。
 func (w *TranscriptWriter) NewSegment() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.closed {
+		return
+	}
 	w.ch <- Line{Type: segMarker}
 }
 
 // Close 关闭 channel 并等后台 goroutine flush 后关闭文件（幂等）。
+// 关闭后 Write/Flush/NewSegment 静默丢弃（Bug06(a)）。
 func (w *TranscriptWriter) Close() error {
 	var err error
 	w.closeOnce.Do(func() {
+		w.mu.Lock()
+		w.closed = true
 		close(w.ch)
+		w.mu.Unlock()
 		<-w.done
 		err = w.file.Close()
 	})
@@ -133,10 +154,16 @@ func (w *TranscriptWriter) Close() error {
 }
 
 // Flush 等待此前所有入队行写入（同步点；AddCommand 落盘确认，命令低频可接受）。
-// 走 w.ch（FIFO）保证顺序：flush 确认在它之前的行都写完。
+// 走 w.ch（FIFO）保证顺序：flush 确认在它之前的行都写完。关闭后 no-op。
 func (w *TranscriptWriter) Flush() {
 	ack := make(chan struct{})
+	w.mu.Lock()
+	if w.closed {
+		w.mu.Unlock()
+		return
+	}
 	w.ch <- Line{Type: flushMarker, Sync: ack}
+	w.mu.Unlock()
 	<-ack
 }
 

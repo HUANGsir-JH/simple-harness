@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/agent-project/harness/internal/messages"
 )
@@ -79,6 +80,56 @@ func TestLoadSkipsCorruptLine(t *testing.T) {
 	if n := len(conv.Messages); n != 2 {
 		t.Fatalf("conversation 应保留完好 user 行，got %d 条", n)
 	}
+}
+
+// TestWriteAfterClose 验证 Close 后 Write/Flush/NewSegment 静默丢弃不 panic
+// （Bug06(a)：写后关 send on closed channel 崩溃整个进程）。
+func TestWriteAfterClose(t *testing.T) {
+	dir := t.TempDir()
+	w, err := NewTranscriptWriter(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// 写后关不应 panic（静默丢弃）。
+	w.Write(Line{Type: "user", MsgID: "m1", Content: "x"})
+	w.Write(Line{Type: "text", Text: "y"})
+	w.NewSegment()
+	w.Flush()
+	// Close 幂等（可重复调）。
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// 文件为空（写后关的行被丢弃）。
+	lines := readLines(t, filepath.Join(dir, "history-1.jsonl"))
+	if len(lines) != 0 {
+		t.Errorf("写后关应被丢弃，got %d 行", len(lines))
+	}
+}
+
+// TestConcurrentCloseWrite 验证 Close 与并发 Write 竞态不 panic（Bug06(a)
+// 的第二条触发路径：缓冲满阻塞的发送者 + close(ch) 竞态）。
+func TestConcurrentCloseWrite(t *testing.T) {
+	dir := t.TempDir()
+	w, err := NewTranscriptWriter(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 200; j++ {
+				w.Write(Line{Type: "text", Text: "t"})
+			}
+		}()
+	}
+	time.Sleep(2 * time.Millisecond) // 让部分 Write 在途时 Close
+	_ = w.Close()
+	wg.Wait()
 }
 
 // readLines 读回 history 文件并解析为 Line 列表。

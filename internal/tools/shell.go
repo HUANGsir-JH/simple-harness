@@ -72,7 +72,9 @@ func (ShellCommandTool) Handle(ctx context.Context, rc *middleware.RuntimeContex
 
 	err = cmd.Run()
 	if ctx.Err() == context.DeadlineExceeded {
-		// 超时：已收集输出落盘（错误带路径，模型可用 read_file 读进度，不盲目重试）。
+		// 超时：先杀进程组（含后台派生进程，防孤儿残留 Bug06(b)），已收集输出
+		// 落盘（错误带路径，模型可用 read_file 读进度，不盲目重试）。
+		killProcessGroup(cmd)
 		msg := fmt.Sprintf("shell_command: 命令超时（%v）", timeout)
 		if out.Len() > 0 {
 			msg += "\n" + impl.EvictContent(rc, out.String())
@@ -107,5 +109,6 @@ func platformShellCommand(ctx context.Context, command, workdir string) (*exec.C
 	if workdir != "" {
 		cmd.Dir = workdir
 	}
+	applyProcessGroup(cmd) // 独立进程组，超时/中断可杀整组（Bug06(b)）
 	return cmd, nil
 }
