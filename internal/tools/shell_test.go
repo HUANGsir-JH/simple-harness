@@ -52,22 +52,22 @@ func TestShellCommandTimeout(t *testing.T) {
 func TestShellCommandTimeoutEvictsOutput(t *testing.T) {
 	rc := middleware.NewRuntimeContext()
 	rc.StatePath = filepath.Join(t.TempDir(), "sess", "agentstate.json")
-	// 先输出一段再卡住：PowerShell 冷启动约 1s，用较长 timeout 让它先输出。
-	// Windows: Write-Output + Start-Sleep；POSIX: echo + sleep。
+	// 先输出一段再卡住：PowerShell 冷启动慢（约 1s），timeout 放宽到 5s 让输出
+	// 稳定发生在超时前；sleep 远大于 timeout 保证必超时。POSIX 启动快用 1.5s。
 	var cmd, timeout int
 	if isWindows() {
 		cmd = 1
-		timeout = 1500
+		timeout = 5000
 	} else {
 		cmd = 2
-		timeout = 500
+		timeout = 1500
 	}
 	var command string
 	switch cmd {
 	case 1:
-		command = `Write-Output ("slow-output-before-hang"*2000); Start-Sleep -Seconds 3` // >40KB 触发落盘
+		command = `Write-Output ("slow-output-before-hang"*2000); Start-Sleep -Seconds 12` // >40KB 触发落盘
 	case 2:
-		command = `yes slow-output-before-hang | head -n 2000; sleep 3`
+		command = `yes slow-output-before-hang | head -n 2000; sleep 12`
 	}
 	_, err := callWithRC(ShellCommandTool{}, rc, map[string]any{"command": command, "timeout_ms": timeout})
 	wantRespondToModel(t, err, "命令超时")

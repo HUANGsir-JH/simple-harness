@@ -52,7 +52,7 @@ func (ApplyPatchTool) Spec() provider.ToolSpec {
 	}
 }
 
-func (ApplyPatchTool) Handle(_ context.Context, _ *middleware.RuntimeContext, _ string, args json.RawMessage) (messages.ToolResult, error) {
+func (ApplyPatchTool) Handle(_ context.Context, rc *middleware.RuntimeContext, _ string, args json.RawMessage) (messages.ToolResult, error) {
 	var p struct {
 		Patch string `json:"patch"`
 	}
@@ -62,7 +62,7 @@ func (ApplyPatchTool) Handle(_ context.Context, _ *middleware.RuntimeContext, _ 
 	if strings.TrimSpace(p.Patch) == "" {
 		return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: "apply_patch: patch 不能为空"}
 	}
-	report, err := applyPatch(p.Patch)
+	report, err := applyPatch(p.Patch, workspaceOf(rc))
 	if err != nil {
 		return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: "apply_patch: " + err.Error()}
 	}
@@ -101,7 +101,8 @@ type plannedOp struct {
 // applyPatch 应用补丁。两阶段事务（Bug07(b)，2026-08-10）：
 // 阶段 1 全量校验 + 预演（add 存在性 / delete 存在性 / update 逐 hunk 匹配
 // 算出新内容），任一失败返回错误、磁盘零改动；阶段 2 全部通过才统一落盘。
-func applyPatch(patch string) (string, error) {
+// ws 是 workspace 根（相对路径以它为基解析为绝对，Bug03）。
+func applyPatch(patch string, ws string) (string, error) {
 	ops, err := parsePatch(patch)
 	if err != nil {
 		return "", err
@@ -109,40 +110,42 @@ func applyPatch(patch string) (string, error) {
 	var plans []plannedOp
 	var reports []string
 	for _, op := range ops {
+		// 相对路径以 workspace 为基解析（软边界，越界判定在审批层）。
+		path := ResolvePath(ws, op.path)
 		switch op.kind {
 		case "add":
-			if op.path == "" {
+			if path == "" {
 				return "", fmt.Errorf("Add File: 路径为空")
 			}
 			// Add 严格新建（与 write_file 分工：Add=新建，write=覆盖）。
-			if _, err := os.Stat(op.path); err == nil {
-				return "", fmt.Errorf("Add File %s: 文件已存在（新建用 Add，覆盖用 write_file）", op.path)
+			if _, err := os.Stat(path); err == nil {
+				return "", fmt.Errorf("Add File %s: 文件已存在（新建用 Add，覆盖用 write_file）", path)
 			}
-			plans = append(plans, plannedOp{"add", op.path, addContent(op.lines)})
-			reports = append(reports, "Add File: "+op.path)
+			plans = append(plans, plannedOp{"add", path, addContent(op.lines)})
+			reports = append(reports, "Add File: "+path)
 		case "delete":
-			if _, err := os.Stat(op.path); err != nil {
-				return "", fmt.Errorf("Delete File %s: %w", op.path, err)
+			if _, err := os.Stat(path); err != nil {
+				return "", fmt.Errorf("Delete File %s: %w", path, err)
 			}
-			plans = append(plans, plannedOp{"delete", op.path, nil})
-			reports = append(reports, "Delete File: "+op.path)
+			plans = append(plans, plannedOp{"delete", path, nil})
+			reports = append(reports, "Delete File: "+path)
 		case "update":
-			data, err := os.ReadFile(op.path)
+			data, err := os.ReadFile(path)
 			if err != nil {
-				return "", fmt.Errorf("Update File %s: %w", op.path, err)
+				return "", fmt.Errorf("Update File %s: %w", path, err)
 			}
 			lines := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
 			chunks := parseChunks(op.lines)
 			if len(chunks) == 0 {
-				return "", fmt.Errorf("Update File %s: 无有效 hunk", op.path)
+				return "", fmt.Errorf("Update File %s: 无有效 hunk", path)
 			}
 			reps, err := computeReplacements(lines, chunks)
 			if err != nil {
-				return "", fmt.Errorf("Update File %s: %w", op.path, err)
+				return "", fmt.Errorf("Update File %s: %w", path, err)
 			}
 			newLines := applyReplacements(lines, reps)
-			plans = append(plans, plannedOp{"update", op.path, []byte(strings.Join(newLines, "\n") + "\n")})
-			reports = append(reports, "Update File: "+op.path)
+			plans = append(plans, plannedOp{"update", path, []byte(strings.Join(newLines, "\n") + "\n")})
+			reports = append(reports, "Update File: "+path)
 		}
 	}
 	if len(reports) == 0 {

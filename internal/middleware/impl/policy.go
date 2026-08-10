@@ -22,9 +22,8 @@ import (
 	"strings"
 
 	"github.com/agent-project/harness/internal/messages"
-)
-
-// 审批模式（AgentState.Permission.Mode；config approval.mode 默认值）。
+	"github.com/agent-project/harness/internal/tools"
+) // 审批模式（AgentState.Permission.Mode；config approval.mode 默认值）。
 const (
 	// ModeReadonly 只读模式：只读操作放行；写操作 / shell 命令询问。
 	ModeReadonly = "readonly"
@@ -70,6 +69,91 @@ func classify(name string) toolClass {
 	default:
 		return classUnknown
 	}
+}
+
+// action 是一次工具调用的策略输入：class 是"这是什么工具"，targets 是
+// "这次调用要碰什么"（对齐 opencode 多 pattern——参数对策略有发言权，
+// 而非只看工具名，Bug03）。targets 是原始路径（未解析），范围判定由
+// Decide 用 workspace 根解析后进行。
+type action struct {
+	class   toolClass
+	targets []string
+}
+
+// actionOf 组合分类与目标路径提取。
+func actionOf(call *messages.ToolCall) action {
+	return action{class: classify(call.Name), targets: targetsOf(call)}
+}
+
+// targetsOf 提取一次调用的目标路径（原始，未解析；取不到返回 nil）：
+// read_file/write_file/list_dir → path（list_dir 空 → "."，即 workspace 根）；
+// glob → pattern 的静态前缀（到第一个 glob 元字符，范围判定用）；
+// apply_patch → patch 内全部 *** Add/Update/Delete File 路径（去重）。
+func targetsOf(call *messages.ToolCall) []string {
+	switch call.Name {
+	case "read_file", "write_file", "list_dir":
+		var p struct {
+			Path string `json:"path"`
+		}
+		if err := json.Unmarshal(call.Args, &p); err != nil {
+			return nil
+		}
+		if p.Path == "" {
+			return []string{"."}
+		}
+		return []string{p.Path}
+	case "glob":
+		var p struct {
+			Pattern string `json:"pattern"`
+		}
+		if err := json.Unmarshal(call.Args, &p); err != nil {
+			return nil
+		}
+		return []string{globStaticPrefix(p.Pattern)}
+	case "apply_patch":
+		var p struct {
+			Patch string `json:"patch"`
+		}
+		if err := json.Unmarshal(call.Args, &p); err != nil {
+			return nil
+		}
+		return patchPaths(p.Patch)
+	}
+	return nil
+}
+
+// globStaticPrefix 取 glob pattern 的静态前缀（到第一个 * ? [ 前）作范围判定
+// 目标；全元字符或空 → "."。
+func globStaticPrefix(pattern string) string {
+	if i := strings.IndexAny(pattern, "*?["); i >= 0 {
+		pattern = pattern[:i]
+	}
+	if pattern == "" {
+		return "."
+	}
+	return pattern
+}
+
+// patchPathHeader 匹配补丁文件操作头（Add/Update/Delete File: <path>）。
+var patchPathHeader = regexp.MustCompile(`^\*\*\* (Add|Update|Delete) File: (.+)$`)
+
+// patchPaths 提取补丁涉及的全部文件路径（去重）。只扫操作头，不做格式校验
+// （工具层 parsePatch 负责严格校验）。
+func patchPaths(patch string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, line := range strings.Split(patch, "\n") {
+		m := patchPathHeader.FindStringSubmatch(strings.TrimSpace(line))
+		if m == nil {
+			continue
+		}
+		p := strings.TrimSpace(m[2])
+		if p != "" && !seen[p] {
+			seen[p] = true
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // shell 只读安全命令白名单（前缀匹配）：这类命令无需审批直接放行。
@@ -188,13 +272,61 @@ func cmdOf(call *messages.ToolCall) string {
 	return p.Command
 }
 
-// ApprovalKey 返回工具调用的审批记忆 key（会话级 approved 匹配用）。
-// shell → 规范化命令前缀；其它工具 → 工具名（批准一次本会话该工具放行）。
+// ApprovalKey 返回工具调用的单 key 审批记忆 key（shell → 规范化命令前缀；
+// 其它工具 → 工具名）。文件工具不再用它——多路径粒度见 approvalKeys
+// （Bug03：批准一次 write_file 记住整个工具会让后续任何路径免审）。
 func ApprovalKey(call *messages.ToolCall) string {
 	if call.Name == "shell_command" {
 		return NormalizeCommand(cmdOf(call))
 	}
 	return call.Name
+}
+
+// approvalKeys 返回一次调用的审批记忆匹配 key（多 key，对齐 opencode 多
+// pattern）：
+//   - 文件工具（classRead/classEdit）→ 每个目标路径一条 `<tool>:<绝对路径>`
+//     （解析基于 workspace 根 ws；批准"本会话记住"时全部记入 approved，
+//     apply_patch 记住其每个文件路径）
+//   - 其它 → ApprovalKey 单 key（shell 命令 / 工具名）
+func approvalKeys(call *messages.ToolCall, ws string) []string {
+	switch classify(call.Name) {
+	case classRead, classEdit:
+		var keys []string
+		for _, t := range targetsOf(call) {
+			keys = append(keys, call.Name+":"+tools.ResolvePath(ws, t))
+		}
+		return keys
+	default:
+		return []string{ApprovalKey(call)}
+	}
+}
+
+// allApproved 判定 keys 里每个都已在 approved 中（多 key 全命中才 Allow）。
+func allApproved(approved, keys []string) bool {
+	for _, k := range keys {
+		found := false
+		for _, a := range approved {
+			if a == k {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+// anyOutside 判定工具的任一目标路径解析后在 workspace 外（软边界：越界 →
+// 询问，让用户判断；范围内按 class 规则）。
+func anyOutside(call *messages.ToolCall, ws string) bool {
+	for _, t := range targetsOf(call) {
+		if !tools.InWorkspace(ws, tools.ResolvePath(ws, t)) {
+			return true
+		}
+	}
+	return false
 }
 
 // Outcome 是策略决策结果。
@@ -212,33 +344,43 @@ const (
 // Decide 判定一次工具调用的审批结果（纯函数）。
 //
 // mode：当前审批模式（readonly/acceptedit/bypass）；
-// approved：会话级已批准 key 列表（AgentState.Permission.Approved）。
+// approved：会话级已批准 key 列表（AgentState.Permission.Approved）；
+// ws：workspace 根（会话启动目录 state.CWD；空 = 进程 cwd）——文件工具的
+// 目标路径相对它解析并判定越界（Bug03）。
 // 返回 Outcome + 拒绝理由（仅 OutcomeDeny 时非空）。
 //
-// 判定顺序（v1 简化，opencode 规则集"最后匹配胜出"不适用——我们无规则集）：
-//  1. bypass → Allow（完全信任）
-//  2. 会话记忆命中 → Allow（用户本会话明确批准过）
-//  3. 只读 / todo → Allow
-//  4. 编辑 → acceptedit Allow；readonly Ask
-//  5. shell → 危险 Ask / 安全 Allow / 其它 Ask
-//  6. 未知工具 → Ask（保守）
-func Decide(call *messages.ToolCall, mode string, approved []string) (Outcome, string) {
+// 判定顺序：
+//  1. bypass → Allow（完全信任，含越界；用户显式选择不审批）
+//  2. 会话记忆命中（全部目标路径 key 已批准）→ Allow
+//  3. 文件工具越界（任一目标在 workspace 外）→ Ask（软边界：范围内按 class
+//     规则，范围外交给人判断）
+//  4. 只读 / todo → Allow
+//  5. 编辑 → acceptedit Allow；readonly Ask
+//  6. shell → 危险 Ask / 安全 Allow / 其它 Ask
+//  7. 未知工具 → Ask（保守）
+func Decide(call *messages.ToolCall, mode string, approved []string, ws string) (Outcome, string) {
 	if call == nil {
 		return OutcomeDeny, "空工具调用"
 	}
 	if mode == ModeBypass {
 		return OutcomeAllow, ""
 	}
-	key := ApprovalKey(call)
-	for _, k := range approved {
-		if k == key {
-			return OutcomeAllow, ""
-		}
+	keys := approvalKeys(call, ws)
+	if len(keys) > 0 && allApproved(approved, keys) {
+		return OutcomeAllow, ""
 	}
 	switch classify(call.Name) {
-	case classRead, classTodo:
+	case classRead:
+		if anyOutside(call, ws) {
+			return OutcomeAsk, "" // 越界读 → 询问（范围内放行）
+		}
+		return OutcomeAllow, ""
+	case classTodo:
 		return OutcomeAllow, ""
 	case classEdit:
+		if anyOutside(call, ws) {
+			return OutcomeAsk, "" // 越界写 → 询问（软边界优先）
+		}
 		if mode == ModeAcceptEdits {
 			return OutcomeAllow, ""
 		}

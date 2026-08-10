@@ -41,7 +41,7 @@ func (ReadFileTool) Spec() provider.ToolSpec {
 	}
 }
 
-func (ReadFileTool) Handle(_ context.Context, _ *middleware.RuntimeContext, _ string, args json.RawMessage) (messages.ToolResult, error) {
+func (ReadFileTool) Handle(_ context.Context, rc *middleware.RuntimeContext, _ string, args json.RawMessage) (messages.ToolResult, error) {
 	var p struct {
 		Path      string `json:"path"`
 		StartLine int    `json:"start_line"`
@@ -53,14 +53,16 @@ func (ReadFileTool) Handle(_ context.Context, _ *middleware.RuntimeContext, _ st
 	if p.Path == "" {
 		return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: "read_file: path 不能为空"}
 	}
+	// 相对路径以会话 workspace（state.CWD）为基解析为绝对（Bug03）。
+	path := ResolveInWorkspace(rc, p.Path)
 	// 超大文件且未指定行范围 → 提示分段（防一次读爆上下文；指定范围则按需读）。
 	if p.StartLine <= 0 && p.EndLine <= 0 {
-		if fi, err := os.Stat(p.Path); err == nil && fi.Size() > MaxReadFileBytes {
+		if fi, err := os.Stat(path); err == nil && fi.Size() > MaxReadFileBytes {
 			return messages.ToolResult{}, &ToolError{RespondToModel: true,
 				Message: fmt.Sprintf("read_file: 文件过大（%d 字节，上限 %d），请用 start_line/end_line 分段读取", fi.Size(), MaxReadFileBytes)}
 		}
 	}
-	content, err := readFileRange(p.Path, p.StartLine, p.EndLine)
+	content, err := readFileRange(path, p.StartLine, p.EndLine)
 	if err != nil {
 		return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: "read_file: " + err.Error()}
 	}
@@ -113,17 +115,15 @@ func (ListDirTool) Spec() provider.ToolSpec {
 	}
 }
 
-func (ListDirTool) Handle(_ context.Context, _ *middleware.RuntimeContext, _ string, args json.RawMessage) (messages.ToolResult, error) {
+func (ListDirTool) Handle(_ context.Context, rc *middleware.RuntimeContext, _ string, args json.RawMessage) (messages.ToolResult, error) {
 	var p struct {
 		Path string `json:"path"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: "list_dir: 参数解析失败: " + err.Error()}
 	}
-	path := p.Path
-	if path == "" {
-		path = "."
-	}
+	// 相对路径以 workspace 为基；空 path 默认 workspace 根（ResolvePath 处理）。
+	path := ResolveInWorkspace(rc, p.Path)
 	content, err := listDirContents(path)
 	if err != nil {
 		return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: "list_dir: " + err.Error()}
@@ -166,7 +166,7 @@ func (GlobTool) Spec() provider.ToolSpec {
 	}
 }
 
-func (GlobTool) Handle(_ context.Context, _ *middleware.RuntimeContext, _ string, args json.RawMessage) (messages.ToolResult, error) {
+func (GlobTool) Handle(_ context.Context, rc *middleware.RuntimeContext, _ string, args json.RawMessage) (messages.ToolResult, error) {
 	var p struct {
 		Pattern string `json:"pattern"`
 	}
@@ -176,7 +176,9 @@ func (GlobTool) Handle(_ context.Context, _ *middleware.RuntimeContext, _ string
 	if p.Pattern == "" {
 		return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: "glob: pattern 不能为空"}
 	}
-	matches, err := filepath.Glob(p.Pattern)
+	// 相对 pattern 以 workspace 为基解析（glob 元字符不展开，原样拼接）。
+	pattern := ResolveInWorkspace(rc, p.Pattern)
+	matches, err := filepath.Glob(pattern)
 	if err != nil {
 		return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: "glob: " + err.Error()}
 	}

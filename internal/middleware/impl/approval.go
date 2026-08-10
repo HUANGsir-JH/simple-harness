@@ -31,7 +31,8 @@ func (m ApprovalMiddleware) OnActing(ctx context.Context, rc *middleware.Runtime
 		return next(ctx, rc, in)
 	}
 	mode := m.mode(rc)
-	outcome, reason := Decide(in.Call, mode, approvedOf(rc))
+	ws := workspaceOf(rc)
+	outcome, reason := Decide(in.Call, mode, approvedOf(rc), ws)
 	switch outcome {
 	case OutcomeAllow:
 		return next(ctx, rc, in)
@@ -57,7 +58,7 @@ func (m ApprovalMiddleware) OnActing(ctx context.Context, rc *middleware.Runtime
 		case middleware.DecisionAllow:
 			return next(ctx, rc, in)
 		case middleware.DecisionAllowSession:
-			rememberApproved(rc, ApprovalKey(in.Call))
+			rememberApproved(rc, approvalKeys(in.Call, ws))
 			return next(ctx, rc, in)
 		default: // DecisionDeny
 			return &middleware.DeniedError{Reason: fmt.Sprintf("用户拒绝了该操作：%s %s", in.Call.Name, SummaryOf(in.Call))}
@@ -93,21 +94,41 @@ func approvedOf(rc *middleware.RuntimeContext) []string {
 	return rc.State.Permission.Approved
 }
 
+// workspaceOf 取审批判定的 workspace 根：rc.State.CWD（会话启动目录，ADR-028）
+// 优先，nil 返回空（Decide 内部回退进程 cwd）。与工具层 ResolveInWorkspace
+// 同源，审批与工具对"相对路径基准"一致。
+func workspaceOf(rc *middleware.RuntimeContext) string {
+	if rc != nil && rc.State != nil {
+		return rc.State.CWD
+	}
+	return ""
+}
+
 // rememberApproved 把审批 key 记入会话级记忆（去重），随 AgentState 落盘
-// （SessionMiddleware after），resume 后模型可见（ADR-029）。
-func rememberApproved(rc *middleware.RuntimeContext, key string) {
-	if rc == nil || rc.State == nil || key == "" {
+// （SessionMiddleware after），resume 后模型可见（ADR-029）。文件工具传入
+// 多 key（每个目标路径一条，Bug03：批准一次 apply_patch 记住其每个文件）。
+func rememberApproved(rc *middleware.RuntimeContext, keys []string) {
+	if rc == nil || rc.State == nil || len(keys) == 0 {
 		return
 	}
 	if rc.State.Permission == nil {
 		rc.State.Permission = &agentstate.PermissionState{}
 	}
-	for _, k := range rc.State.Permission.Approved {
-		if k == key {
-			return
+	for _, key := range keys {
+		if key == "" {
+			continue
+		}
+		dup := false
+		for _, k := range rc.State.Permission.Approved {
+			if k == key {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			rc.State.Permission.Approved = append(rc.State.Permission.Approved, key)
 		}
 	}
-	rc.State.Permission.Approved = append(rc.State.Permission.Approved, key)
 }
 
 // SummaryOf 生成工具调用的人类可读摘要（审批 UI 展示）：

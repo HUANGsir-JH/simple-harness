@@ -10,18 +10,19 @@ import (
 	"github.com/agent-project/harness/internal/agentstate"
 	"github.com/agent-project/harness/internal/messages"
 	"github.com/agent-project/harness/internal/middleware"
+	"github.com/agent-project/harness/internal/tools"
 )
 
-// longContent 构造超过 MaxOutputChars 的测试内容（前缀/后缀可识别）。
+// longContent 构造超过 tools.MaxOutputChars 的测试内容（前缀/后缀可识别）。
 func longContent(prefix, suffix string) string {
-	return prefix + strings.Repeat("x", MaxOutputChars*2) + suffix
+	return prefix + strings.Repeat("x", tools.MaxOutputChars*2) + suffix
 }
 
 // TestEvictContentShort 验证短文本原样返回（不截断、不落盘）。
 func TestEvictContentShort(t *testing.T) {
 	rc := middleware.NewRuntimeContext()
 	rc.StatePath = filepath.Join(t.TempDir(), "sess", "agentstate.json")
-	if got := EvictContent(rc, "hello"); got != "hello" {
+	if got := tools.EvictContent(rc, "hello"); got != "hello" {
 		t.Errorf("short: got %q", got)
 	}
 }
@@ -34,7 +35,7 @@ func TestEvictContentLong(t *testing.T) {
 
 	prefix := "HEAD-START-"
 	suffix := "TAIL-END-"
-	got := EvictContent(rc, longContent(prefix, suffix))
+	got := tools.EvictContent(rc, longContent(prefix, suffix))
 
 	// 头部/尾部保留。
 	if !strings.Contains(got, prefix) {
@@ -67,8 +68,8 @@ func TestEvictContentLong(t *testing.T) {
 
 // TestEvictContentNilRC 验证 rc 为 nil（测试/非会话）退化纯截断、不落盘。
 func TestEvictContentNilRC(t *testing.T) {
-	got := EvictContent(nil, longContent("a", "b"))
-	if len(got) > MaxOutputChars+1000 {
+	got := tools.EvictContent(nil, longContent("a", "b"))
+	if len(got) > tools.MaxOutputChars+1000 {
 		t.Errorf("nil rc: output too long (%d)", len(got))
 	}
 	if !strings.Contains(got, "[truncated]") {
@@ -79,7 +80,7 @@ func TestEvictContentNilRC(t *testing.T) {
 // TestEvictContentNoStatePath 验证 StatePath 为空时不落盘（退化截断）。
 func TestEvictContentNoStatePath(t *testing.T) {
 	rc := middleware.NewRuntimeContext()
-	got := EvictContent(rc, longContent("a", "b"))
+	got := tools.EvictContent(rc, longContent("a", "b"))
 	if !strings.Contains(got, "[truncated]") {
 		t.Error("no statepath: expected truncation marker")
 	}

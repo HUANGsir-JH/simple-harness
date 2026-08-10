@@ -32,7 +32,7 @@ func (WriteFileTool) Spec() provider.ToolSpec {
 	}
 }
 
-func (WriteFileTool) Handle(_ context.Context, _ *middleware.RuntimeContext, _ string, args json.RawMessage) (messages.ToolResult, error) {
+func (WriteFileTool) Handle(_ context.Context, rc *middleware.RuntimeContext, _ string, args json.RawMessage) (messages.ToolResult, error) {
 	var p struct {
 		Path    string `json:"path"`
 		Content string `json:"content"`
@@ -43,11 +43,13 @@ func (WriteFileTool) Handle(_ context.Context, _ *middleware.RuntimeContext, _ s
 	if p.Path == "" {
 		return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: "write_file: path 不能为空"}
 	}
-	if err := os.MkdirAll(filepath.Dir(p.Path), 0o755); err != nil {
+	// 相对路径以 workspace 为基解析为绝对（Bug03）。
+	path := ResolveInWorkspace(rc, p.Path)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: "write_file: 创建目录: " + err.Error()}
 	}
-	if err := os.WriteFile(p.Path, []byte(p.Content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(p.Content), 0o644); err != nil {
 		return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: "write_file: " + err.Error()}
 	}
-	return messages.ToolResult{Success: true, Content: "Write File: " + p.Path}, nil
+	return messages.ToolResult{Success: true, Content: "Write File: " + path}, nil
 }
