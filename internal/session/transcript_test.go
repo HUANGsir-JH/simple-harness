@@ -12,6 +12,75 @@ import (
 	"github.com/agent-project/harness/internal/messages"
 )
 
+// TestLoadToleratesHugeLine 验证读侧无行长限制（Bug08）：超大 tool_result 行
+// 不再锁死 resume（旧 bufio.Scanner 4MB 上限 → ErrTooLong），后续正常行也读到。
+func TestLoadToleratesHugeLine(t *testing.T) {
+	dir := t.TempDir()
+	w, err := NewTranscriptWriter(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	succ := true
+	huge := strings.Repeat("x", 5*1024*1024) // 5MB，超过旧 Scanner 的 4MB 上限
+	w.Write(Line{Type: "tool_result", CallID: "c1", Success: &succ, Content: huge})
+	w.Write(Line{Type: "user", MsgID: "m1", Content: "正常消息"})
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	lines, skipped, err := LoadLines(dir)
+	if err != nil {
+		t.Fatalf("LoadLines 不应失败（旧实现 token too long 锁死）：%v", err)
+	}
+	if skipped != 0 {
+		t.Errorf("超大行是合法 JSON，不应跳过：skipped=%d", skipped)
+	}
+	if len(lines) != 2 || lines[1].Content != "正常消息" {
+		t.Fatalf("lines=%d, want 2（含后续正常行）", len(lines))
+	}
+	conv, err := LoadConversation(dir)
+	if err != nil {
+		t.Fatalf("LoadConversation 不应失败：%v", err)
+	}
+	if n := len(conv.Messages); n != 2 || conv.Messages[n-1].Content != "正常消息" {
+		t.Fatalf("conversation 最后一条应含正常 user 行，got %d 条", n)
+	}
+}
+
+// TestLoadSkipsCorruptLine 验证坏行跳过 + 计数上报（Bug08）：崩溃截断的半
+// JSON 行不再让整会话无法打开，前面完好的行保留，skipped 计数可见。
+func TestLoadSkipsCorruptLine(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	good, _ := json.Marshal(Line{Type: "user", MsgID: "m1", Content: "完好"})
+	path := filepath.Join(dir, "history-1.jsonl")
+	// 完好行 + 崩溃截断的半 JSON + 完好行（后者无换行结尾）。
+	content := string(good) + "\n{\"type\":\"tool_result\",\"call_id\":\"c1\",\"content\":\"trun" + "\n" + string(good)
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	lines, skipped, err := LoadLines(dir)
+	if err != nil {
+		t.Fatalf("LoadLines 不应失败（旧实现 bad line 锁死）：%v", err)
+	}
+	if skipped != 1 {
+		t.Errorf("skipped=%d, want 1（半 JSON 行）", skipped)
+	}
+	if len(lines) != 2 || lines[0].Content != "完好" || lines[1].Content != "完好" {
+		t.Fatalf("lines=%d, want 2（坏行跳过、前后完好行保留）", len(lines))
+	}
+	conv, err := LoadConversation(dir)
+	if err != nil {
+		t.Fatalf("LoadConversation 不应失败：%v", err)
+	}
+	if n := len(conv.Messages); n != 2 {
+		t.Fatalf("conversation 应保留完好 user 行，got %d 条", n)
+	}
+}
+
 // readLines 读回 history 文件并解析为 Line 列表。
 func readLines(t *testing.T, path string) []Line {
 	t.Helper()

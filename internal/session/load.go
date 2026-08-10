@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/agent-project/harness/internal/messages"
@@ -11,59 +12,75 @@ import (
 
 // LoadConversation 读取 historys 目录下最大序号文件，按 ordinal 逐行重建 conversation。
 // 最新文件即有效历史（压缩切分后新文件以摘要+保留开头；旧文件纯审计）。
+// 读侧容错（Bug08）：坏行跳过、不再锁死 resume，跳过计数见 LoadLines。
 func LoadConversation(historyDir string) (*messages.Conversation, error) {
 	seg := currentSegment(historyDir)
 	if seg == 0 {
 		return nil, fmt.Errorf("session: no transcript found in %s", historyDir)
 	}
-	return loadHistoryFile(historyPath(historyDir, seg))
+	conv, _, err := loadHistoryFile(historyPath(historyDir, seg))
+	return conv, err
 }
 
 // LoadLines returns the latest transcript segment in ordinal order. UI clients
 // use it when they need non-model entries such as command rows as well as the
 // conversation reconstructed by LoadConversation.
-func LoadLines(historyDir string) ([]Line, error) {
+// 返回 skipped = 跳过的坏行数（读侧容错，Bug08）。
+func LoadLines(historyDir string) ([]Line, int, error) {
 	seg := currentSegment(historyDir)
 	if seg == 0 {
-		return nil, nil
+		return nil, 0, nil
 	}
-	f, err := os.Open(historyPath(historyDir, seg))
-	if err != nil {
-		return nil, fmt.Errorf("session: open %s: %w", historyPath(historyDir, seg), err)
-	}
-	defer f.Close()
-
+	path := historyPath(historyDir, seg)
 	var lines []Line
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-	for sc.Scan() {
+	skipped, err := forEachLine(path, func(raw []byte) error {
 		var line Line
-		if err := json.Unmarshal(sc.Bytes(), &line); err != nil {
-			return nil, fmt.Errorf("session: bad line: %w", err)
+		if err := json.Unmarshal(raw, &line); err != nil {
+			return err // 坏行（JSON 损坏）→ skipped++，不中断
 		}
 		lines = append(lines, line)
+		return nil
+	})
+	if err != nil {
+		return nil, skipped, err
 	}
-	if err := sc.Err(); err != nil {
-		return nil, err
-	}
-	return lines, nil
+	return lines, skipped, nil
 }
 
-func loadHistoryFile(path string) (*messages.Conversation, error) {
+// forEachLine 逐行读取 transcript 文件并回调。bufio.Reader.ReadBytes 无行长
+// 限制（替换 bufio.Scanner 的 4MB 上限——一次超大工具输出或一行写坏不再锁死
+// resume，Bug08）；回调返回非 nil（坏行）时跳过并计数，不中断读取。
+func forEachLine(path string, fn func(raw []byte) error) (skipped int, err error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("session: open %s: %w", path, err)
+		return 0, fmt.Errorf("session: open %s: %w", path, err)
 	}
 	defer f.Close()
+	r := bufio.NewReader(f)
+	for {
+		raw, rerr := r.ReadBytes('\n')
+		if len(raw) > 0 {
+			if perr := fn(raw); perr != nil {
+				skipped++
+			}
+		}
+		if rerr != nil {
+			if rerr == io.EOF {
+				break
+			}
+			return skipped, rerr
+		}
+	}
+	return skipped, nil
+}
 
+func loadHistoryFile(path string) (*messages.Conversation, int, error) {
 	conv := messages.NewConversation()
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	var cur *messages.Message // 当前 assistant（同 msg_id 累积 thinking/text/tool_use）
-	for sc.Scan() {
+	skipped, err := forEachLine(path, func(raw []byte) error {
 		var line Line
-		if err := json.Unmarshal(sc.Bytes(), &line); err != nil {
-			return nil, fmt.Errorf("session: bad line: %w", err)
+		if err := json.Unmarshal(raw, &line); err != nil {
+			return err
 		}
 		switch line.Type {
 		case "user":
@@ -84,17 +101,18 @@ func loadHistoryFile(path string) (*messages.Conversation, error) {
 		case "meta", "turn_start", "turn_end", segMarker:
 			// 无消息语义
 		}
+		return nil
+	})
+	if err != nil {
+		return nil, skipped, err
 	}
-	if err := sc.Err(); err != nil {
-		return nil, err
-	}
-	return conv, nil
+	return conv, skipped, nil
 }
 
 // loadCommands 读取 historys 的 command 行（斜杠命令历史；TUI resume 渲染
 // 系统行，ADR-030）。command 行不进 conversation（模型不可见）。
 func loadCommands(historyDir string) ([]string, error) {
-	lines, err := LoadLines(historyDir)
+	lines, _, err := LoadLines(historyDir)
 	if err != nil {
 		return nil, err
 	}

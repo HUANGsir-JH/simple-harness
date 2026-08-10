@@ -187,7 +187,8 @@ func (s *Session) Commands() ([]string, error) {
 }
 
 // TranscriptLines returns the latest transcript segment for timeline UIs.
-func (s *Session) TranscriptLines() ([]Line, error) {
+// 第二返回值 = 跳过的坏行数（读侧容错，Bug08），调用方可提示用户。
+func (s *Session) TranscriptLines() ([]Line, int, error) {
 	return LoadLines(s.historyDir)
 }
 

@@ -40,8 +40,12 @@ func RunTUI(a *agent.Agent, project *session.Project, cfg config.Config, sess *s
 }
 
 func loadSessionHistory(model *Model, sess *session.Session) {
-	if lines, err := sess.TranscriptLines(); err == nil && len(lines) > 0 {
+	if lines, skipped, err := sess.TranscriptLines(); err == nil && len(lines) > 0 {
 		loadTranscriptLines(model, lines)
+		if skipped > 0 {
+			// 读侧容错（Bug08）：坏行已跳过不锁死 resume，但提示用户数据不完整。
+			model.appendSystem(fmt.Sprintf("resume: 忽略 %d 行损坏/超长记录", skipped), true)
+		}
 		return
 	}
 	loadHistory(model, sess.Conversation())
