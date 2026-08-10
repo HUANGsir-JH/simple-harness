@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/agent-project/harness/internal/agent"
 	"github.com/agent-project/harness/internal/config"
@@ -22,6 +23,7 @@ type Controller struct {
 	open   map[string]*session.Session
 	ctx    context.Context // 顶层 ctx（回合从它派生；SIGTERM cancel）
 	send   func(tea.Msg)   // program.Send（RunTUI 注入；并发安全）
+	runs   sync.WaitGroup  // 在途 run goroutine 计数（WaitRuns 用，Bug09）
 
 	mu     sync.Mutex
 	cancel context.CancelFunc // 当前回合 cancel（Esc 中断，跨 goroutine 保护）
@@ -67,8 +69,12 @@ func (c *Controller) cancelRun() {
 
 // Run 启动一个回合（tea.Cmd：bubbletea 执行 goroutine 里跑 agent，ADR-030
 // 事件桥 onEvent → program.Send）。返回 runDoneMsg 标记回合结束。
+// runs.Add 在创建 Cmd 时同步执行（program.Run 期间发生），Done 在 goroutine
+// 结束时——避免 WaitGroup 的 Add/Wait 并发误用（Bug09）。
 func (c *Controller) Run(line string) tea.Cmd {
+	c.runs.Add(1)
 	return func() tea.Msg {
+		defer c.runs.Done()
 		rc := c.active.RuntimeContext()
 		rc.Approver = c.approver() // W4 注入 TUIApprover；当前 nil = 自动拒绝
 		c.active.AddUser(line)
@@ -77,6 +83,22 @@ func (c *Controller) Run(line string) tea.Cmd {
 		defer c.clearCancel()
 		err := c.a.Run(runCtx, rc, c.onEvent)
 		return runDoneMsg{err}
+	}
+}
+
+// WaitRuns 等待所有在途 run goroutine 退出（RunTUI 在 CloseAll 前调用：
+// SIGTERM 时 program.Run 已返回但 run goroutine 可能仍在 emit，须等其退出
+// 再关 writer，Bug09 治因）。带超时降级：run goroutine 卡死不阻塞退出
+// （writer closed 标志已兜底防 panic，Bug06(a) 治症）。
+func (c *Controller) WaitRuns() {
+	done := make(chan struct{})
+	go func() {
+		c.runs.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
 	}
 }
 

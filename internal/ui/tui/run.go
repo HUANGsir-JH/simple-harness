@@ -29,12 +29,16 @@ func RunTUI(a *agent.Agent, project *session.Project, cfg config.Config, sess *s
 		tea.WithContext(ctx),
 	)
 	controller.setSend(program.Send)
+	_, runErr := program.Run()
+	// SIGTERM（tea.WithContext）→ program.Run 返回，但 run goroutine 可能仍在
+	// emit；先等其退出再关 writer（Bug09 治因），writer closed 兜底（Bug06(a)）。
+	controller.WaitRuns()
 	defer controller.CloseAll()
-	if _, err := program.Run(); err != nil {
+	if runErr != nil {
 		if errors.Is(ctx.Err(), context.Canceled) {
 			return nil
 		}
-		return fmt.Errorf("tui: %w", err)
+		return fmt.Errorf("tui: %w", runErr)
 	}
 	return nil
 }

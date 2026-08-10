@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/agent-project/harness/internal/agent"
 	"github.com/agent-project/harness/internal/config"
@@ -139,6 +140,34 @@ func TestTurnDoneDoesNotRaceNextRun(t *testing.T) {
 	m = nm.(Model)
 	if cmd != nil || !m.running || len(m.queue) != 1 {
 		t.Fatalf("turn_done must not consume queue: running=%v queue=%v", m.running, m.queue)
+	}
+}
+
+// TestWaitRuns 验证 WaitRuns 等待在途 run goroutine 退出（Bug09：RunTUI 在
+// CloseAll 前调用，防 SIGTERM 时 run goroutine 还在 emit、writer 已关的竞态）。
+func TestWaitRuns(t *testing.T) {
+	c := newTestController(t, nil)
+	c.runs.Add(1)
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		c.runs.Done()
+	}()
+	start := time.Now()
+	c.WaitRuns()
+	if elapsed := time.Since(start); elapsed >= 1*time.Second {
+		t.Errorf("WaitRuns 应在 run goroutine 退出后立即返回，耗时 %v", elapsed)
+	}
+}
+
+// TestWaitRunsTimeout 验证 run goroutine 卡死时 WaitRuns 超时降级、不永久阻塞
+// （Bug09：等待带 3s 上限，writer closed 标志已兜底防 panic）。
+func TestWaitRunsTimeout(t *testing.T) {
+	c := newTestController(t, nil)
+	c.runs.Add(1) // 永不 Done（模拟卡死的 run goroutine）
+	start := time.Now()
+	c.WaitRuns()
+	if elapsed := time.Since(start); elapsed >= 10*time.Second {
+		t.Errorf("WaitRuns 应超时降级，耗时 %v", elapsed)
 	}
 }
 
