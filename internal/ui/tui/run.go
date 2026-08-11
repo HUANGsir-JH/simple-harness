@@ -59,9 +59,9 @@ func loadTranscriptLines(model *Model, lines []session.Line) {
 	assistants := map[string]*MessageItem{}
 	for index, line := range lines {
 		switch line.Type {
-		case "user":
+		case session.LineTypeUser:
 			model.appendMessage(&MessageItem{ID: line.MsgID, Role: messages.RoleUser, Content: line.Content, Rendered: line.Content, Done: true})
-		case "thinking", "text":
+		case session.LineTypeThinking, session.LineTypeText:
 			id := line.MsgID
 			if id == "" {
 				id = fmt.Sprintf("transcript-%d", index)
@@ -72,16 +72,16 @@ func loadTranscriptLines(model *Model, lines []session.Line) {
 				assistants[id] = item
 				model.appendMessage(item)
 			}
-			if line.Type == "thinking" {
+			if line.Type == session.LineTypeThinking {
 				item.Thinking += line.Text
 			} else {
 				item.Content += line.Text
 				item.Rendered = renderMarkdown(item.Content, model.contentWidth)
 			}
-		case "tool_use":
+		case session.LineTypeToolUse:
 			call := &messages.ToolCall{ID: line.CallID, Name: line.Name, Args: line.Args}
 			model.onToolCall(call)
-		case "tool_result":
+		case session.LineTypeToolResult:
 			for _, tool := range model.tools {
 				if tool.ID == line.CallID {
 					success := line.Success != nil && *line.Success
@@ -89,7 +89,7 @@ func loadTranscriptLines(model *Model, lines []session.Line) {
 					break
 				}
 			}
-		case "command":
+		case session.LineTypeCommand:
 			model.appendSystem("Command  "+line.Content, false)
 		}
 	}

@@ -294,3 +294,38 @@ func TestLoadReconstruct(t *testing.T) {
 		t.Errorf("tool 消息重建: %+v", tr.ToolResults)
 	}
 }
+
+// TestResumeContinuesOrdinal 验证 resume 续接（C3）：复用现有段时 ordinal 从
+// 上次续接，不再同段重复（恢复注释承诺的"resume 按序加载兜底"的真实意义）。
+func TestResumeContinuesOrdinal(t *testing.T) {
+	dir := t.TempDir()
+	// 第一次会话：turn 到 1、写 2 行（ordinal 1,2）。
+	w, err := NewTranscriptWriter(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.Write(Line{Type: LineTypeTurnStart, Turn: 1})
+	w.Write(Line{Type: LineTypeText, MsgID: "m1", Text: "a", Turn: 1})
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// resume：重开同一目录（复用 history-1.jsonl）→ ordinal 续接自 2。
+	w2, err := NewTranscriptWriter(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w2.Write(Line{Type: LineTypeText, MsgID: "m2", Text: "b", Turn: 1})
+	if err := w2.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	lines := readLines(t, filepath.Join(dir, "history-1.jsonl"))
+	if len(lines) != 3 {
+		t.Fatalf("lines=%d, want 3", len(lines))
+	}
+	// 续接后 ordinal 不重复（1,2,3）。
+	if lines[0].Ordinal != 1 || lines[1].Ordinal != 2 || lines[2].Ordinal != 3 {
+		t.Errorf("ordinal 应续接为 1,2,3，got %d,%d,%d", lines[0].Ordinal, lines[1].Ordinal, lines[2].Ordinal)
+	}
+}

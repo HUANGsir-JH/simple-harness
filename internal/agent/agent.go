@@ -246,6 +246,12 @@ func (a *Agent) sample(ctx context.Context, rc *middleware.RuntimeContext, in mi
 
 // runToolBatch 并发执行一批工具调用（onToolCall 包裹整批，onActing 包裹单个），
 // 结果按 call 顺序回填 conversation。首个 Fatal 错误取消整批并终止。
+//
+// 时序契约（C6，2026-08-10）：emit(EventToolResult) 在每个工具 Handle 返回后
+// 立即发生，早于外层 ToolOutputMiddleware 的 after 改写 conversation——
+// transcript 因此记全量、conversation 记截断（双轨审计，ADR-025）。若把 emit
+// 挪到工具批完成/截断之后，transcript 会记录截断内容、审计完整性静默丢失；
+// agent 测试 TestEmitBeforeTruncation 锁定该契约。
 func (a *Agent) runToolBatch(ctx context.Context, rc *middleware.RuntimeContext, calls []*messages.ToolCall, conversation *messages.Conversation, emit OnEvent) error {
 	// 结果按 callID 收集（并发安全），回填时按 calls 顺序。
 	var resultsMu sync.Mutex

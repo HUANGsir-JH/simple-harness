@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -13,6 +14,7 @@ import (
 	"github.com/agent-project/harness/internal/config"
 	"github.com/agent-project/harness/internal/messages"
 	"github.com/agent-project/harness/internal/middleware"
+	"github.com/agent-project/harness/internal/middleware/impl"
 	"github.com/agent-project/harness/internal/provider"
 	"github.com/agent-project/harness/internal/tools"
 )
@@ -507,4 +509,70 @@ func indexOf(ss []string, s string) int {
 		}
 	}
 	return -1
+}
+
+// TestEmitBeforeTruncation 验证双轨审计时序契约（C6）：工具结果 emit 时是
+// 全量（transcript 侧记审计完整），conversation 经 ToolOutputMiddleware after
+// 截断（模型上下文省 token）。这依赖"emit 早于截断"的顺序——若把 emit 挪到
+// 截断之后，transcript 会记录截断内容、审计完整性静默丢失，本测试即红。
+func TestEmitBeforeTruncation(t *testing.T) {
+	// 超长工具结果（> MaxOutputChars 触发 evict 截断 + 落盘）。
+	long := "HEAD-" + strings.Repeat("x", tools.MaxOutputChars*2) + "-TAIL"
+	fc := &provider.FakeClient{StreamFn: func(ctx context.Context, req provider.Request) (provider.EventStream, error) {
+		if len(req.Messages) == 1 { // 首轮：工具调用
+			return toolCallStream("big_tool", `{}`), nil
+		}
+		return textStream("done"), nil // 后续：结束回合
+	}}
+	a := New(fc, "m")
+	reg := tools.NewRegistry()
+	_ = reg.Register(&fakeTool{name: "big_tool", handle: func(ctx context.Context, args json.RawMessage) (messages.ToolResult, error) {
+		return messages.ToolResult{Success: true, Content: long}, nil
+	}})
+	a.SetTools(reg)
+	a.SetMiddleware(middleware.NewChain(impl.ToolOutputMiddleware{}))
+
+	conv := newConversation()
+	rc := rcFor(conv)
+	rc.StatePath = filepath.Join(t.TempDir(), "sess", "agentstate.json") // evict 落盘需要
+	rec := &eventRecorder{}
+	if err := a.Run(context.Background(), rc, rec.on); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// ① emit 的事件是完整结果（transcript 侧全量，未截断）。
+	var emitted *messages.ToolResult
+	for _, e := range rec.events {
+		if e.Type == EventToolResult && e.ToolResult != nil {
+			emitted = e.ToolResult
+			break
+		}
+	}
+	if emitted == nil {
+		t.Fatal("无 EventToolResult")
+	}
+	if emitted.Content != long {
+		t.Errorf("emit 应为完整结果，got 前 80 字节: %s", head80(emitted.Content))
+	}
+
+	// ② conversation 里同一结果被截断（含落盘提示）。
+	var convContent string
+	for _, m := range conv.Messages {
+		for _, r := range m.ToolResults {
+			if r.ToolCallID == "c1" {
+				convContent = r.Content
+			}
+		}
+	}
+	if !strings.Contains(convContent, "完整内容已保存到") {
+		t.Errorf("conversation 应被截断（含落盘提示），got 前 80 字节: %s", head80(convContent))
+	}
+}
+
+// head80 截断长字符串前 80 字节用于错误输出（避免刷屏）。
+func head80(s string) string {
+	if len(s) > 80 {
+		return s[:80] + "..."
+	}
+	return s
 }

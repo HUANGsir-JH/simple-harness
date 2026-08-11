@@ -23,6 +23,12 @@ type ToolOutputMiddleware struct {
 }
 
 // OnToolCall 在工具批执行完成后，对本批新增消息（tool_result）统一截断。
+//
+// 时序契约（C6，2026-08-10）：本中间件的 after 改写发生在 agent.runToolBatch
+// 的 emit(EventToolResult) 之后（agent 先 emit 全量结果、再经 onToolCall
+// after 截断 conversation）——transcript 因此记全量、conversation 记截断
+// （双轨审计，ADR-025）。若把 emit 挪到本 after 之后，transcript 会记录截断
+// 内容、审计完整性静默丢失；agent 测试 TestEmitBeforeTruncation 锁定该契约。
 func (ToolOutputMiddleware) OnToolCall(ctx context.Context, rc *middleware.RuntimeContext, in middleware.ToolCallInput, next middleware.ToolCallHandler) error {
 	if rc == nil || rc.Messages == nil {
 		return next(ctx, rc, in)

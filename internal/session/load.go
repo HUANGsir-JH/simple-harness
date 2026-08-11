@@ -83,23 +83,27 @@ func loadHistoryFile(path string) (*messages.Conversation, int, error) {
 			return err
 		}
 		switch line.Type {
-		case "user":
+		case LineTypeUser:
 			cur = nil
 			conv.Add(&messages.Message{ID: line.MsgID, Role: messages.RoleUser, Content: line.Content})
-		case "thinking":
+		case LineTypeThinking:
 			cur = ensureAssistant(conv, cur, line.MsgID)
 			cur.Thinking += line.Text
-		case "text":
+		case LineTypeText:
 			cur = ensureAssistant(conv, cur, line.MsgID)
 			cur.Content += line.Text
-		case "tool_use":
+		case LineTypeToolUse:
 			cur = ensureAssistant(conv, cur, line.MsgID)
 			cur.ToolCalls = append(cur.ToolCalls, messages.ToolCall{ID: line.CallID, Name: line.Name, Args: line.Args})
-		case "tool_result":
+		case LineTypeToolResult:
 			cur = nil
 			appendToolResult(conv, line)
-		case "meta", "turn_start", "turn_end", segMarker:
+		case LineTypeMeta, LineTypeTurnStart, LineTypeTurnEnd, segMarker:
 			// 无消息语义
+		default:
+			// 未知行类型（未来新增/损坏）：跳过并计数（读侧容错，Bug08），
+			// 不静默吞（C2）。
+			return fmt.Errorf("unknown line type %q", line.Type)
 		}
 		return nil
 	})
@@ -118,7 +122,7 @@ func loadCommands(historyDir string) ([]string, error) {
 	}
 	var out []string
 	for _, line := range lines {
-		if line.Type == "command" {
+		if line.Type == LineTypeCommand {
 			out = append(out, line.Content)
 		}
 	}

@@ -110,17 +110,36 @@ func (a *AgentState) RenderTodos() string {
 	return strings.TrimRight(sb.String(), "\n")
 }
 
-// SaveFile 将 state 整体 JSON 写入 path（原子写：临时文件 + rename，
-// 避免半截文件）。同时刷新 UpdatedAt。
+// SaveFile 将 state 整体 JSON 写入 path（原子写：进程唯一临时文件 + fsync +
+// rename，避免半截文件与断电丢内容）。同时刷新 UpdatedAt。
 func SaveFile(path string, a *AgentState) error {
 	a.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	data, err := json.MarshalIndent(a, "", "  ")
 	if err != nil {
 		return fmt.Errorf("agentstate: marshal: %w", err)
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	// 临时名带 pid（C1，2026-08-10）：固定 path+".tmp" 会被两个并发进程
+	// （resume 同一会话）互踩；写后 fsync 再 rename，断电不丢内容。
+	tmp := fmt.Sprintf("%s.%d.tmp", path, os.Getpid())
+	f, err := os.Create(tmp)
+	if err != nil {
+		return fmt.Errorf("agentstate: create %s: %w", tmp, err)
+	}
+	cleanup := func() {
+		f.Close()
+		os.Remove(tmp)
+	}
+	if _, err := f.Write(data); err != nil {
+		cleanup()
 		return fmt.Errorf("agentstate: write %s: %w", tmp, err)
+	}
+	if err := f.Sync(); err != nil {
+		cleanup()
+		return fmt.Errorf("agentstate: sync %s: %w", tmp, err)
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("agentstate: close %s: %w", tmp, err)
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		return fmt.Errorf("agentstate: rename %s: %w", path, err)

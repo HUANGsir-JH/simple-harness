@@ -20,10 +20,26 @@ const segMarker = "__segment__"
 // （AddCommand 落盘同步点；命令低频可接受）。
 const flushMarker = "__flush__"
 
+// transcript 行类型（C2，2026-08-10 统一为常量，替代三处裸字符串）：
+// 写侧 OnAgentEvent / 读侧 load.go / TUI 渲染 run.go 共用。新增类型时同步
+// 三处，load 的 switch 对未知类型走 default 跳过（读侧容错，Bug08），
+// 不再静默吞。
+const (
+	LineTypeMeta       = "meta"
+	LineTypeUser       = "user"
+	LineTypeCommand    = "command"
+	LineTypeThinking   = "thinking"
+	LineTypeText       = "text"
+	LineTypeToolUse    = "tool_use"
+	LineTypeToolResult = "tool_result"
+	LineTypeTurnStart  = "turn_start"
+	LineTypeTurnEnd    = "turn_end"
+)
+
 // Line 是 transcript 的一行（块级事件，ADR-025）。resume 按 ordinal 排序加载。
 type Line struct {
 	Ordinal   int64           `json:"ordinal"`
-	Type      string          `json:"type"` // meta|user|command|thinking|text|tool_use|tool_result|turn_start|turn_end
+	Type      string          `json:"type"` // LineType* 常量
 	SessionID string          `json:"session_id,omitempty"`
 	CWD       string          `json:"cwd,omitempty"`
 	Model     string          `json:"model,omitempty"`
@@ -75,6 +91,7 @@ func NewTranscriptWriter(historyDir string) (*TranscriptWriter, error) {
 		return nil, fmt.Errorf("session: mkdir %s: %w", historyDir, err)
 	}
 	seg := currentSegment(historyDir)
+	hasExisting := seg > 0 // 已有段 = resume 复用（续接 ordinal/turn）
 	if seg == 0 {
 		seg = 1
 	}
@@ -87,8 +104,32 @@ func NewTranscriptWriter(historyDir string) (*TranscriptWriter, error) {
 	if err := w.openSegment(); err != nil {
 		return nil, err
 	}
+	// resume 续接（C3）：复用现有段时续接 ordinal/turn，避免同段内重复
+	//（否则 Line.Ordinal 字段与注释承诺的"resume 按序加载兜底"不符）。
+	if hasExisting {
+		w.ordinal, w.turn = lastOrdinalTurn(historyPath(historyDir, seg))
+	}
 	go w.run()
 	return w, nil
+}
+
+// lastOrdinalTurn 读取现有段的最大 ordinal 与 turn（resume 续接基准，C3）。
+// 坏行跳过（Bug08 读侧容错）；无文件/全坏行返回 0。
+func lastOrdinalTurn(path string) (ordinal int64, turn int) {
+	_, _ = forEachLine(path, func(raw []byte) error {
+		var line Line
+		if err := json.Unmarshal(raw, &line); err != nil {
+			return err
+		}
+		if line.Ordinal > ordinal {
+			ordinal = line.Ordinal
+		}
+		if line.Turn > turn {
+			turn = line.Turn
+		}
+		return nil
+	})
+	return ordinal, turn
 }
 
 // Write 入队一行（FIFO）。缓冲满时阻塞，保证不丢。
@@ -109,18 +150,18 @@ func (w *TranscriptWriter) OnAgentEvent(ev agent.Event) {
 	switch ev.Type {
 	case agent.EventTurnStart:
 		w.turn++
-		line = Line{Type: "turn_start", Turn: w.turn}
+		line = Line{Type: LineTypeTurnStart, Turn: w.turn}
 	case agent.EventThinkingDone:
-		line = Line{Type: "thinking", MsgID: ev.MsgID, Text: ev.Text, Turn: w.turn}
+		line = Line{Type: LineTypeThinking, MsgID: ev.MsgID, Text: ev.Text, Turn: w.turn}
 	case agent.EventTextDone:
-		line = Line{Type: "text", MsgID: ev.MsgID, Text: ev.Text, Turn: w.turn}
+		line = Line{Type: LineTypeText, MsgID: ev.MsgID, Text: ev.Text, Turn: w.turn}
 	case agent.EventToolCall:
-		line = Line{Type: "tool_use", MsgID: ev.MsgID, CallID: ev.ToolCall.ID, Name: ev.ToolCall.Name, Args: ev.ToolCall.Args, Turn: w.turn}
+		line = Line{Type: LineTypeToolUse, MsgID: ev.MsgID, CallID: ev.ToolCall.ID, Name: ev.ToolCall.Name, Args: ev.ToolCall.Args, Turn: w.turn}
 	case agent.EventToolResult:
 		succ := ev.ToolResult.Success
-		line = Line{Type: "tool_result", CallID: ev.ToolCall.ID, Success: &succ, Content: ev.ToolResult.Content, Turn: w.turn}
+		line = Line{Type: LineTypeToolResult, CallID: ev.ToolCall.ID, Success: &succ, Content: ev.ToolResult.Content, Turn: w.turn}
 	case agent.EventTurnDone:
-		line = Line{Type: "turn_end", Turn: w.turn}
+		line = Line{Type: LineTypeTurnEnd, Turn: w.turn}
 	default:
 		return // thinking_delta/text_delta（流式）/error 不落盘
 	}
