@@ -4,6 +4,13 @@
 
 ## 2026-08-11
 
+### TUI 输入框修复：粘贴拆条排查 + 高度动态（1→5 行 + 滚动）
+
+- **用户报告**：复制多行文字粘贴进输入框，被拆成多条消息塞进 queue。
+- **根因排查**：bubbletea v1.3.10 **无 `tea.PasteMsg` 类型**（v1.x 移除），bracketed paste 解析为单个 `Key{Type:KeyRunes, Paste:true}`（key_sequences.go），整段含 \n 进 textarea——**代码路径正确**（验证测试 `TestPasteMultiLineSingleMessage` 证明多行粘贴是一条完整消息）。拆条只发生在 **bracketed paste 失效** 的终端（VSCode 集成终端 + conpty 输入转发对 \x1b[200~ 标记透传不稳定）→ 粘贴的 \n 被当 Enter 键 → `handleComposerKey` 每个 Enter submit → 拆条。保持 Enter=提交 下无代码可修（终端环境限制），治本需改 Enter 语义（用户嫌 Ctrl+Enter 别扭，暂不改）。
+- **高度修复（已做）**：`updateComposerHeight()` 让 textarea 高度随内容行数动态增长——默认 1 行（minHeight=1 可行）、每显式换行高一行、至多 5 行（超出 textarea 内部跟随光标滚动）；layout() 不再固定 SetHeight(2/3)；换行/键入/粘贴/历史/补全/submit Reset 后都更新高度。测试 `TestComposerHeightGrows`。
+- **验证**：`go build/vet/test ./...` 全绿（含 e2e）；已 `go install`。
+
 ### A2：session→agent 依赖倒置（agent.Event 下沉 internal/events）✅
 
 - **问题**：`session/transcript.go`、`session/session.go` import `internal/agent` 只为了拿 `agent.Event` 落盘——存储层反向依赖编排层（agent 的传递闭包含 provider/tools/middleware）。非运行 bug、无环，是分层倒置：transcript 无法持久化非 agent 来源事件；agent 新增事件类型时 session 的 switch 靠 default 静默丢弃（C2 同款风险的类型层版本）。

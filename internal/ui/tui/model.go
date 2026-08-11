@@ -177,7 +177,7 @@ func New(c *Controller) Model {
 	ta.CharLimit = 0
 	ta.MaxHeight = 5
 	ta.SetWidth(76)
-	ta.SetHeight(3)
+	ta.SetHeight(1) // 默认一行，随内容行数增长（updateComposerHeight，至多 5 行）
 	ta.FocusedStyle.CursorLine = textarea.Style{}.CursorLine
 	ta.BlurredStyle = ta.FocusedStyle
 	ta.Focus()
@@ -332,6 +332,7 @@ func (m Model) handleComposerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	if msg.String() == "shift+enter" || msg.String() == "alt+enter" {
 		m.input.InsertRune('\n')
+		m.updateComposerHeight()
 		m.refresh(false)
 		return m, nil
 	}
@@ -347,7 +348,7 @@ func (m Model) handleComposerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	m.input, cmd = m.input.Update(msg)
 	m.historyPos = -1
 	m.completion = normalizeCompletion(m.input.Value(), m.completion)
-	m.layout()
+	m.updateComposerHeight()
 	m.refresh(false)
 	return m, cmd
 }
@@ -479,6 +480,7 @@ func (m Model) submit() (tea.Model, tea.Cmd) {
 	m.historyPos = -1
 	m.draft = ""
 	m.inputHistory = append(m.inputHistory, line)
+	m.updateComposerHeight() // Reset 后高度回落一行
 	if line == "/exit" && !m.running {
 		if m.c != nil {
 			m.c.AddCommand(line)

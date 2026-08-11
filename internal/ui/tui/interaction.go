@@ -9,7 +9,19 @@ import (
 const (
 	headerHeight = 2
 	footerHeight = 1
+	// maxComposerHeight 是输入框最大高度（行）：内容行数增长至此为止，超出
+	// textarea 内部跟随光标滚动查看（MaxHeight 同步设为 5）。
+	maxComposerHeight = 5
 )
+
+// updateComposerHeight 让输入框高度随内容行数动态增长：默认 1 行，每多一个
+// 显式换行高一行，至多 maxComposerHeight（超过内部滚动）。每次输入变化
+// （键入/换行/粘贴/历史/补全）后调用，高度变化经 layout 重排消息区。
+func (m *Model) updateComposerHeight() {
+	lines := strings.Count(m.input.Value(), "\n") + 1
+	m.input.SetHeight(clamp(lines, 1, maxComposerHeight))
+	m.layout()
+}
 
 func (m *Model) layout() {
 	if m.width < 1 {
@@ -24,11 +36,8 @@ func (m *Model) layout() {
 	}
 	m.contentWidth = maxInt(16, m.width-outerPad-4)
 	m.input.SetWidth(maxInt(10, m.width-6))
-	if m.width < 48 {
-		m.input.SetHeight(2)
-	} else {
-		m.input.SetHeight(3)
-	}
+	// 高度不由 layout 重置：由 updateComposerHeight 按内容行数管理
+	// （WindowSizeMsg 触发的 layout 不覆盖动态高度）。
 
 	composerHeight := lipgloss.Height(m.composerView())
 	auxHeight := lipgloss.Height(m.auxiliaryView())
@@ -105,7 +114,7 @@ func (m *Model) acceptCompletion() {
 	m.input.SetValue("/" + items[idx].name + " ")
 	m.input.CursorEnd()
 	m.completion = -1
-	m.layout()
+	m.updateComposerHeight()
 	m.refresh(false)
 }
 
@@ -128,6 +137,7 @@ func (m *Model) recallHistory(direction int) {
 		m.input.SetValue(m.inputHistory[m.historyPos])
 	}
 	m.input.CursorEnd()
+	m.updateComposerHeight()
 	m.refresh(false)
 }
 
