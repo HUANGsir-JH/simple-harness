@@ -14,6 +14,7 @@
   - `ApprovalKey` 拆多 key：文件工具 `<tool>:<绝对路径>`，全部命中 approved 才 Allow（对齐 opencode multi-pattern）；批准"本会话记住"全部写入 AgentState。
   - `EvictContent/MaxOutputChars` 下沉 tools 包：断 tools→impl 反向依赖环（#105 前置项）。
 - **验证**：`go build/vet/test ./...` 全绿（含 e2e/TUI 强制重跑）；新增 policy 边界测试 20+ 用例、workspace 单测、工具 CWD 解析测试；shell 超时落盘测试修 flaky（PowerShell 冷启动放宽 timeout）。
+- **Bug10（overlay tagged union）**：TUI 三个覆盖层字段 appr/sel/help 可并存（审批未决时 runDone 消费队列命令叠开第二层弹窗，help 被遮、答完浮现）。收成 `ovl *overlay` 单字段（kind=approval/select/help）+ `openOverlay` 叠开守卫，非法组合类型层面不可表达；新增 `TestOverlayMutuallyExclusive` 回归。已 install。
 
 ## 2026-08-09
 
