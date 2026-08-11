@@ -84,7 +84,11 @@ func (a *anthropicClient) Stream(ctx context.Context, req Request) (EventStream,
 		params.MaxTokens = int64(req.MaxOutputTokens)
 	}
 	if len(req.Tools) > 0 {
-		params.Tools = toAnthropicTools(req.Tools)
+		tools, err := toAnthropicTools(req.Tools)
+		if err != nil {
+			return nil, err
+		}
+		params.Tools = tools
 	}
 
 	stream := a.client.NewStreaming(ctx, params)

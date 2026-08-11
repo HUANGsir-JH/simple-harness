@@ -17,28 +17,24 @@ type WriteFileTool struct{}
 
 func (WriteFileTool) Name() string { return "write_file" }
 
+// writeFileArgs 是 write_file 的参数形状（C4，schema 单一来源）。
+type writeFileArgs struct {
+	Path    string `json:"path" jsonschema:"description=文件路径（相对 cwd 或绝对路径）"`
+	Content string `json:"content" jsonschema:"description=要写入的完整文件内容"`
+}
+
 func (WriteFileTool) Spec() provider.ToolSpec {
 	return provider.ToolSpec{
 		Name:        "write_file",
 		Description: "覆盖写入一个文件的完整内容（创建或覆盖已有文件，自动创建父目录）。用于整文件重写或新建；小改动优先用 apply_patch 做差异编辑。路径相对进程工作目录或绝对路径。",
-		Parameters: json.RawMessage(`{
-			"type": "object",
-			"properties": {
-				"path": {"type": "string", "description": "文件路径（相对 cwd 或绝对路径）"},
-				"content": {"type": "string", "description": "要写入的完整文件内容"}
-			},
-			"required": ["path", "content"]
-		}`),
+		Parameters:  schemaOf[writeFileArgs](),
 	}
 }
 
 func (WriteFileTool) Handle(_ context.Context, rc *middleware.RuntimeContext, _ string, args json.RawMessage) (messages.ToolResult, error) {
-	var p struct {
-		Path    string `json:"path"`
-		Content string `json:"content"`
-	}
-	if err := json.Unmarshal(args, &p); err != nil {
-		return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: "write_file: 参数解析失败: " + err.Error()}
+	p, err := parseArgs[writeFileArgs]("write_file", args)
+	if err != nil {
+		return messages.ToolResult{}, err
 	}
 	if p.Path == "" {
 		return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: "write_file: path 不能为空"}

@@ -26,30 +26,26 @@ type ShellCommandTool struct{}
 
 func (ShellCommandTool) Name() string { return "shell_command" }
 
+// shellCommandArgs 是 shell_command 的参数形状（C4，schema 单一来源）。
+// workdir/timeout_ms 的 omitempty 使其在 schema 中可选。
+type shellCommandArgs struct {
+	Command   string `json:"command" jsonschema:"description=要执行的命令"`
+	Workdir   string `json:"workdir,omitempty" jsonschema:"description=工作目录（默认当前目录）"`
+	TimeoutMS int    `json:"timeout_ms,omitempty" jsonschema:"description=超时毫秒（默认 30000）"`
+}
+
 func (ShellCommandTool) Spec() provider.ToolSpec {
 	return provider.ToolSpec{
 		Name:        "shell_command",
 		Description: "在 shell 中执行命令并返回输出（stdout+stderr 合并）。Windows 用 PowerShell，POSIX 用 sh -c。命令非零退出或超时返回错误文本（输出超长时完整版会保存到 evictions/ 目录并用 read_file 提示，错误信息含路径）。",
-		Parameters: json.RawMessage(`{
-			"type": "object",
-			"properties": {
-				"command": {"type": "string", "description": "要执行的命令"},
-				"workdir": {"type": "string", "description": "工作目录（默认当前目录）"},
-				"timeout_ms": {"type": "integer", "description": "超时毫秒（默认 30000）"}
-			},
-			"required": ["command"]
-		}`),
+		Parameters:  schemaOf[shellCommandArgs](),
 	}
 }
 
 func (ShellCommandTool) Handle(ctx context.Context, rc *middleware.RuntimeContext, _ string, args json.RawMessage) (messages.ToolResult, error) {
-	var p struct {
-		Command   string `json:"command"`
-		Workdir   string `json:"workdir"`
-		TimeoutMS int    `json:"timeout_ms"`
-	}
-	if err := json.Unmarshal(args, &p); err != nil {
-		return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: "shell_command: 参数解析失败: " + err.Error()}
+	p, err := parseArgs[shellCommandArgs]("shell_command", args)
+	if err != nil {
+		return messages.ToolResult{}, err
 	}
 	if p.Command == "" {
 		return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: "shell_command: command 不能为空"}

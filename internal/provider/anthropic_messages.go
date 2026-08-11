@@ -2,6 +2,7 @@ package provider
 
 import (
 	"encoding/json"
+	"fmt"
 
 	"github.com/agent-project/harness/internal/messages"
 	"github.com/anthropics/anthropic-sdk-go"
@@ -106,12 +107,17 @@ func toAnthropicToolResult(m *messages.Message) anthropic.MessageParam {
 	}
 }
 
-func toAnthropicTools(tools []ToolSpec) []anthropic.ToolUnionParam {
+func toAnthropicTools(tools []ToolSpec) ([]anthropic.ToolUnionParam, error) {
 	var out []anthropic.ToolUnionParam
 	for _, t := range tools {
 		inputSchema := map[string]any{"type": "object", "properties": map[string]any{}}
 		if len(t.Parameters) > 0 {
-			_ = json.Unmarshal(t.Parameters, &inputSchema)
+			if err := json.Unmarshal(t.Parameters, &inputSchema); err != nil {
+				// fail-loud：工具 schema 是编程产物（内置由 jsonschema 生成，必然
+				// 有效；此处防御自定义工具手写坏 schema），采样时报错而非静默发空
+				// schema 给模型（C4）。
+				return nil, fmt.Errorf("tool %q: 参数 schema 非法: %w", t.Name, err)
+			}
 		}
 		out = append(out, anthropic.ToolUnionParam{
 			OfTool: &anthropic.ToolParam{
@@ -121,7 +127,7 @@ func toAnthropicTools(tools []ToolSpec) []anthropic.ToolUnionParam {
 			},
 		})
 	}
-	return out
+	return out, nil
 }
 
 // toAnthropicInputSchema 将通用 JSON Schema map 转换为 SDK 的

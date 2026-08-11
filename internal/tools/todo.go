@@ -41,44 +41,30 @@ func (UpdateTodoTool) Spec() provider.ToolSpec {
 			"同时只保持一个 in_progress；被阻塞时保持 in_progress 并追加一条描述阻塞项的 todo；" +
 			"全部步骤完成后传空列表（todos: []）清空待办，不留已完成项。\n" +
 			"每次调用传**完整**列表（全量替换，非增量），用 position 维护顺序。",
-		Parameters: json.RawMessage(`{
-			"type": "object",
-			"properties": {
-				"todos": {
-					"type": "array",
-					"description": "完整的待办列表（全量替换）",
-					"items": {
-						"type": "object",
-						"properties": {
-							"position": {"type": "integer", "description": "顺序编号（1 基，越小越靠前）"},
-							"description": {"type": "string", "description": "任务描述"},
-							"status": {"type": "string", "enum": ["pending", "in_progress", "completed"], "description": "任务状态"}
-						},
-						"required": ["position", "description", "status"]
-					}
-				}
-			},
-			"required": ["todos"]
-		}`),
+		Parameters: schemaOf[updateTodoArgs](),
 	}
 }
 
-// todoArgs 是 update_todo 的参数形状（模型可见 schema 的对偶结构）。
-type todoArgs struct {
-	Todos []struct {
-		Position    int    `json:"position"`
-		Description string `json:"description"`
-		Status      string `json:"status"`
-	} `json:"todos"`
+// updateTodoArgs 是 update_todo 的参数形状；Spec() 的 schema 也从它生成（C4），
+// 参数与 schema 单一来源防漂移（原 todoArgs 改名对齐其它工具，嵌套项具名）。
+type updateTodoArgs struct {
+	Todos []todoItem `json:"todos" jsonschema:"description=完整的待办列表（全量替换）"`
+}
+
+// todoItem 是单条待办项。
+type todoItem struct {
+	Position    int    `json:"position" jsonschema:"description=顺序编号（1 基，越小越靠前）"`
+	Description string `json:"description" jsonschema:"description=任务描述"`
+	Status      string `json:"status" jsonschema:"enum=pending,enum=in_progress,enum=completed,description=任务状态"`
 }
 
 func (UpdateTodoTool) Handle(_ context.Context, rc *middleware.RuntimeContext, _ string, args json.RawMessage) (messages.ToolResult, error) {
 	if rc == nil || rc.State == nil {
 		return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: "update_todo: 无会话状态（todo 需挂 AgentState）"}
 	}
-	var p todoArgs
-	if err := json.Unmarshal(args, &p); err != nil {
-		return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: "update_todo: 参数解析失败: " + err.Error()}
+	p, err := parseArgs[updateTodoArgs]("update_todo", args)
+	if err != nil {
+		return messages.ToolResult{}, err
 	}
 	items := make([]agentstate.TodoItem, 0, len(p.Todos))
 	for _, t := range p.Todos {

@@ -25,30 +25,27 @@ type ReadFileTool struct{}
 
 func (ReadFileTool) Name() string { return "read_file" }
 
+// readFileArgs 是 read_file 的参数形状；Spec() 的 schema 也从它生成（C4），
+// 参数与 schema 单一来源防漂移。start_line/end_line 的 omitempty 使其在
+// schema 中可选（0 = 未指定，与 Handle 语义一致）。
+type readFileArgs struct {
+	Path      string `json:"path" jsonschema:"description=要读取的文件路径（相对 cwd）"`
+	StartLine int    `json:"start_line,omitempty" jsonschema:"description=起始行（1 起含）"`
+	EndLine   int    `json:"end_line,omitempty" jsonschema:"description=结束行（含）"`
+}
+
 func (ReadFileTool) Spec() provider.ToolSpec {
 	return provider.ToolSpec{
 		Name:        "read_file",
 		Description: "读取指定文件的文本内容。可传 start_line/end_line 限制行范围（1 起含）。路径相对进程工作目录或绝对路径。",
-		Parameters: json.RawMessage(`{
-			"type": "object",
-			"properties": {
-				"path": {"type": "string", "description": "要读取的文件路径（相对 cwd）"},
-				"start_line": {"type": "integer", "description": "起始行（1 起含）"},
-				"end_line": {"type": "integer", "description": "结束行（含）"}
-			},
-			"required": ["path"]
-		}`),
+		Parameters:  schemaOf[readFileArgs](),
 	}
 }
 
 func (ReadFileTool) Handle(_ context.Context, rc *middleware.RuntimeContext, _ string, args json.RawMessage) (messages.ToolResult, error) {
-	var p struct {
-		Path      string `json:"path"`
-		StartLine int    `json:"start_line"`
-		EndLine   int    `json:"end_line"`
-	}
-	if err := json.Unmarshal(args, &p); err != nil {
-		return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: "read_file: 参数解析失败: " + err.Error()}
+	p, err := parseArgs[readFileArgs]("read_file", args)
+	if err != nil {
+		return messages.ToolResult{}, err
 	}
 	if p.Path == "" {
 		return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: "read_file: path 不能为空"}
@@ -102,25 +99,24 @@ type ListDirTool struct{}
 
 func (ListDirTool) Name() string { return "list_dir" }
 
+// listDirArgs 是 list_dir 的参数形状（C4，schema 单一来源）。path 可选
+// （omitempty → schema 无 required，与既有行为一致）。
+type listDirArgs struct {
+	Path string `json:"path,omitempty" jsonschema:"description=目录路径（相对 cwd 或绝对路径，默认当前目录）"`
+}
+
 func (ListDirTool) Spec() provider.ToolSpec {
 	return provider.ToolSpec{
 		Name:        "list_dir",
 		Description: "列出目录条目（每条为 类型\\t名称，类型为 dir 或 file）。path 为空默认当前目录。",
-		Parameters: json.RawMessage(`{
-			"type": "object",
-			"properties": {
-				"path": {"type": "string", "description": "目录路径（相对 cwd 或绝对路径，默认当前目录）"}
-			}
-		}`),
+		Parameters:  schemaOf[listDirArgs](),
 	}
 }
 
 func (ListDirTool) Handle(_ context.Context, rc *middleware.RuntimeContext, _ string, args json.RawMessage) (messages.ToolResult, error) {
-	var p struct {
-		Path string `json:"path"`
-	}
-	if err := json.Unmarshal(args, &p); err != nil {
-		return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: "list_dir: 参数解析失败: " + err.Error()}
+	p, err := parseArgs[listDirArgs]("list_dir", args)
+	if err != nil {
+		return messages.ToolResult{}, err
 	}
 	// 相对路径以 workspace 为基；空 path 默认 workspace 根（ResolvePath 处理）。
 	path := ResolveInWorkspace(rc, p.Path)
@@ -152,26 +148,23 @@ type GlobTool struct{}
 
 func (GlobTool) Name() string { return "glob" }
 
+// globArgs 是 glob 的参数形状（C4，schema 单一来源）。
+type globArgs struct {
+	Pattern string `json:"pattern" jsonschema:"description=glob 模式（相对 cwd 或绝对路径）"`
+}
+
 func (GlobTool) Spec() provider.ToolSpec {
 	return provider.ToolSpec{
 		Name:        "glob",
 		Description: "按 glob 模式（如 *.go、**/*.md）匹配文件路径，返回匹配列表。路径相对进程工作目录或绝对路径。",
-		Parameters: json.RawMessage(`{
-			"type": "object",
-			"properties": {
-				"pattern": {"type": "string", "description": "glob 模式（相对 cwd 或绝对路径）"}
-			},
-			"required": ["pattern"]
-		}`),
+		Parameters:  schemaOf[globArgs](),
 	}
 }
 
 func (GlobTool) Handle(_ context.Context, rc *middleware.RuntimeContext, _ string, args json.RawMessage) (messages.ToolResult, error) {
-	var p struct {
-		Pattern string `json:"pattern"`
-	}
-	if err := json.Unmarshal(args, &p); err != nil {
-		return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: "glob: 参数解析失败: " + err.Error()}
+	p, err := parseArgs[globArgs]("glob", args)
+	if err != nil {
+		return messages.ToolResult{}, err
 	}
 	if p.Pattern == "" {
 		return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: "glob: pattern 不能为空"}

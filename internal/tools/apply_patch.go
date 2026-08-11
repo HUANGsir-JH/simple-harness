@@ -38,26 +38,23 @@ type ApplyPatchTool struct{}
 
 func (ApplyPatchTool) Name() string { return "apply_patch" }
 
+// applyPatchArgs 是 apply_patch 的参数形状（C4，schema 单一来源）。
+type applyPatchArgs struct {
+	Patch string `json:"patch" jsonschema:"description=codex 风格补丁文本"`
+}
+
 func (ApplyPatchTool) Spec() provider.ToolSpec {
 	return provider.ToolSpec{
 		Name:        "apply_patch",
 		Description: "应用补丁编辑文件。格式：*** Begin Patch 开头、*** End Patch 结尾；文件操作头 *** Add File / *** Update File / *** Delete File；更新行以 -（删除）/ +（新增）/ 空格（上下文）开头，可用 @@ 分段；@@ 后跟定位文本（如函数名）可消除多处匹配的歧义。路径相对进程工作目录或绝对路径。",
-		Parameters: json.RawMessage(`{
-			"type": "object",
-			"properties": {
-				"patch": {"type": "string", "description": "codex 风格补丁文本"}
-			},
-			"required": ["patch"]
-		}`),
+		Parameters:  schemaOf[applyPatchArgs](),
 	}
 }
 
 func (ApplyPatchTool) Handle(_ context.Context, rc *middleware.RuntimeContext, _ string, args json.RawMessage) (messages.ToolResult, error) {
-	var p struct {
-		Patch string `json:"patch"`
-	}
-	if err := json.Unmarshal(args, &p); err != nil {
-		return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: "apply_patch: 参数解析失败: " + err.Error()}
+	p, err := parseArgs[applyPatchArgs]("apply_patch", args)
+	if err != nil {
+		return messages.ToolResult{}, err
 	}
 	if strings.TrimSpace(p.Patch) == "" {
 		return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: "apply_patch: patch 不能为空"}

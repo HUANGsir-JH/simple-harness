@@ -2,6 +2,18 @@
 
 > 按日期追加，最新在上。记录：进展、阻塞、问题、经验。
 
+## 2026-08-11
+
+### C4 + B4：工具 schema 单一来源（jsonschema 生成）+ parseArgs 泛型 ✅
+
+- **背景**：7 个工具每份 schema 以手写 JSON 字符串声明在 `Spec()`，与 Handle 的 Go struct 双份靠 review 同步（改字段漏改 schema 不报错）；`anthropic_messages.go:114` 静默吞 schema 语法错（坏 schema 发空 properties 给模型）。
+- **决策**（用户逐点确认）：引入 `invopop/jsonschema`（v0.14.0 已是 SDK 间接依赖，提升为直接依赖）从 Go struct 注解生成 schema 消双份；同批合并 B4（`parseArgs[T]` 泛型）；缓存用泛型 helper `schemaOf[T]()`（sync.Map 按类型，Reflector.Reflect 每次本地 definitions 并发安全）；`:114` 吞错改运行时 hard error。
+- **`tools/args.go` 新建**：`schemaOf[T]()` + `parseArgs[T]()`。`Reflector{DoNotReference, Anonymous, AllowAdditionalProperties}`——DoNotReference 让顶层直接输出 properties/required（不包 `$ref/$defs`，正好是 anthropic `toAnthropicInputSchema` 从顶层读的形状；**默认输出 `$ref` 包裹会变空 schema，必须开**）；Anonymous 去包路径派生的 `$id`；AllowAdditionalProperties 保持与手写 schema 一致（不新增 additionalProperties:false）。
+- **7 工具 struct 具名**：readFileArgs/writeFileArgs/listDirArgs/globArgs/applyPatchArgs/shellCommandArgs/updateTodoArgs（原 todoArgs 改名对齐）+ todoItem 具名；字段加 `jsonschema` 标签（description/enum），可选字段靠 `json omitempty`（jsonschema 默认非 omitempty=required，与手写 required 完全对齐）。Handle 全换 `parseArgs[T]("tool", args)`，每处 -7 行样板。
+- **provider 修复**：`toAnthropicTools` 返回 error、`Stream` 传播——自定义工具手写坏 schema 采样时报错（fail-loud）而非静默发空。
+- **测试**：TestParseArgs / TestBuiltinSchemasValid（7 工具 required 断言）/ TestTodoStatusEnum / TestSchemaOfCaches。
+- **验证**：`go build/vet/test ./...` 全绿（含 e2e）；已 `go install ./cmd/harness`。
+
 ## 2026-08-10
 
 ### 架构审查 10 项缺陷修复（ADR-034/035，Bug01-09 ✅）
@@ -21,7 +33,7 @@
   - C3 resume 复用段续接 ordinal/turn，新增 `TestResumeContinuesOrdinal`
   - C5 thinking 不重放测试（`TestToAnthropicMessagesStripsThinking`）
   - C6 双轨审计时序契约：agent.go/tool_output.go 注释声明 + `TestEmitBeforeTruncation` 锁定
-  - **C4 记下一批**：工具 schema 双份声明（手写 JSON 字符串 vs Go struct）→ 用户决定引入 `invopop/jsonschema` 从 Go struct 注解生成 schema 消双份，工作量高留待单独排期；另修 `anthropic_messages.go` 静默吞 schema 语法错（采样时校验）。
+  - **C4 完成**（2026-08-11，见顶部段）：工具 schema 双份声明 → `invopop/jsonschema` 从 Go struct 注解生成 schema 消双份；`:114` 静默吞错改 hard error。
 
 ## 2026-08-09
 
