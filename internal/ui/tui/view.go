@@ -57,7 +57,7 @@ func (m Model) View() string {
 		return ""
 	}
 	main := m.viewport.View()
-	if m.appr != nil || m.sel != nil || m.help {
+	if m.ovl != nil {
 		main = m.modalArea()
 	}
 	parts := []string{
@@ -244,13 +244,15 @@ func todoMark(todo agentstate.TodoItem) string {
 
 func (m Model) modalArea() string {
 	var content string
-	switch {
-	case m.appr != nil:
-		content = renderApproval(m.appr, m.width)
-	case m.sel != nil:
-		content = renderPopup(m.sel, m.width, m.viewport.Height)
-	case m.help:
-		content = renderHelp(m.width)
+	if m.ovl != nil {
+		switch m.ovl.kind {
+		case overlayApproval:
+			content = renderApproval(m.ovl.appr, m.width)
+		case overlaySelect:
+			content = renderPopup(m.ovl.sel, m.width, m.viewport.Height)
+		case overlayHelp:
+			content = renderHelp(m.width)
+		}
 	}
 	return lipgloss.Place(m.width, m.viewport.Height, lipgloss.Center, lipgloss.Center, content,
 		lipgloss.WithWhitespaceBackground(colorCanvas))

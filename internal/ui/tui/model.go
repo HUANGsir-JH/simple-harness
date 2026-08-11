@@ -85,6 +85,48 @@ type approvalPopup struct {
 	respCh chan middleware.Decision
 }
 
+// overlayKind 是全屏覆盖层的互斥类型（Bug10）。
+type overlayKind uint8
+
+const (
+	overlayApproval overlayKind = iota
+	overlaySelect
+	overlayHelp
+)
+
+// overlay 是当前唯一的全屏覆盖层（审批 / 选择弹窗 / 帮助）。nil = 无覆盖层；
+// 非 nil 时按 kind 分派，一次只能有一个。原 appr/sel/help 三字段可同时为真
+// （审批未决时队列命令可开出第二层弹窗，Bug10），收成单字段后非法组合在
+// 类型层面不可表达，渲染与按键分发各自只剩一处判断。
+type overlay struct {
+	kind overlayKind
+	appr *approvalPopup // kind == overlayApproval 时非 nil
+	sel  *selectPopup   // kind == overlaySelect 时非 nil
+}
+
+// openOverlay 打开新的覆盖层；已有覆盖层未决时拒绝（返回 false，不覆盖）——
+// 堵住"审批挂起时队列命令叠开第二层弹窗"的通道（Bug10）。toast 提示被挡。
+func (m Model) openOverlay(o *overlay) (Model, bool) {
+	if m.ovl != nil {
+		m.toast = "Blocked by pending " + overlayName(m.ovl.kind)
+		m.refresh(false)
+		return m, false
+	}
+	m.ovl = o
+	return m, true
+}
+
+func overlayName(k overlayKind) string {
+	switch k {
+	case overlayApproval:
+		return "approval"
+	case overlaySelect:
+		return "selector"
+	default:
+		return "help"
+	}
+}
+
 // Model owns only UI state. Controller contains runtime side effects.
 type Model struct {
 	c *Controller
@@ -111,9 +153,7 @@ type Model struct {
 	completion   int
 
 	status       StatusBar
-	appr         *approvalPopup
-	sel          *selectPopup
-	help         bool
+	ovl          *overlay
 	toast        string
 	showThinking bool
 
@@ -181,7 +221,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case agentEventMsg:
 		return m.handleAgentEvent(msg.ev)
 	case approvalRequestMsg:
-		m.appr = &approvalPopup{req: msg.req, respCh: msg.respCh}
+		m.ovl = &overlay{kind: overlayApproval, appr: &approvalPopup{req: msg.req, respCh: msg.respCh}}
 		m.input.Blur()
 		m.refresh(false)
 		return m, nil
@@ -200,19 +240,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if m.appr != nil {
-		return m.handleApprovalKey(msg)
-	}
-	if m.sel != nil {
-		return m.handlePopupKey(msg)
-	}
-	if m.help {
-		if msg.String() == "esc" || msg.String() == "enter" || msg.String() == "/" {
-			m.help = false
-			m.restoreFocus()
-			m.refresh(false)
+	if m.ovl != nil {
+		switch m.ovl.kind {
+		case overlayApproval:
+			return m.handleApprovalKey(msg)
+		case overlaySelect:
+			return m.handlePopupKey(msg)
+		case overlayHelp:
+			if msg.String() == "esc" || msg.String() == "enter" || msg.String() == "/" {
+				m.ovl = nil
+				m.restoreFocus()
+				m.refresh(false)
+			}
+			return m, nil
 		}
-		return m, nil
 	}
 
 	switch msg.String() {
@@ -361,7 +402,7 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		m.refresh(false)
 		return m, nil
 	}
-	if ev.Y >= m.mainTop && ev.Y < m.mainTop+m.viewport.Height && m.appr == nil && m.sel == nil && !m.help {
+	if ev.Y >= m.mainTop && ev.Y < m.mainTop+m.viewport.Height && m.ovl == nil {
 		m.setFocus(focusTimeline)
 		contentY := m.viewport.YOffset + ev.Y - m.mainTop
 		for i, hit := range m.hits {
@@ -393,33 +434,34 @@ func (m Model) handleApprovalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	default:
 		return m, nil
 	}
-	m.appr.respCh <- decision
-	m.appr = nil
+	m.ovl.appr.respCh <- decision
+	m.ovl = nil
 	m.restoreFocus()
 	m.refresh(false)
 	return m, nil
 }
 
 func (m Model) handlePopupKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	sel := m.ovl.sel
 	switch msg.String() {
 	case "up", "k":
-		if m.sel.cursor > 0 {
-			m.sel.cursor--
+		if sel.cursor > 0 {
+			sel.cursor--
 		}
 	case "down", "j":
-		if m.sel.cursor < len(m.sel.items)-1 {
-			m.sel.cursor++
+		if sel.cursor < len(sel.items)-1 {
+			sel.cursor++
 		}
 	case "enter":
 		message, err := m.confirmPopup()
-		m.sel = nil
+		m.ovl = nil
 		m.restoreFocus()
 		if err != nil {
 			return m.sysErr(err), nil
 		}
 		return m.sysOK(message), nil
 	case "esc":
-		m.sel = nil
+		m.ovl = nil
 		m.restoreFocus()
 	}
 	m.refresh(false)

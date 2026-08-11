@@ -69,7 +69,11 @@ func (m Model) runCommand(cmd command) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 	if cmd.name == "help" {
-		m.help = true
+		var opened bool
+		m, opened = m.openOverlay(&overlay{kind: overlayHelp})
+		if !opened {
+			return m, nil // 已有覆盖层未决：不叠开（Bug10 守卫）
+		}
 		m.input.Blur()
 		m.refresh(false)
 		return m, nil
@@ -158,15 +162,20 @@ func (m Model) openPopup(kind popupKind, title string, items []popupItem, curren
 			break
 		}
 	}
-	m.sel = &selectPopup{kind: kind, title: title, items: items, cursor: cursor}
+	var opened bool
+	m, opened = m.openOverlay(&overlay{kind: overlaySelect, sel: &selectPopup{kind: kind, title: title, items: items, cursor: cursor}})
+	if !opened {
+		return m // 已有覆盖层未决：不叠开（Bug10 守卫）
+	}
 	m.input.Blur()
 	m.refresh(false)
 	return m
 }
 
 func (m *Model) confirmPopup() (string, error) {
-	item := m.sel.items[m.sel.cursor]
-	switch m.sel.kind {
+	sel := m.ovl.sel
+	item := sel.items[sel.cursor]
+	switch sel.kind {
 	case popupSwitch:
 		if err := m.c.SwitchTo(item.value); err != nil {
 			return "", err
@@ -221,8 +230,7 @@ func (m *Model) reloadSession() {
 	m.tools = nil
 	m.stream = nil
 	m.queue = nil
-	m.appr = nil
-	m.sel = nil
+	m.ovl = nil
 	loadSessionHistory(m, m.c.active)
 	m.autoScroll = true
 	m.refresh(true)

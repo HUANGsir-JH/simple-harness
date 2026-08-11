@@ -35,22 +35,22 @@ func TestCommandPopupModel(t *testing.T) {
 	if cmd != nil {
 		t.Fatal("命令弹窗不应返回回合 cmd")
 	}
-	if m.sel == nil || m.sel.kind != popupModel {
-		t.Fatalf("应打开模型弹窗，sel = %+v", m.sel)
+	if m.ovl == nil || m.ovl.sel.kind != popupModel {
+		t.Fatalf("应打开模型弹窗，sel = %+v", m.ovl.sel)
 	}
-	if m.sel.items[0].value != "m1" {
-		t.Fatalf("模型列表应实时来自配置，got %v", m.sel.items)
+	if m.ovl.sel.items[0].value != "m1" {
+		t.Fatalf("模型列表应实时来自配置，got %v", m.ovl.sel.items)
 	}
 
 	// ↓ 到 m2 → Enter 确认。
 	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
 	m = nm.(Model)
-	if m.sel.cursor != 1 {
-		t.Fatalf("↓ 后 cursor = %d, want 1", m.sel.cursor)
+	if m.ovl.sel.cursor != 1 {
+		t.Fatalf("↓ 后 cursor = %d, want 1", m.ovl.sel.cursor)
 	}
 	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = nm.(Model)
-	if m.sel != nil {
+	if m.ovl != nil {
 		t.Fatal("确认后弹窗应关闭")
 	}
 	if got := m.c.active.Model(); got != "m2" {
@@ -76,11 +76,11 @@ func TestCommandModelsOnlyCurrentProvider(t *testing.T) {
 	m.input.SetValue("/model")
 	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = nm.(Model)
-	if m.sel == nil {
+	if m.ovl == nil {
 		t.Fatal("应打开模型弹窗")
 	}
 	var got []string
-	for _, it := range m.sel.items {
+	for _, it := range m.ovl.sel.items {
 		got = append(got, it.value)
 	}
 	if strings.Join(got, ",") != "a1,a2" {
@@ -98,7 +98,7 @@ func TestCommandPopupEsc(t *testing.T) {
 	m = nm.(Model)
 	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	m = nm.(Model)
-	if m.sel != nil {
+	if m.ovl != nil {
 		t.Fatal("Esc 应关闭弹窗")
 	}
 	if m.c.active.Model() != "test-model" {
@@ -113,7 +113,7 @@ func TestCommandPermissionPopup(t *testing.T) {
 	m.input.SetValue("/permission")
 	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = nm.(Model)
-	if m.sel == nil || len(m.sel.items) != len(impl.Modes) {
+	if m.ovl == nil || len(m.ovl.sel.items) != len(impl.Modes) {
 		t.Fatalf("权限弹窗应有 %d 项", len(impl.Modes))
 	}
 	// 选 readonly（第一项）。
@@ -133,12 +133,12 @@ func TestCommandThinkingPopup(t *testing.T) {
 	m.input.SetValue("/thinking")
 	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = nm.(Model)
-	if m.sel == nil || len(m.sel.items) != 2 {
-		t.Fatalf("thinking 弹窗应有 2 项，sel = %+v", m.sel)
+	if m.ovl == nil || len(m.ovl.sel.items) != 2 {
+		t.Fatalf("thinking 弹窗应有 2 项，sel = %+v", m.ovl.sel)
 	}
 	// 默认开启 → current = enabled（光标在第一项）。
-	if m.sel.cursor != 0 {
-		t.Fatalf("默认 thinking 开启，cursor 应在 enabled，got %d", m.sel.cursor)
+	if m.ovl.sel.cursor != 0 {
+		t.Fatalf("默认 thinking 开启，cursor 应在 enabled，got %d", m.ovl.sel.cursor)
 	}
 	// ↓ 到 disabled → Enter 确认 → SetThinking(false) 持久化 AgentState。
 	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
@@ -161,7 +161,7 @@ func TestCommandThinkingArg(t *testing.T) {
 	m.input.SetValue("/thinking off")
 	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = nm.(Model)
-	if m.sel != nil {
+	if m.ovl != nil {
 		t.Fatal("带参数不应开弹窗")
 	}
 	st := m.c.active.State()
@@ -195,7 +195,7 @@ func TestQueueCommand(t *testing.T) {
 	// runDone → 消费 /model → 打开弹窗（不启动回合）。
 	nm, cmd = m.Update(runDoneMsg{})
 	m = nm.(Model)
-	if m.sel == nil {
+	if m.ovl == nil {
 		t.Fatal("turn_done 消费 /model 应打开弹窗")
 	}
 	if cmd != nil {
@@ -262,10 +262,10 @@ func TestPopupRender(t *testing.T) {
 	m := New(nil)
 	nm, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = nm.(Model)
-	m.sel = &selectPopup{kind: popupModel, title: "切换模型", items: []popupItem{
+	m.ovl = &overlay{kind: overlaySelect, sel: &selectPopup{kind: popupModel, title: "切换模型", items: []popupItem{
 		{label: "m1", value: "m1"},
 		{label: "m2", value: "m2"},
-	}}
+	}}}
 	v := m.View()
 	if !strings.Contains(v, "切换模型") || !strings.Contains(v, "> m1") {
 		t.Fatalf("弹窗应含标题与光标项，got:\n%s", v)

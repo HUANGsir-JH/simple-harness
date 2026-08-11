@@ -25,12 +25,12 @@ func TestApprovalPopupAndKeys(t *testing.T) {
 		respCh := make(chan middleware.Decision, 1)
 		nm, _ := m.Update(approvalRequestMsg{req: middleware.ApprovalRequest{ToolName: "shell_command", Summary: "rm -rf x", Mode: "readonly"}, respCh: respCh})
 		m = nm.(Model)
-		if m.appr == nil {
+		if m.ovl == nil {
 			t.Fatalf("[%s] 应有审批弹窗", tc.key)
 		}
 		nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(tc.key)})
 		m = nm.(Model)
-		if m.appr != nil {
+		if m.ovl != nil {
 			t.Fatalf("[%s] 弹窗应关闭", tc.key)
 		}
 		select {
@@ -53,7 +53,7 @@ func TestApprovalEscDeny(t *testing.T) {
 
 	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	m = nm.(Model)
-	if m.appr != nil {
+	if m.ovl != nil {
 		t.Fatal("Esc 后弹窗应关闭")
 	}
 	select {

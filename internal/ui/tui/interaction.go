@@ -44,7 +44,7 @@ func (m *Model) layout() {
 }
 
 func (m Model) completionVisible() bool {
-	if m.focus != focusComposer || m.appr != nil || m.sel != nil || m.help {
+	if m.focus != focusComposer || m.ovl != nil {
 		return false
 	}
 	value := strings.TrimSpace(m.input.Value())
