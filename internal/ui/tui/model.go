@@ -664,6 +664,14 @@ func (m Model) handleRunDone(err error) (tea.Model, tea.Cmd) {
 		if !m.interrupted {
 			m.appendSystem("Turn interrupted", false)
 		}
+		// 中断提示在 Run 返回后 AddUser（Bug10，2026-08-11）：此前在
+		// requestInterrupt 立即 AddUser，与 Run goroutine 并发写 conversation，
+		// 且在 runToolBatch 补全 tool_result 之前插入 user 消息——tool_use 与
+		// tool_result 之间夹了 user，破坏 anthropic 邻接约束，下一轮采样 400。
+		// 挪到这里：tool_use → tool_result（agent 补全）→ user(System) 顺序合法。
+		if m.c != nil && m.c.active != nil {
+			m.c.active.AddUser("(System: the previous agent turn was interrupted by the user. Continue unfinished work if needed; background processes may still be running.)")
+		}
 	} else if err != nil && !m.eventError {
 		m.appendSystem("Error: "+err.Error(), true)
 	}
@@ -838,7 +846,6 @@ func (m *Model) requestInterrupt() {
 	}
 	m.interrupted = true
 	m.c.cancelRun()
-	m.c.active.AddUser("(System: the previous agent turn was interrupted by the user. Continue unfinished work if needed; background processes may still be running.)")
 	m.appendSystem("Interrupt requested", false)
 	m.toast = "Interrupting current turn"
 	m.refresh(false)

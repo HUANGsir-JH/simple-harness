@@ -4,6 +4,20 @@
 
 ## 2026-08-11
 
+### Bug10：Esc 中断后发消息 400（tool_use 无紧跟 tool_result）✅
+
+- **用户报告**：TUI 里工具执行中按 Esc 中断，再发消息报 `POST .../messages: 400 invalid_request_error`——`tool_use` 无对应 `tool_result`。
+- **根因**（双处叠加）：
+  1. **agent 层不补全**：`runToolBatch` 在工具批被中断（ctx canceled）时 `results` 为空 → `blocks` 为空 → 不追加 tool_result。assistant 已带 tool_calls 落盘，conversation/transcript 留下未配对 `tool_use`，下一轮采样违反 anthropic 邻接约束（ADR-024）。
+  2. **TUI 时机错**：`requestInterrupt` 在 Esc 瞬间立即 `AddUser(中断提示)`——在 Run goroutine 补 tool_result 之前就插入 user 消息（且并发写无锁 conversation），`tool_use` 与 `tool_result` 之间夹了 user，即使补全顺序也错。
+- **修复**：
+  - **agent `runToolBatch` 补全配对**：为 results 缺失的调用回填 `"工具未执行（回合被中断）"` 块（conversation + emit 落盘 transcript 双轨一致，C6 时序）。
+  - **TUI 挪中断提示时机**：`requestInterrupt` 不再 AddUser，改在 `handleRunDone`（Run 返回后，tool_result 已补全）AddUser——顺序 `tool_use → tool_result → user(System)` 合法，且消除并发写竞态。
+  - **采样前自愈兜底**：`agent.Run` 每轮采样前 `repairDanglingToolUse`——覆盖**存量损坏会话**（resume 修复前中断产生的会话也能恢复）。
+- **二修（用户续报，切会话后仍 400）**：存量 transcript 里 `user(中断提示)` 被旧版插进 tool_result **中间**（transcript 实测：tool_result(call_01) → user → tool_result(call_00)），resume 重建后 assistant 的 result 被 user 隔开、散成多条 tool 消息。首版 `repairDanglingToolUse` 把缺失块**新建一条 tool 消息**插到前面，导致紧邻消息缺 call_01 → 仍 400（报 `call_01 without tool_result immediately after`）。**改进**：收集 assistant 后全部 result（含被 user 隔开的散落 result，去重），缺失补"未执行"，重建为 `assistant → 一条完整 tool（全部 result，保留真实值）→ after 非 tool 消息（原顺序）`；完整紧邻配对时 no-op。
+- **测试**：agent（`TestRunToolBatchInterruptedRepairsPairing` 中断补全 / `TestRepairDanglingToolUse` / `TestRepairDanglingInterleaved` 交错重建 / `TestRunRepairsDanglingToolUse` 存量自愈）+ TUI（`TestEscInterrupt` 改断言 + `TestInterruptPromptAddedOnRunDone`）。`go build/vet/test ./...` + `-race` 全绿。
+- **经验**：anthropic 邻接约束（tool_use 后下一条消息必须含全部 tool_result，ADR-024）在中断/错误路径上也会被违反——凡 assistant 带 tool_calls 落盘，必须保证 tool_result **紧邻且完整**（缺一块、或隔了 user、或拆成多条 tool 消息都不行）；中断提示这类 AddUser 不能抢在工具批回填之前插消息。修复"缺 result"时不能新建 tool 消息插到已有 tool 消息之前——会拆散紧邻的完整配对，正确做法是合并进紧邻消息。
+
 ### Plan Mode（规划模式）✅ 版本 0.7.0（ADR-036）
 
 - **功能**：会话级 plan 模式——先只读调研、产出计划文件、批准后执行。4 工具：`plan_enter`（模型自主提议进规划，HITL 确认）/ `write_plan`（写 `<会话>/plans/plan.md`，路径+全文回填）/ `plan_done`（弹 HITL 交接：批准执行 / 继续规划 / **Other=拒绝+反馈回填**，bypass 也询问）/ `ask_user`（通用提问，选项+Other+单选多选）。

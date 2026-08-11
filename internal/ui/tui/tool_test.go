@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -135,25 +136,55 @@ func TestViewToolBlock(t *testing.T) {
 	}
 }
 
-// TestEscInterrupt Esc 中断：cancel 被调 + 中断提示 AddUser 落盘。
+// TestEscInterrupt Esc 中断：cancel 被调 + 中断系统行显示。中断提示的 AddUser
+// 已挪到 handleRunDone（Run 返回后，tool_result 配对补全后再插入 user，Bug10），
+// 故 Esc 瞬间 conversation 不立即新增消息。
 func TestEscInterrupt(t *testing.T) {
 	c := newTestController(t, nil)
 	m := New(c)
 	nm, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = nm.(Model)
 	m.running = true
+	before := len(c.active.Conversation().Messages)
 
 	nm2, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	m = nm2.(Model)
-	// 中断提示应已 AddUser（conversation + transcript）。
-	if n := len(c.active.Conversation().Messages); n == 0 {
-		t.Fatal("中断提示应写入 conversation")
+	if !m.interrupted {
+		t.Fatal("Esc 后应置 interrupted")
 	}
-	last := c.active.Conversation().Messages[len(c.active.Conversation().Messages)-1]
-	if !strings.Contains(last.Content, "interrupted") {
-		t.Fatalf("最后一条应为中断提示，got %q", last.Content)
+	if n := len(c.active.Conversation().Messages); n != before {
+		t.Fatalf("Esc 瞬间不应写 conversation（挪到 handleRunDone），before=%d after=%d", before, n)
 	}
 	if !strings.Contains(m.View(), "Interrupt requested") {
 		t.Fatalf("View 应含中断系统行")
+	}
+}
+
+// TestInterruptPromptAddedOnRunDone 中断回合结束后（runDoneMsg 处理）AddUser 中断
+// 提示：conversation 末尾是 user(System) 提示，紧跟 assistant(tool_use)+tool_result
+// 之后（顺序合法，Bug10）。
+func TestInterruptPromptAddedOnRunDone(t *testing.T) {
+	c := newTestController(t, nil)
+	m := New(c)
+	nm, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = nm.(Model)
+	m.running = true
+
+	// 模拟 Esc → 中断。
+	nm2, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = nm2.(Model)
+	// 回合结束（ctx canceled）→ handleRunDone。
+	nm3, _ := m.handleRunDone(context.Canceled)
+	m = nm3.(Model)
+	if len(c.active.Conversation().Messages) == 0 {
+		t.Fatal("中断提示应写入 conversation")
+	}
+	last := c.active.Conversation().Messages[len(c.active.Conversation().Messages)-1]
+	if last.Role != messages.RoleUser || !strings.Contains(last.Content, "interrupted") {
+		t.Fatalf("最后一条应为中断提示，got %+v", last)
+	}
+	// 下一轮可继续（无未配对 tool_use）：conversation 末尾合法。
+	if m.running {
+		t.Fatal("handleRunDone 后应停止 running")
 	}
 }

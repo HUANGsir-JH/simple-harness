@@ -98,6 +98,11 @@ func (a *Agent) Run(ctx context.Context, rc *middleware.RuntimeContext, onEvent 
 		})
 
 		for {
+			// 采样前自愈（Bug10 兜底）：存量会话或异常路径可能残留未配对的
+			// tool_use（assistant 带 tool_calls 而无紧跟的 tool_result），直接
+			// 采样违反 anthropic 邻接约束 400。runToolBatch 已防新增残留，
+			// 这里兜底旧数据（如 resume 修复前中断产生的会话）。
+			repairDanglingToolUse(conversation, emit)
 			result = sampleResult{}
 			if err := reasoning(ctx, rc, middleware.ReasoningInput{Messages: conversation.Messages, Tools: a.tools.Specs()}); err != nil {
 				emit(events.Event{Type: events.EventError, Err: err})
@@ -290,12 +295,21 @@ func (a *Agent) runToolBatch(ctx context.Context, rc *middleware.RuntimeContext,
 		wg.Wait()
 		// 按 calls 顺序收集结果（不按完成顺序，保持模型预期一致），
 		// 合并成一条 tool result 消息（anthropic 要求 tool_use 后下一条消息
-		// 含全部 tool_result）。
+		// 含全部 tool_result，ADR-024）。
+		//
+		// 中断/错误终止时未产生结果的调用补"未执行"块（Bug10，2026-08-11）：
+		// 工具批被用户中断（Esc/Ctrl+C）或 Fatal 终止后，assistant 已带 tool_calls
+		// 落盘而 tool_result 缺失，下一轮采样违反邻接约束直接 400——补全配对保持
+		// conversation 与 transcript 双轨一致（emit 落盘同正常路径，C6 时序）。
 		blocks := make([]messages.ToolResultBlock, 0, len(in.Calls))
 		for _, c := range in.Calls {
 			if r := results[c.ID]; r != nil {
 				blocks = append(blocks, messages.ToolResultBlock{ToolCallID: c.ID, Success: r.Success, Content: r.Content})
+				continue
 			}
+			res := &messages.ToolResult{Success: false, Content: notExecutedMsg}
+			blocks = append(blocks, messages.ToolResultBlock{ToolCallID: c.ID, Success: false, Content: notExecutedMsg})
+			emit(events.Event{Type: events.EventToolResult, ToolCall: c, ToolResult: res})
 		}
 		if len(blocks) > 0 {
 			conversation.Add(messages.NewToolResultsMessage(blocks))
@@ -303,6 +317,87 @@ func (a *Agent) runToolBatch(ctx context.Context, rc *middleware.RuntimeContext,
 		return firstErr
 	})
 	return wrapped(ctx, rc, middleware.ToolCallInput{Calls: calls})
+}
+
+// notExecutedMsg 是工具批中断/错误终止时为未执行调用回填的 tool_result 内容
+// （Bug10，2026-08-11）。模型读到它知道该工具没跑，可据此调整后续动作。
+const notExecutedMsg = "工具未执行（回合被中断）"
+
+// repairDanglingToolUse 自愈 conversation 中未配对的 tool_use（Bug10 采样前兜底）。
+//
+// 场景：assistant 已带 tool_calls 落盘但缺少**紧邻**的完整 tool_result（存量
+// 中断残留、异常路径），违反 anthropic 邻接约束（ADR-024：tool_use 后下一条
+// 消息须含全部对应 tool_result），直接采样 400。典型是旧版 requestInterrupt
+// 把 user(中断提示) 插进 tool_result 中间——resume 重建后 tool_result 被 user
+// 隔开、散成多条 tool 消息。
+//
+// 修复：找最后一个带 tool_calls 的 assistant，收集其后的所有 result（含被 user
+// 隔开的散落 result，按 call_id 去重），缺失的调用补"未执行"块，然后重建为
+// assistant → 一条完整 tool 消息 → 其后的非 tool 消息（原顺序）。已完整紧邻
+// 配对时 no-op。
+func repairDanglingToolUse(conversation *messages.Conversation, emit events.OnEvent) {
+	msgs := conversation.Messages
+	lastAsst := -1
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == messages.RoleAssistant {
+			lastAsst = i
+			break
+		}
+	}
+	if lastAsst < 0 || len(msgs[lastAsst].ToolCalls) == 0 {
+		return
+	}
+	m := msgs[lastAsst]
+
+	// 收集 assistant 之后所有 tool 消息的 result（去重），以及需要保留的非 tool
+	// 消息（旧版 requestInterrupt 插入的 user(中断提示) 等，原顺序放回 tool 之后）。
+	blocks := make([]messages.ToolResultBlock, 0, len(m.ToolCalls))
+	covered := map[string]bool{}
+	var after []*messages.Message
+	for j := lastAsst + 1; j < len(msgs); j++ {
+		if msgs[j].Role == messages.RoleTool {
+			for _, b := range msgs[j].ToolResults {
+				if !covered[b.ToolCallID] {
+					covered[b.ToolCallID] = true
+					blocks = append(blocks, messages.ToolResultBlock{ToolCallID: b.ToolCallID, Success: b.Success, Content: b.Content})
+				}
+			}
+			continue
+		}
+		after = append(after, msgs[j])
+	}
+
+	// no-op：assistant 后紧邻一条 tool 已覆盖全部 tool_calls，且无散落的第二个
+	// tool 消息（正常流程 runToolBatch 已配对）。
+	if len(covered) == len(m.ToolCalls) && lastAsst+1 < len(msgs) &&
+		msgs[lastAsst+1].Role == messages.RoleTool && len(msgs[lastAsst+1].ToolResults) == len(m.ToolCalls) {
+		extra := false
+		for j := lastAsst + 2; j < len(msgs); j++ {
+			if msgs[j].Role == messages.RoleTool {
+				extra = true
+				break
+			}
+		}
+		if !extra {
+			return
+		}
+	}
+
+	// 缺失的调用补"未执行"块，并 emit 落盘 transcript。
+	for k := range m.ToolCalls {
+		if covered[m.ToolCalls[k].ID] {
+			continue
+		}
+		blocks = append(blocks, messages.ToolResultBlock{ToolCallID: m.ToolCalls[k].ID, Success: false, Content: notExecutedMsg})
+		emit(events.Event{Type: events.EventToolResult, ToolCall: &m.ToolCalls[k], ToolResult: &messages.ToolResult{Success: false, Content: notExecutedMsg}})
+	}
+
+	// 重建：assistant → 一条完整 tool → after（原顺序）。
+	newMsgs := make([]*messages.Message, 0, lastAsst+2+len(after))
+	newMsgs = append(newMsgs, msgs[:lastAsst+1]...)
+	newMsgs = append(newMsgs, messages.NewToolResultsMessage(blocks))
+	newMsgs = append(newMsgs, after...)
+	conversation.Messages = newMsgs
 }
 
 // timeNowNanos 是一个小间接层，便于测试注入确定性的 ID；
