@@ -85,7 +85,11 @@ func (c *Controller) Models() []string {
 }
 
 // SetModel 切换会话模型 + 重置档位为模型默认（ADR-026 运行时切换）。
+// 懒加载：无 active 时先创建会话（用户决策：状态命令也触发创建）。
 func (c *Controller) SetModel(name string) error {
+	if err := c.ensureActive(); err != nil {
+		return err
+	}
 	res, err := config.Resolve(c.cfg, name)
 	if err != nil {
 		return err
@@ -105,8 +109,11 @@ func (c *Controller) Efforts() []string {
 	return res.ThinkingEfforts
 }
 
-// SetEffort 切换推理档位（校验在模型 efforts 内）。
+// SetEffort 切换推理档位（校验在模型 efforts 内）。懒加载：无 active 先创建。
 func (c *Controller) SetEffort(level string) error {
+	if err := c.ensureActive(); err != nil {
+		return err
+	}
 	cur, err := config.Resolve(c.cfg, c.active.Model())
 	if err != nil {
 		return err
@@ -121,7 +128,11 @@ func (c *Controller) SetEffort(level string) error {
 func (c *Controller) PermissionModes() []string { return impl.Modes }
 
 // SetPermission 切换会话审批模式（落盘 AgentState，ADR-029）。
+// 懒加载：无 active 先创建。
 func (c *Controller) SetPermission(mode string) error {
+	if err := c.ensureActive(); err != nil {
+		return err
+	}
 	if !slices.Contains(impl.Modes, mode) {
 		return fmt.Errorf("未知模式 %q（支持: %v）", mode, impl.Modes)
 	}
@@ -129,9 +140,24 @@ func (c *Controller) SetPermission(mode string) error {
 }
 
 // SetThinking 切换会话 thinking 开关（/thinking，持久化 AgentState；
-// 2026-08-10 删配置 enabled，开关纯会话级，默认开启）。
+// 2026-08-10 删配置 enabled，开关纯会话级，默认开启）。懒加载：无 active 先创建。
 func (c *Controller) SetThinking(enabled bool) error {
+	if err := c.ensureActive(); err != nil {
+		return err
+	}
 	return c.active.SetThinkingEnabled(&enabled)
+}
+
+// Rename 重命名当前会话（/rename <名称>；懒加载：未创建则先创建再命名）。
+func (c *Controller) Rename(name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("/rename 需要名称（用法：/rename <名称>）")
+	}
+	if err := c.ensureActive(); err != nil {
+		return err
+	}
+	return c.active.SetName(name)
 }
 
 // CloseAll flush 所有打开的会话 transcript。

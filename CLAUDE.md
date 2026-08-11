@@ -31,7 +31,7 @@ go test ./internal/messages/ -run TestMessageJSONL
 go test ./internal/e2e/ -count=1
 ```
 
-交互模式（`harness` 无子命令进 TUI，bubbletea 全屏）命令：`/switch` `/model` `/effort` `/thinking` `/permission` 弹窗选择器（选项实时从配置获取，右侧显示说明）、`/help`、`/exit`（退出仅此命令）。**Esc 中断当前回合**（中断提示落盘，resume 可见，ADR-028）；**Ctrl+C 复制**（非中断非退出）；run 期间输入进**队列**（输入框上方队列条，回合完成逐条连跑）。`run`（单轮流式非交互）保留。**thinking 默认开启**（ADR-034，2026-08-10 删配置 enabled 项）：开关是会话级偏好，`/thinking` 或 `--thinking/--no-thinking` 切换，持久化 AgentState，resume 恢复。**工具审批**（ADR-029）：config `approval.mode` 为默认权限（会话创建时播种进 AgentState.Permission.Mode）；危险操作按模式询问，`y` 允许本次 / `s` 本会话记住（落盘 AgentState）/ `n` 拒绝（回填模型换思路）；非 TTY 自动拒绝。
+交互模式（`harness` 无子命令进 TUI，bubbletea 全屏）命令：`/switch` `/model` `/effort` `/thinking` `/permission` 弹窗选择器（选项实时从配置获取，右侧显示说明）、`/rename <名称>`（会话改名）、`/help`、`/exit`（退出仅此命令）。**会话懒加载**（2026-08-11）：进入不创建 session，首条消息/状态命令才建（避免 /exit 或 /switch 残留空会话）；**首消息自动命名**（codex first_user_message 同款，前 40 字，/switch 弹窗与 header 展示 name）。**Esc 中断当前回合**（中断提示落盘，resume 可见，ADR-028）；**Ctrl+C 复制**（非中断非退出）；run 期间输入进**队列**（输入框上方队列条，回合完成逐条连跑）。`run`（单轮流式非交互）保留。**thinking 默认开启**（ADR-034，2026-08-10 删配置 enabled 项）：开关是会话级偏好，`/thinking` 或 `--thinking/--no-thinking` 切换，持久化 AgentState，resume 恢复。**工具审批**（ADR-029）：config `approval.mode` 为默认权限（会话创建时播种进 AgentState.Permission.Mode）；危险操作按模式询问，`y` 允许本次 / `s` 本会话记住（落盘 AgentState）/ `n` 拒绝（回填模型换思路）；非 TTY 自动拒绝。
 
 ## 代码架构
 

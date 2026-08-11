@@ -114,6 +114,15 @@ func (s *Session) StatePath() string { return s.statePath }
 // Model 返回会话使用的模型（来自 AgentState；空 = 未设置）。
 func (s *Session) Model() string { return s.state.Model }
 
+// Name 返回会话名（首消息自动命名或 /rename；空 = 未命名，展示时短 ID 兜底）。
+func (s *Session) Name() string { return s.state.Name }
+
+// SetName 更新会话名并立即落盘（/rename；首消息自动命名也走这里）。
+func (s *Session) SetName(name string) error {
+	s.state.Name = name
+	return agentstate.SaveFile(s.statePath, s.state)
+}
+
 // RuntimeContext 从会话构建 per-call 上下文（无状态 agent 对位 ADR-026：
 // agent 不持有会话状态，一切经 rc 传入）。每次 agent.Run 调用新建；
 // 切换会话 = 换 Session 再取 rc，并行 = 每 goroutine 一个 rc。

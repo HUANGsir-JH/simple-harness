@@ -45,7 +45,7 @@ func newTestController(t *testing.T, calls *atomic.Int32) *Controller {
 			}), nil
 		},
 	}
-	return NewController(agent.New(client, "test-model"), proj, config.Config{}, sess, context.Background())
+	return NewController(agent.New(client, "test-model"), proj, config.Config{}, sess, nil, context.Background())
 }
 
 // collectSend 收集 program.Send 的消息（模拟 bubbletea 事件循环）。

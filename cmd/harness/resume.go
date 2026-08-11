@@ -6,12 +6,10 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 
 	"github.com/agent-project/harness/internal/agent"
-	"github.com/agent-project/harness/internal/agentstate"
 	"github.com/agent-project/harness/internal/app"
 	"github.com/agent-project/harness/internal/session"
 	"github.com/agent-project/harness/internal/ui/tui"
@@ -82,7 +80,7 @@ func resumeCmd(args []string, jsonOut bool) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM)
 	defer stop()
 
-	return tui.RunTUI(a, proj, rt.Config, sess, ctx, !*noThinkingDisplay)
+	return tui.RunTUI(a, proj, rt.Config, sess, nil, ctx, !*noThinkingDisplay)
 }
 
 // sessionsCmd 列出当前项目的会话。
@@ -100,11 +98,7 @@ func sessionsCmd(args []string) error {
 		return nil
 	}
 	for _, s := range list {
-		var model, updated string
-		if st, err := agentstate.LoadFile(filepath.Join(s.Path, session.FileAgentState)); err == nil {
-			model, updated = st.Model, st.UpdatedAt
-		}
-		fmt.Printf("%s  model=%s  updated=%s\n", s.ID, model, updated)
+		fmt.Printf("%s  name=%s  model=%s  updated=%s\n", s.ID, s.Name, s.Model, s.UpdatedAt)
 	}
 	return nil
 }

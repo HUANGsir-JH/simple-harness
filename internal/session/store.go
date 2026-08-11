@@ -19,6 +19,8 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+
+	"github.com/agent-project/harness/internal/agentstate"
 )
 
 // EnvHome 覆盖 workspace 根目录（测试/定制；对标 codex CODEX_HOME）。
@@ -139,10 +141,15 @@ func (s *Store) FindProject(cwd string) (*Project, error) {
 	return &Project{Path: abs, Dir: s.ProjectDir(abs)}, nil
 }
 
-// SessionInfo 是会话列表条目。
+// SessionInfo 是会话列表条目。Name/Model/UpdatedAt 来自 agentstate（Sessions()
+// 遍历时读一次填充，避免调用方重复 LoadFile）；无 agentstate（旧目录/损坏）
+// 留空，展示时短 ID 兜底。
 type SessionInfo struct {
-	ID   string // 目录名 = 会话 id（时间戳-随机）
-	Path string // 会话目录
+	ID        string // 目录名 = 会话 id（时间戳-随机）
+	Path      string // 会话目录
+	Name      string // 会话名（/rename 或首消息自动命名）
+	Model     string // 会话模型
+	UpdatedAt string // agentstate 最后更新时间
 }
 
 // Sessions 列出项目桶下的会话（按目录名排序，时间戳前缀天然时间序）。
@@ -159,7 +166,13 @@ func (p *Project) Sessions() ([]SessionInfo, error) {
 		if !e.IsDir() {
 			continue
 		}
-		out = append(out, SessionInfo{ID: e.Name(), Path: filepath.Join(p.Dir, e.Name())})
+		info := SessionInfo{ID: e.Name(), Path: filepath.Join(p.Dir, e.Name())}
+		// name/model/updated 一次 LoadFile 取齐（agentstate ~200B，N 个会话
+		// 微秒级；失败留空容忍旧目录）。
+		if st, err := agentstate.LoadFile(filepath.Join(info.Path, FileAgentState)); err == nil {
+			info.Name, info.Model, info.UpdatedAt = st.Name, st.Model, st.UpdatedAt
+		}
+		out = append(out, info)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out, nil

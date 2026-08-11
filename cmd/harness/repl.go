@@ -37,11 +37,11 @@ func repl(jsonOut bool, thinkingDisplay ...bool) error {
 	if err != nil {
 		return err
 	}
-	sess, err := session.CreateInCWD(rt.Provider.Model, rt.DefaultApprovalMode())
-	if err != nil {
-		return err
+	// 懒加载（2026-08-11）：进入不预创建 session，首次消息/状态命令经
+	// Controller.ensureActive 才建——避免 /exit 或 /switch 到旧会话残留空会话。
+	newSession := func() (*session.Session, error) {
+		return session.CreateInCWD(rt.Provider.Model, rt.DefaultApprovalMode())
 	}
-	defer sess.Close()
 
 	// SIGTERM 终止进程；SIGINT（Ctrl+C）由 bubbletea 作为按键事件处理（复制语义）。
 	// 回合中断用 Esc（ADR-028），顶层 ctx 不被 SIGINT cancel。
@@ -52,5 +52,5 @@ func repl(jsonOut bool, thinkingDisplay ...bool) error {
 	if len(thinkingDisplay) > 0 {
 		showThinking = thinkingDisplay[0]
 	}
-	return tui.RunTUI(a, proj, rt.Config, sess, ctx, showThinking)
+	return tui.RunTUI(a, proj, rt.Config, nil, newSession, ctx, showThinking)
 }

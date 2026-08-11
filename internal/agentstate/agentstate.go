@@ -22,6 +22,7 @@ import (
 // AgentState 是会话的运行时状态快照。
 type AgentState struct {
 	SessionID       string           `json:"session_id"`
+	Name            string           `json:"name,omitempty"`             // 会话名（首消息自动命名或 /rename；空 = 未命名）
 	Model           string           `json:"model,omitempty"`            // 会话使用的模型（resume 恢复）
 	ThinkingEnabled *bool            `json:"thinking_enabled,omitempty"` // nil = 默认开启（/thinking 切换后显式 true/false）
 	ThinkingEffort  string           `json:"thinking_effort,omitempty"`  // 推理档位；空 = 继承 client 默认

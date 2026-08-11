@@ -98,7 +98,7 @@ func (m Model) runCommand(cmd command) (tea.Model, tea.Cmd) {
 			m.reloadSession()
 			return m.sysOK("Switched to " + shortSession(m.c.active.ID)), nil
 		}
-		return m.openPopup(popupSwitch, "SESSIONS", switchItems(m.c.Sessions()), m.c.active.ID), nil
+		return m.openPopup(popupSwitch, "SESSIONS", switchItems(m.c.Sessions()), m.c.ActiveID()), nil
 	case "model":
 		if cmd.arg != "" {
 			if err := m.c.SetModel(cmd.arg); err != nil {
@@ -106,7 +106,7 @@ func (m Model) runCommand(cmd command) (tea.Model, tea.Cmd) {
 			}
 			return m.sysOK("Model set to " + cmd.arg), nil
 		}
-		return m.openPopup(popupModel, "MODELS", modelItems(m.c.Models()), m.c.active.Model()), nil
+		return m.openPopup(popupModel, "MODELS", modelItems(m.c.Models()), m.c.ActiveModel()), nil
 	case "effort":
 		if cmd.arg != "" {
 			if err := m.c.SetEffort(cmd.arg); err != nil {
@@ -114,7 +114,10 @@ func (m Model) runCommand(cmd command) (tea.Model, tea.Cmd) {
 			}
 			return m.sysOK("Effort set to " + cmd.arg), nil
 		}
-		current := m.c.active.State().ThinkingEffort
+		current := ""
+		if st := m.c.ActiveState(); st != nil {
+			current = st.ThinkingEffort
+		}
 		return m.openPopup(popupEffort, "REASONING EFFORT", effortItems(m.c.Efforts()), current), nil
 	case "permission":
 		if cmd.arg != "" {
@@ -124,8 +127,8 @@ func (m Model) runCommand(cmd command) (tea.Model, tea.Cmd) {
 			return m.sysOK("Permission set to " + cmd.arg), nil
 		}
 		current := ""
-		if state := m.c.active.State().Permission; state != nil {
-			current = state.Mode
+		if state := m.c.ActiveState(); state != nil && state.Permission != nil {
+			current = state.Permission.Mode
 		}
 		return m.openPopup(popupPermission, "PERMISSION", permissionItems(m.c.PermissionModes()), current), nil
 	case "thinking":
@@ -145,7 +148,16 @@ func (m Model) runCommand(cmd command) (tea.Model, tea.Cmd) {
 				return m.sysErr(fmt.Errorf("unknown /thinking arg %q (on|off)", cmd.arg)), nil
 			}
 		}
-		return m.openPopup(popupThinking, "THINKING", thinkingItems(), thinkingCurrent(m.c.active.State())), nil
+		return m.openPopup(popupThinking, "THINKING", thinkingItems(), thinkingCurrent(m.c.ActiveState())), nil
+	case "rename":
+		if cmd.arg == "" {
+			return m.sysErr(fmt.Errorf("/rename 需要名称（用法：/rename <名称>）")), nil
+		}
+		if err := m.c.Rename(cmd.arg); err != nil {
+			return m.sysErr(err), nil
+		}
+		m.refreshStatus() // header 即时显示新名
+		return m.sysOK("Renamed to " + strings.TrimSpace(cmd.arg)), nil
 	default:
 		return m.sysErr(fmt.Errorf("unknown command /%s", cmd.name)), nil
 	}
@@ -276,7 +288,12 @@ func switchItems(sessions []session.SessionInfo) []popupItem {
 	items := make([]popupItem, 0, len(sessions))
 	for i := len(sessions) - 1; i >= 0; i-- {
 		s := sessions[i]
-		items = append(items, popupItem{label: s.ID, value: s.ID})
+		// label = 会话名（/rename 或首消息自动命名），未命名则短 ID 兜底。
+		label := s.Name
+		if label == "" {
+			label = shortSession(s.ID)
+		}
+		items = append(items, popupItem{label: label, value: s.ID})
 	}
 	return items
 }

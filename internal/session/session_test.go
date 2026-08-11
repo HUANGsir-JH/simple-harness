@@ -209,3 +209,30 @@ func TestSetPermissionMode(t *testing.T) {
 		t.Errorf("落盘: %+v err=%v", st.Permission, err)
 	}
 }
+
+// TestSessionSetNamePersist 验证 SetName 落盘 + Sessions() 列表填充 name
+// （首消息命名 / /rename 持久化，列表展示用）。
+func TestSessionSetNamePersist(t *testing.T) {
+	root := t.TempDir()
+	store := NewAt(root)
+	proj := &Project{Path: root, Dir: store.ProjectDir(root)}
+	sess, err := proj.Create("m1", root, "")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	defer sess.Close()
+
+	if err := sess.SetName("修复 bug"); err != nil {
+		t.Fatalf("SetName: %v", err)
+	}
+	st, err := agentstate.LoadFile(sess.statePath)
+	if err != nil || st.Name != "修复 bug" {
+		t.Errorf("落盘 name: %+v err=%v", st, err)
+	}
+
+	// Sessions() 列表一次 LoadFile 填充 Name。
+	list, err := proj.Sessions()
+	if err != nil || len(list) != 1 || list[0].Name != "修复 bug" {
+		t.Errorf("Sessions 填充 name: %+v err=%v", list, err)
+	}
+}

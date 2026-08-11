@@ -77,8 +77,14 @@ func (m Model) headerView() string {
 		left += styleMuted.Render("  " + m.status.Model)
 	}
 	right := ""
-	if m.status.SessionID != "" {
+	switch {
+	case m.status.SessionName != "":
+		// 会话名优先（截断防窄屏溢出）；未命名/未创建依次兜底。
+		right = styleMuted.Render(truncate(m.status.SessionName, 24))
+	case m.status.SessionID != "":
 		right = styleMuted.Render(shortSession(m.status.SessionID))
+	default:
+		right = styleMuted.Render("新会话") // 懒加载：尚未创建
 	}
 	line := alignRow(left, right, m.width, 1)
 	divider := styleBorder.Render(strings.Repeat("-", maxInt(1, m.width)))

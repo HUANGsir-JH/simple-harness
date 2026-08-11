@@ -59,6 +59,7 @@ type StreamState struct {
 // StatusBar is a rendering snapshot of the active session state.
 type StatusBar struct {
 	Model          string
+	SessionName    string // 会话名（header 展示；空则短 ID 兜底）
 	SessionID      string
 	Permission     string
 	ThinkingEffort string
@@ -480,7 +481,7 @@ func (m Model) submit() (tea.Model, tea.Cmd) {
 	m.inputHistory = append(m.inputHistory, line)
 	if line == "/exit" && !m.running {
 		if m.c != nil {
-			m.c.active.AddCommand(line)
+			m.c.AddCommand(line)
 		}
 		m.queue = nil
 		return m, tea.Quit
@@ -498,7 +499,7 @@ func (m Model) submit() (tea.Model, tea.Cmd) {
 func (m Model) handleInput(line string) (tea.Model, tea.Cmd) {
 	if cmd, ok := parseCommandLine(line); ok {
 		if m.c != nil {
-			m.c.active.AddCommand(line)
+			m.c.AddCommand(line)
 		}
 		return m.runCommand(cmd)
 	}
@@ -668,12 +669,21 @@ func (m *Model) refresh(follow ...bool) {
 }
 
 func (m *Model) refreshStatus() {
-	if m.c == nil || m.c.active == nil {
+	if m.c == nil {
 		return
 	}
-	st := m.c.active.State()
-	m.status.Model = m.c.active.Model()
-	m.status.SessionID = m.c.active.ID
+	// 懒加载：无 active（未创建）→ 清空状态字段，header 显示"新会话"占位。
+	m.status.Model = m.c.ActiveModel()
+	m.status.SessionName = m.c.Name()
+	m.status.SessionID = m.c.ActiveID()
+	st := m.c.ActiveState()
+	if st == nil {
+		m.status.Permission = ""
+		m.status.ThinkingEffort = ""
+		m.status.TodoCount = 0
+		m.status.Todos = nil
+		return
+	}
 	m.status.Permission = ""
 	if st.Permission != nil {
 		m.status.Permission = st.Permission.Mode

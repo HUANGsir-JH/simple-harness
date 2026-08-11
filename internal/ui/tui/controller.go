@@ -2,10 +2,13 @@ package tui
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/agent-project/harness/internal/agent"
+	"github.com/agent-project/harness/internal/agentstate"
 	"github.com/agent-project/harness/internal/config"
 	"github.com/agent-project/harness/internal/events"
 	"github.com/agent-project/harness/internal/middleware"
@@ -16,29 +19,40 @@ import (
 // Controller 是 TUI 与 agent 运行时的桥（ADR-030 事件桥）。
 // 持 agent + 项目桶 + 配置 + 会话注册表；回合启动/中断/事件转发/命令执行均经它。
 // agent 完全无状态（ADR-026）：会话状态经 rc 传入，切换会话 = 换 active。
+//
+// 会话懒加载（2026-08-11）：新入口（repl）不预创建 session，active 起始为
+// nil，首条用户消息或状态变更命令经 ensureActive 才创建——避免 /exit 或
+// /switch 到旧会话时残留空 session。resume 传入已加载 sess（active 非 nil）。
 type Controller struct {
-	a      *agent.Agent
-	proj   *session.Project
-	cfg    config.Config
-	active *session.Session
-	open   map[string]*session.Session
-	ctx    context.Context // 顶层 ctx（回合从它派生；SIGTERM cancel）
-	send   func(tea.Msg)   // program.Send（RunTUI 注入；并发安全）
-	runs   sync.WaitGroup  // 在途 run goroutine 计数（WaitRuns 用，Bug09）
+	a          *agent.Agent
+	proj       *session.Project
+	cfg        config.Config
+	active     *session.Session
+	open       map[string]*session.Session
+	newSession func() (*session.Session, error) // 懒加载创建器（repl 传；resume 不触发传 nil）
+	ctx        context.Context                  // 顶层 ctx（回合从它派生；SIGTERM cancel）
+	send       func(tea.Msg)                    // program.Send（RunTUI 注入；并发安全）
+	runs       sync.WaitGroup                   // 在途 run goroutine 计数（WaitRuns 用，Bug09）
 
 	mu     sync.Mutex
 	cancel context.CancelFunc // 当前回合 cancel（Esc 中断，跨 goroutine 保护）
 }
 
-// NewController 构造桥。
-func NewController(a *agent.Agent, proj *session.Project, cfg config.Config, sess *session.Session, ctx context.Context) *Controller {
+// NewController 构造桥。sess 为已加载会话（resume）或 nil（新入口懒加载）；
+// newSession 是懒加载创建器（sess nil 时首动作触发；resume 传 nil 不触发）。
+func NewController(a *agent.Agent, proj *session.Project, cfg config.Config, sess *session.Session, newSession func() (*session.Session, error), ctx context.Context) *Controller {
+	open := map[string]*session.Session{}
+	if sess != nil {
+		open[sess.ID] = sess
+	}
 	return &Controller{
-		a:      a,
-		proj:   proj,
-		cfg:    cfg,
-		active: sess,
-		open:   map[string]*session.Session{sess.ID: sess},
-		ctx:    ctx,
+		a:          a,
+		proj:       proj,
+		cfg:        cfg,
+		active:     sess,
+		open:       open,
+		newSession: newSession,
+		ctx:        ctx,
 	}
 }
 
@@ -76,6 +90,19 @@ func (c *Controller) Run(line string) tea.Cmd {
 	c.runs.Add(1)
 	return func() tea.Msg {
 		defer c.runs.Done()
+		// 懒加载：首条用户消息触发会话创建（失败回 runDoneMsg 走 handleRunDone 报错）。
+		if err := c.ensureActive(); err != nil {
+			return runDoneMsg{err}
+		}
+		// 首消息自动命名（codex first_user_message 同款）：name 空时取首行预览，
+		// /switch 一眼认出会话。命名落盘（agentstate）。
+		if c.active.Name() == "" {
+			if name := firstLinePreview(line); name != "" {
+				if err := c.active.SetName(name); err != nil {
+					return runDoneMsg{err}
+				}
+			}
+		}
 		rc := c.active.RuntimeContext()
 		rc.Approver = c.approver() // W4 注入 TUIApprover；当前 nil = 自动拒绝
 		c.active.AddUser(line)
@@ -85,6 +112,79 @@ func (c *Controller) Run(line string) tea.Cmd {
 		err := c.a.Run(runCtx, rc, c.onEvent)
 		return runDoneMsg{err}
 	}
+}
+
+// ensureActive 确保有 active 会话（懒加载：新入口首次动作才创建；resume 已
+// 预加载则 no-op）。创建后登记 open 供 /switch 进程内复用。
+func (c *Controller) ensureActive() error {
+	if c.active != nil {
+		return nil
+	}
+	if c.newSession == nil {
+		return fmt.Errorf("无会话且未配置创建器")
+	}
+	s, err := c.newSession()
+	if err != nil {
+		return fmt.Errorf("创建会话: %w", err)
+	}
+	c.open[s.ID] = s
+	c.active = s
+	return nil
+}
+
+// ActiveID 返回当前会话 id（懒加载未创建时空）。
+func (c *Controller) ActiveID() string {
+	if c.active == nil {
+		return ""
+	}
+	return c.active.ID
+}
+
+// ActiveModel 返回当前会话模型（未创建时空）。
+func (c *Controller) ActiveModel() string {
+	if c.active == nil {
+		return ""
+	}
+	return c.active.Model()
+}
+
+// ActiveState 返回当前会话 AgentState（未创建时 nil；弹窗 current 读取用）。
+func (c *Controller) ActiveState() *agentstate.AgentState {
+	if c.active == nil {
+		return nil
+	}
+	return c.active.State()
+}
+
+// AddCommand 记录斜杠命令到当前会话。懒加载下无会话（active nil）则忽略——
+// 无 transcript 可写，语义正确（命令不产生空会话）。
+func (c *Controller) AddCommand(line string) {
+	if c.active == nil {
+		return
+	}
+	c.active.AddCommand(line)
+}
+
+// Name 返回当前会话名（未创建时空）。
+func (c *Controller) Name() string {
+	if c.active == nil {
+		return ""
+	}
+	return c.active.Name()
+}
+
+// firstLinePreview 取首条用户消息首行前 ~40 字符做会话默认名（codex
+// first_user_message 同款）。空行/空白返回空（不命名）。
+func firstLinePreview(line string) string {
+	line = strings.TrimSpace(strings.SplitN(line, "\n", 2)[0])
+	if line == "" {
+		return ""
+	}
+	runes := []rune(line)
+	if len(runes) > 40 {
+		return string(runes[:40]) + "..."
+	}
+	return line
 }
 
 // WaitRuns 等待所有在途 run goroutine 退出（RunTUI 在 CloseAll 前调用：

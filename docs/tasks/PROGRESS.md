@@ -12,6 +12,16 @@
 - **全仓 12 文件迁移**：agent（agent.go + 2 测试）、session（transcript/session + 测试）、ui/render、ui/tui（controller + events + model + 3 测试）、cmd/run。`agent.Event*` → `events.Event*`；`agent.OnEvent` → `events.OnEvent`（Run/sample/runToolBatch 签名）。仅 controller/run 仍保留 `agent` import（用 `*agent.Agent`/`agent.Build`），其余文件 agent import 全删。
 - **验证**：`go build/vet/test ./...` 全绿（含 e2e）；grep 确认 session 无 agent 依赖、agent 无 session 依赖（无环）；无残留 `agent.Event`。
 
+### Session name + 重命名 & 懒加载（2026-08-11）
+
+- **背景**（用户提出两个优化）：① 会话只有时间戳-hex ID，/switch 弹窗裸列 ID、sessions 列 `ID model= updated=`，无法区分；② `repl()` 在 RunTUI 前 eager `CreateInCWD`——用户 /exit 或进入后 /switch 到旧会话 → 残留空 session（resume 用 proj.Resume 加载从不创建，已确认）。
+- **决策**（用户逐点确认）：默认名 = 首条用户消息前 ~40 字（codex first_user_message 同款，空则短 ID 兜底）；状态命令（/model 等）无 active 时也触发创建；只防增量（存量空会话不清理）；`/rename <名称>` 带参命令（不做弹窗——改名是自由文本，现有弹窗全是选项列表，无文本输入弹窗组件）。
+- **name 落点 = AgentState**（可变小快照，`Set* + SaveFile` 模式现成；不放 transcript meta 行——追加式文件原地改名麻烦）：`agentstate` 加 `Name`；`Session.Name()/SetName()`；`SessionInfo` 加 `Name/Model/UpdatedAt`，`Sessions()` 遍历时一次 LoadFile 填充（~200B/文件、N 个微秒级，顺带消掉 sessionsCmd 二次读）。
+- **懒加载**：`repl()` 删 CreateInCWD 改传 factory；`RunTUI/NewController` 加 `newSession` 参数（sess 可 nil = 新入口 / 非 nil = resume）；`Controller.ensureActive()` 首条消息或状态命令时创建；`Controller.Run` 首消息自动命名（SetName 落盘）；nil-safe helpers（ActiveID/ActiveModel/ActiveState/AddCommand 无会话 no-op）；弹窗 current 读取改走 helpers（不因弹窗打开就创建，创建发生在 confirm）。
+- **TUI 展示**：header 右端展示优先级 name（截 24）→ 短 ID → 灰色"新会话"占位（懒加载未创建）；/switch 弹窗 label = name || 短 ID；`sessions` 命令显示 name 列。
+- **测试**：lazy_test.go 8 例（进入无会话/首消息创建/首消息命名落盘/rename 落盘/空名拒绝/状态命令触发/switchItems name/firstLinePreview 截断）+ session SetName/Sessions 填充。
+- **验证**：`go build/vet/test ./...` 全绿（含 e2e）；已 `go install ./cmd/harness`。
+
 ### C4 + B4：工具 schema 单一来源（jsonschema 生成）+ parseArgs 泛型 ✅
 
 - **背景**：7 个工具每份 schema 以手写 JSON 字符串声明在 `Spec()`，与 Handle 的 Go struct 双份靠 review 同步（改字段漏改 schema 不报错）；`anthropic_messages.go:114` 静默吞 schema 语法错（坏 schema 发空 properties 给模型）。

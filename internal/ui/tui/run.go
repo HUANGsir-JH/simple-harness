@@ -13,13 +13,17 @@ import (
 )
 
 // RunTUI starts the full-screen interactive client.
-func RunTUI(a *agent.Agent, project *session.Project, cfg config.Config, sess *session.Session, ctx context.Context, thinkingDisplay ...bool) error {
-	controller := NewController(a, project, cfg, sess, ctx)
+// sess 为已加载会话（resume）或 nil（新入口，懒加载）；newSession 是懒加载
+// 创建器（sess nil 时首动作触发，resume 传 nil 不触发）。
+func RunTUI(a *agent.Agent, project *session.Project, cfg config.Config, sess *session.Session, newSession func() (*session.Session, error), ctx context.Context, thinkingDisplay ...bool) error {
+	controller := NewController(a, project, cfg, sess, newSession, ctx)
 	model := New(controller)
 	if len(thinkingDisplay) > 0 {
 		model.showThinking = thinkingDisplay[0]
 	}
-	loadSessionHistory(&model, sess)
+	if sess != nil {
+		loadSessionHistory(&model, sess)
+	}
 	model.refresh(true)
 
 	program := tea.NewProgram(
