@@ -12,6 +12,7 @@ import (
 
 	"github.com/agent-project/harness/internal/agent"
 	"github.com/agent-project/harness/internal/app"
+	"github.com/agent-project/harness/internal/events"
 	"github.com/agent-project/harness/internal/middleware"
 	"github.com/agent-project/harness/internal/session"
 	"github.com/agent-project/harness/internal/ui"
@@ -98,7 +99,7 @@ func runCmd(args []string, jsonOut bool) error {
 	}
 	renderer.Start(sess.Conversation())
 
-	onEvent := func(ev agent.Event) {
+	onEvent := func(ev events.Event) {
 		renderer.Event(ev)
 		sess.OnAgentEvent(ev) // 块级实时落盘
 	}

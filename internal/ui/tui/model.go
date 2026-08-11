@@ -5,8 +5,8 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/agent-project/harness/internal/agent"
 	"github.com/agent-project/harness/internal/agentstate"
+	"github.com/agent-project/harness/internal/events"
 	"github.com/agent-project/harness/internal/messages"
 	"github.com/agent-project/harness/internal/middleware"
 	"github.com/atotto/clipboard"
@@ -518,37 +518,37 @@ func (m Model) startRun(line string) (tea.Model, tea.Cmd) {
 	return m, m.c.Run(line)
 }
 
-func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
+func (m Model) handleAgentEvent(ev events.Event) (tea.Model, tea.Cmd) {
 	switch ev.Type {
-	case agent.EventTurnStart:
+	case events.EventTurnStart:
 		m.running = true
 		m.turnDone = false
 		m.ensureStream(ev.MsgID)
 		return m, m.sp.Tick
-	case agent.EventThinkingDelta:
+	case events.EventThinkingDelta:
 		m.ensureStream(ev.MsgID)
 		m.stream.Thinking += ev.Text
-	case agent.EventTextDelta:
+	case events.EventTextDelta:
 		m.ensureStream(ev.MsgID)
 		m.stream.Text += ev.Text
-	case agent.EventThinkingDone:
+	case events.EventThinkingDone:
 		m.ensureStream(ev.MsgID)
 		m.stream.Thinking = ev.Text
-	case agent.EventTextDone:
+	case events.EventTextDone:
 		m.ensureStream(ev.MsgID)
 		if ev.Text != "" {
 			m.stream.Text = ev.Text
 		}
 		m.flushStream()
-	case agent.EventToolCall:
+	case events.EventToolCall:
 		m.flushStream()
 		m.onToolCall(ev.ToolCall)
-	case agent.EventToolResult:
+	case events.EventToolResult:
 		m.onToolResult(ev)
-	case agent.EventTurnDone:
+	case events.EventTurnDone:
 		m.flushStream()
 		m.turnDone = true
-	case agent.EventError:
+	case events.EventError:
 		m.eventError = true
 		if ev.Err != nil {
 			m.appendSystem("Error: "+ev.Err.Error(), true)
@@ -628,7 +628,7 @@ func (m *Model) onToolCall(tc *messages.ToolCall) {
 	m.items = append(m.items, timelineItem{kind: itemTool, tool: ts})
 }
 
-func (m *Model) onToolResult(ev agent.Event) {
+func (m *Model) onToolResult(ev events.Event) {
 	if ev.ToolCall == nil || ev.ToolResult == nil {
 		return
 	}

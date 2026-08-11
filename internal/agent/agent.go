@@ -1,7 +1,8 @@
 // Package agent 实现 harness 的 agent 循环。
 // 阶段二：纯 ReAct loop（采样 → 工具执行 → 回填 → 再次采样），不含任何工程
 // 能力（压缩/权限/记忆等作为 middleware 挂载，ADR-021）。回合级事件通过
-// OnEvent 回调发出，供渲染器与测试订阅（turn_done 为回合边界锚点）。
+// events.OnEvent 回调发出（类型定义下沉 internal/events，A2），供渲染器与
+// 测试订阅（turn_done 为回合边界锚点）。
 package agent
 
 import (
@@ -12,48 +13,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/agent-project/harness/internal/events"
 	"github.com/agent-project/harness/internal/messages"
 	"github.com/agent-project/harness/internal/middleware"
 	"github.com/agent-project/harness/internal/provider"
 	"github.com/agent-project/harness/internal/tools"
 )
-
-// EventType 是 agent 回合级事件类型（渲染器/测试订阅）。
-type EventType string
-
-const (
-	// EventTurnStart 标记一个回合（一次 agent.Run）的开始。
-	EventTurnStart EventType = "turn_start"
-	// EventThinkingDelta 是模型推理文本增量（thinking 展示）。
-	EventThinkingDelta EventType = "thinking_delta"
-	// EventThinkingDone 是一个 thinking 内容块完成（Text = 完整块文本；持久化用）。ADR-025。
-	EventThinkingDone EventType = "thinking_done"
-	// EventTextDelta 是助手回复文本增量。
-	EventTextDelta EventType = "text_delta"
-	// EventTextDone 是一个 text 内容块完成（Text = 完整块文本；持久化用）。ADR-025。
-	EventTextDone EventType = "text_done"
-	// EventToolCall 是模型发起的一个工具调用。
-	EventToolCall EventType = "tool_call"
-	// EventToolResult 是单个工具的执行结果。
-	EventToolResult EventType = "tool_result"
-	// EventTurnDone 标记一个回合的结束（★ 测试锚点）。
-	EventTurnDone EventType = "turn_done"
-	// EventError 是回合级错误。
-	EventError EventType = "error"
-)
-
-// Event 是单个回合级事件。
-type Event struct {
-	Type       EventType
-	MsgID      string // 事件所属消息 id（assistant 块事件；tool_result 为空）
-	Text       string
-	ToolCall   *messages.ToolCall
-	ToolResult *messages.ToolResult
-	Err        error
-}
-
-// OnEvent 是回合级事件回调（nil 允许，渲染器/测试订阅）。
-type OnEvent func(Event)
 
 // Agent 驱动一个 conversation 的完整 ReAct loop。仅持有不可变配置；
 // per-call 状态在 *middleware.RuntimeContext 与 conversation 中。
@@ -98,7 +63,7 @@ func (a *Agent) SetInstructions(s string) { a.instructions = s }
 // 无状态（ADR-026），不持有会话；每次调用传入独立 rc（切换会话/并行安全）。
 // 事件通过 onEvent 实时回调；conversation 被追加助手/工具结果消息（副作用）。
 // 错误二分类：工具错误 RespondToModel → 结果回填、循环继续；Fatal → 终止。
-func (a *Agent) Run(ctx context.Context, rc *middleware.RuntimeContext, onEvent OnEvent) error {
+func (a *Agent) Run(ctx context.Context, rc *middleware.RuntimeContext, onEvent events.OnEvent) error {
 	if rc == nil {
 		rc = middleware.NewRuntimeContext()
 	}
@@ -106,7 +71,7 @@ func (a *Agent) Run(ctx context.Context, rc *middleware.RuntimeContext, onEvent 
 		return fmt.Errorf("agent: rc.Messages is nil")
 	}
 	conversation := rc.Messages
-	emit := func(e Event) {
+	emit := func(e events.Event) {
 		if onEvent != nil {
 			onEvent(e)
 		}
@@ -115,7 +80,7 @@ func (a *Agent) Run(ctx context.Context, rc *middleware.RuntimeContext, onEvent 
 	// onAgent 包住整个回合：before 先于 turn_start（回合级准备，如加载
 	// AgentState）、after 后于 turn_done（回合级收尾）。空链时透传无开销。
 	wrapped := a.mw.WrapAgent(func(ctx context.Context, rc *middleware.RuntimeContext, _ middleware.AgentInput) error {
-		emit(Event{Type: EventTurnStart})
+		emit(events.Event{Type: events.EventTurnStart})
 
 		sysPrompt, err := a.mw.ComposeSystemPrompt(ctx, rc, a.instructions)
 		if err != nil {
@@ -135,7 +100,7 @@ func (a *Agent) Run(ctx context.Context, rc *middleware.RuntimeContext, onEvent 
 		for {
 			result = sampleResult{}
 			if err := reasoning(ctx, rc, middleware.ReasoningInput{Messages: conversation.Messages, Tools: a.tools.Specs()}); err != nil {
-				emit(Event{Type: EventError, Err: err})
+				emit(events.Event{Type: events.EventError, Err: err})
 				return err
 			}
 			conversation.Add(result.assistant)
@@ -143,11 +108,11 @@ func (a *Agent) Run(ctx context.Context, rc *middleware.RuntimeContext, onEvent 
 				break // 无工具调用 → 回合结束
 			}
 			if err := a.runToolBatch(ctx, rc, result.toolCalls, conversation, emit); err != nil {
-				emit(Event{Type: EventError, Err: err})
+				emit(events.Event{Type: events.EventError, Err: err})
 				return err
 			}
 		}
-		emit(Event{Type: EventTurnDone})
+		emit(events.Event{Type: events.EventTurnDone})
 		return nil
 	})
 	return wrapped(ctx, rc, middleware.AgentInput{Messages: conversation.Messages})
@@ -162,10 +127,10 @@ type sampleResult struct {
 // sample 执行一次采样：模型调用（onModelCall 包裹）→ 收集 thinking/text/tool_call。
 // rc 是 per-call 上下文：模型/thinking 档位覆盖读自 rc（ADR-026），并贯穿
 // 到 onModelCall 中间件（此前漏传 nil，中间件读 rc 会解引用错误）。
-func (a *Agent) sample(ctx context.Context, rc *middleware.RuntimeContext, in middleware.ReasoningInput, sysPrompt string, emit OnEvent) (*sampleResult, error) {
+func (a *Agent) sample(ctx context.Context, rc *middleware.RuntimeContext, in middleware.ReasoningInput, sysPrompt string, emit events.OnEvent) (*sampleResult, error) {
 	// 每个采样轮生成一个消息 id，块事件与 assistant 消息共用（transcript 关联）。
 	msgID := fmt.Sprintf("msg_%d", timeNowNanos())
-	// sb/tb 用"块完成"事件（EventTextDone/EventThinkingDone）组装，避免与
+	// sb/tb 用"块完成"事件（events.EventTextDone/events.EventThinkingDone）组装，避免与
 	// 流式 delta 重复；delta 事件照发供渲染器流式展示。ADR-025。
 	var sb strings.Builder
 	var tb strings.Builder
@@ -205,18 +170,18 @@ func (a *Agent) sample(ctx context.Context, rc *middleware.RuntimeContext, in mi
 			ev := es.Current()
 			switch ev.Type {
 			case provider.EventTextDelta:
-				emit(Event{Type: EventTextDelta, Text: ev.Text})
+				emit(events.Event{Type: events.EventTextDelta, Text: ev.Text})
 			case provider.EventTextDone:
 				sb.WriteString(ev.Text)
-				emit(Event{Type: EventTextDone, Text: ev.Text, MsgID: msgID})
+				emit(events.Event{Type: events.EventTextDone, Text: ev.Text, MsgID: msgID})
 			case provider.EventThinkingDelta:
-				emit(Event{Type: EventThinkingDelta, Text: ev.Text})
+				emit(events.Event{Type: events.EventThinkingDelta, Text: ev.Text})
 			case provider.EventThinkingDone:
 				tb.WriteString(ev.Text)
-				emit(Event{Type: EventThinkingDone, Text: ev.Text, MsgID: msgID})
+				emit(events.Event{Type: events.EventThinkingDone, Text: ev.Text, MsgID: msgID})
 			case provider.EventToolCall:
 				calls = append(calls, ev.ToolCall)
-				emit(Event{Type: EventToolCall, ToolCall: ev.ToolCall, MsgID: msgID})
+				emit(events.Event{Type: events.EventToolCall, ToolCall: ev.ToolCall, MsgID: msgID})
 			case provider.EventDone:
 				return nil
 			case provider.EventError:
@@ -247,12 +212,12 @@ func (a *Agent) sample(ctx context.Context, rc *middleware.RuntimeContext, in mi
 // runToolBatch 并发执行一批工具调用（onToolCall 包裹整批，onActing 包裹单个），
 // 结果按 call 顺序回填 conversation。首个 Fatal 错误取消整批并终止。
 //
-// 时序契约（C6，2026-08-10）：emit(EventToolResult) 在每个工具 Handle 返回后
+// 时序契约（C6，2026-08-10）：emit(events.EventToolResult) 在每个工具 Handle 返回后
 // 立即发生，早于外层 ToolOutputMiddleware 的 after 改写 conversation——
 // transcript 因此记全量、conversation 记截断（双轨审计，ADR-025）。若把 emit
 // 挪到工具批完成/截断之后，transcript 会记录截断内容、审计完整性静默丢失；
 // agent 测试 TestEmitBeforeTruncation 锁定该契约。
-func (a *Agent) runToolBatch(ctx context.Context, rc *middleware.RuntimeContext, calls []*messages.ToolCall, conversation *messages.Conversation, emit OnEvent) error {
+func (a *Agent) runToolBatch(ctx context.Context, rc *middleware.RuntimeContext, calls []*messages.ToolCall, conversation *messages.Conversation, emit events.OnEvent) error {
 	// 结果按 callID 收集（并发安全），回填时按 calls 顺序。
 	var resultsMu sync.Mutex
 	results := map[string]*messages.ToolResult{}
@@ -264,7 +229,7 @@ func (a *Agent) runToolBatch(ctx context.Context, rc *middleware.RuntimeContext,
 			resultsMu.Lock()
 			results[in.Call.ID] = res
 			resultsMu.Unlock()
-			emit(Event{Type: EventToolResult, ToolCall: in.Call, ToolResult: res})
+			emit(events.Event{Type: events.EventToolResult, ToolCall: in.Call, ToolResult: res})
 			return nil
 		}
 		r, err := tool.Handle(ctx, rc, in.Call.ID, in.Call.Args)
@@ -276,7 +241,7 @@ func (a *Agent) runToolBatch(ctx context.Context, rc *middleware.RuntimeContext,
 				resultsMu.Lock()
 				results[in.Call.ID] = res
 				resultsMu.Unlock()
-				emit(Event{Type: EventToolResult, ToolCall: in.Call, ToolResult: res})
+				emit(events.Event{Type: events.EventToolResult, ToolCall: in.Call, ToolResult: res})
 				return nil
 			}
 			return fmt.Errorf("工具 %s 执行失败: %w", in.Call.Name, err) // Fatal
@@ -284,7 +249,7 @@ func (a *Agent) runToolBatch(ctx context.Context, rc *middleware.RuntimeContext,
 		resultsMu.Lock()
 		results[in.Call.ID] = &r
 		resultsMu.Unlock()
-		emit(Event{Type: EventToolResult, ToolCall: in.Call, ToolResult: &r})
+		emit(events.Event{Type: events.EventToolResult, ToolCall: in.Call, ToolResult: &r})
 		return nil
 	})
 
@@ -310,7 +275,7 @@ func (a *Agent) runToolBatch(ctx context.Context, rc *middleware.RuntimeContext,
 						resultsMu.Lock()
 						results[c.ID] = res
 						resultsMu.Unlock()
-						emit(Event{Type: EventToolResult, ToolCall: c, ToolResult: res})
+						emit(events.Event{Type: events.EventToolResult, ToolCall: c, ToolResult: res})
 						return
 					}
 					mu.Lock()

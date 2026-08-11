@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/agent-project/harness/internal/agent"
+	"github.com/agent-project/harness/internal/events"
 	"github.com/agent-project/harness/internal/messages"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -128,7 +128,7 @@ func TestMouseTogglesToolBlock(t *testing.T) {
 	m = nm.(Model)
 	tc := &messages.ToolCall{ID: "mouse-tool", Name: "shell_command", Args: []byte(`{"command":"echo hi"}`)}
 	m.onToolCall(tc)
-	m.onToolResult(agent.Event{ToolCall: tc, ToolResult: &messages.ToolResult{Success: true, Content: "one\ntwo\nthree\nfour\nfive\nsix\nseven"}})
+	m.onToolResult(events.Event{ToolCall: tc, ToolResult: &messages.ToolResult{Success: true, Content: "one\ntwo\nthree\nfour\nfive\nsix\nseven"}})
 	m.refresh(true)
 	if len(m.hits) != 1 || !m.tools[0].Collapsed {
 		t.Fatalf("expected one collapsed tool hit, hits=%v", m.hits)
@@ -156,7 +156,7 @@ func TestTimelineEnterTogglesThinkingAndTool(t *testing.T) {
 	})
 	tc := &messages.ToolCall{ID: "timeline-tool", Name: "shell_command", Args: []byte(`{"command":"printf output"}`)}
 	m.onToolCall(tc)
-	m.onToolResult(agent.Event{ToolCall: tc, ToolResult: &messages.ToolResult{Success: true, Content: "output"}})
+	m.onToolResult(events.Event{ToolCall: tc, ToolResult: &messages.ToolResult{Success: true, Content: "output"}})
 	m.refresh(true)
 
 	// The latest hit is the tool. Tab focuses the timeline and Enter expands it.
@@ -187,7 +187,7 @@ func TestMouseTargetsExactInterleavedBlock(t *testing.T) {
 	m.appendMessage(first)
 	tc := &messages.ToolCall{ID: "between-thinking", Name: "shell_command", Args: []byte(`{"command":"printf output"}`)}
 	m.onToolCall(tc)
-	m.onToolResult(agent.Event{ToolCall: tc, ToolResult: &messages.ToolResult{Success: true, Content: "output"}})
+	m.onToolResult(events.Event{ToolCall: tc, ToolResult: &messages.ToolResult{Success: true, Content: "output"}})
 	m.appendMessage(second)
 	m.refresh(true)
 	m.viewport.GotoTop()
@@ -239,7 +239,7 @@ func TestHitRangesAlignWithRenderedLines(t *testing.T) {
 			Args: []byte(`{"command":"echo hi"}`),
 		}
 		m.onToolCall(tc)
-		m.onToolResult(agent.Event{ToolCall: tc, ToolResult: &messages.ToolResult{
+		m.onToolResult(events.Event{ToolCall: tc, ToolResult: &messages.ToolResult{
 			Success: true,
 			Content: "one\ntwo\nthree\nfour\nfive\nsix\nseven",
 		}})

@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/agent-project/harness/internal/agent"
 	"github.com/agent-project/harness/internal/agentstate"
+	"github.com/agent-project/harness/internal/events"
 	"github.com/agent-project/harness/internal/messages"
 	"github.com/agent-project/harness/internal/middleware"
 )
@@ -201,7 +201,7 @@ func (s *Session) WriteUser(msg *messages.Message) {
 }
 
 // OnAgentEvent 把 agent 回合级事件转发给 transcript writer（块级实时落盘）。
-func (s *Session) OnAgentEvent(ev agent.Event) {
+func (s *Session) OnAgentEvent(ev events.Event) {
 	s.writer.OnAgentEvent(ev)
 }
 

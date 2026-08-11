@@ -7,6 +7,7 @@ import (
 
 	"github.com/agent-project/harness/internal/agent"
 	"github.com/agent-project/harness/internal/config"
+	"github.com/agent-project/harness/internal/events"
 	"github.com/agent-project/harness/internal/middleware"
 	"github.com/agent-project/harness/internal/session"
 	tea "github.com/charmbracelet/bubbletea"
@@ -103,7 +104,7 @@ func (c *Controller) WaitRuns() {
 }
 
 // onEvent 双转发：program.Send（UI 渲染）+ transcript 落盘（块级，ADR-025）。
-func (c *Controller) onEvent(ev agent.Event) {
+func (c *Controller) onEvent(ev events.Event) {
 	if c.send != nil {
 		c.send(agentEventMsg{ev})
 	}

@@ -8,6 +8,7 @@ import (
 
 	"github.com/agent-project/harness/internal/agent"
 	"github.com/agent-project/harness/internal/config"
+	"github.com/agent-project/harness/internal/events"
 	"github.com/agent-project/harness/internal/messages"
 	"github.com/agent-project/harness/internal/provider"
 	"github.com/agent-project/harness/internal/session"
@@ -136,7 +137,7 @@ func TestTurnDoneDoesNotRaceNextRun(t *testing.T) {
 	m := New(nil)
 	m.running = true
 	m.queue = []string{"second"}
-	nm, cmd := m.Update(agentEventMsg{ev: agent.Event{Type: agent.EventTurnDone}})
+	nm, cmd := m.Update(agentEventMsg{ev: events.Event{Type: events.EventTurnDone}})
 	m = nm.(Model)
 	if cmd != nil || !m.running || len(m.queue) != 1 {
 		t.Fatalf("turn_done must not consume queue: running=%v queue=%v", m.running, m.queue)
@@ -176,17 +177,17 @@ func TestStreamDeltaAccumulate(t *testing.T) {
 	m := New(nil)
 	m.width = 80
 
-	feed := func(ev agent.Event) {
+	feed := func(ev events.Event) {
 		nm, _ := m.Update(agentEventMsg{ev: ev})
 		m = nm.(Model)
 	}
-	feed(agent.Event{Type: agent.EventTurnStart})
-	feed(agent.Event{Type: agent.EventTextDelta, Text: "foo"})
-	feed(agent.Event{Type: agent.EventTextDelta, Text: "bar"})
+	feed(events.Event{Type: events.EventTurnStart})
+	feed(events.Event{Type: events.EventTextDelta, Text: "foo"})
+	feed(events.Event{Type: events.EventTextDelta, Text: "bar"})
 	if m.stream == nil || m.stream.Text != "foobar" {
 		t.Fatalf("stream.Text = %+v, want foobar", m.stream)
 	}
-	feed(agent.Event{Type: agent.EventTextDone, Text: "foobar"})
+	feed(events.Event{Type: events.EventTextDone, Text: "foobar"})
 	if m.stream != nil {
 		t.Fatalf("块完成后 stream 应清空")
 	}
@@ -200,14 +201,14 @@ func TestThinkingFlush(t *testing.T) {
 	m := New(nil)
 	m.width = 80
 
-	feed := func(ev agent.Event) {
+	feed := func(ev events.Event) {
 		nm, _ := m.Update(agentEventMsg{ev: ev})
 		m = nm.(Model)
 	}
-	feed(agent.Event{Type: agent.EventThinkingDelta, Text: "想想"})
-	feed(agent.Event{Type: agent.EventThinkingDone, Text: "想想"})
-	feed(agent.Event{Type: agent.EventTextDelta, Text: "答案"})
-	feed(agent.Event{Type: agent.EventTextDone, Text: "答案"})
+	feed(events.Event{Type: events.EventThinkingDelta, Text: "想想"})
+	feed(events.Event{Type: events.EventThinkingDone, Text: "想想"})
+	feed(events.Event{Type: events.EventTextDelta, Text: "答案"})
+	feed(events.Event{Type: events.EventTextDone, Text: "答案"})
 
 	if len(m.msgs) != 1 || m.msgs[0].Thinking != "想想" {
 		t.Fatalf("msgs[0] = %+v, want Thinking=想想", m.msgs)

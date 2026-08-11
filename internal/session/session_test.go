@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/agent-project/harness/internal/agent"
 	"github.com/agent-project/harness/internal/agentstate"
+	"github.com/agent-project/harness/internal/events"
 	"github.com/agent-project/harness/internal/messages"
 )
 
@@ -35,12 +35,12 @@ func TestSessionCreateResume(t *testing.T) {
 
 	// 写 user + agent 块事件。
 	sess.AddUser("hello")
-	sess.OnAgentEvent(agent.Event{Type: agent.EventTurnStart})
-	sess.OnAgentEvent(agent.Event{Type: agent.EventThinkingDone, MsgID: "m2", Text: "think"})
-	sess.OnAgentEvent(agent.Event{Type: agent.EventTextDone, MsgID: "m2", Text: "ans"})
-	sess.OnAgentEvent(agent.Event{Type: agent.EventToolCall, MsgID: "m2", ToolCall: &messages.ToolCall{ID: "c1", Name: "read_file", Args: json.RawMessage(`{}`)}})
-	sess.OnAgentEvent(agent.Event{Type: agent.EventToolResult, ToolCall: &messages.ToolCall{ID: "c1"}, ToolResult: &messages.ToolResult{Success: true, Content: "x"}})
-	sess.OnAgentEvent(agent.Event{Type: agent.EventTurnDone})
+	sess.OnAgentEvent(events.Event{Type: events.EventTurnStart})
+	sess.OnAgentEvent(events.Event{Type: events.EventThinkingDone, MsgID: "m2", Text: "think"})
+	sess.OnAgentEvent(events.Event{Type: events.EventTextDone, MsgID: "m2", Text: "ans"})
+	sess.OnAgentEvent(events.Event{Type: events.EventToolCall, MsgID: "m2", ToolCall: &messages.ToolCall{ID: "c1", Name: "read_file", Args: json.RawMessage(`{}`)}})
+	sess.OnAgentEvent(events.Event{Type: events.EventToolResult, ToolCall: &messages.ToolCall{ID: "c1"}, ToolResult: &messages.ToolResult{Success: true, Content: "x"}})
+	sess.OnAgentEvent(events.Event{Type: events.EventTurnDone})
 	if err := sess.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}

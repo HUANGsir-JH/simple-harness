@@ -9,7 +9,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/agent-project/harness/internal/agent"
+	"github.com/agent-project/harness/internal/events"
 )
 
 // segMarker 是切分指令行（内部哨兵）：writer 收到后关闭当前文件、开新文件。
@@ -145,22 +145,22 @@ func (w *TranscriptWriter) Write(line Line) {
 
 // OnAgentEvent 把 agent 回合级事件转为 transcript 行（delta/error 不落盘）。
 // 须在事件回调所在 goroutine 调用（单线程串行）。
-func (w *TranscriptWriter) OnAgentEvent(ev agent.Event) {
+func (w *TranscriptWriter) OnAgentEvent(ev events.Event) {
 	var line Line
 	switch ev.Type {
-	case agent.EventTurnStart:
+	case events.EventTurnStart:
 		w.turn++
 		line = Line{Type: LineTypeTurnStart, Turn: w.turn}
-	case agent.EventThinkingDone:
+	case events.EventThinkingDone:
 		line = Line{Type: LineTypeThinking, MsgID: ev.MsgID, Text: ev.Text, Turn: w.turn}
-	case agent.EventTextDone:
+	case events.EventTextDone:
 		line = Line{Type: LineTypeText, MsgID: ev.MsgID, Text: ev.Text, Turn: w.turn}
-	case agent.EventToolCall:
+	case events.EventToolCall:
 		line = Line{Type: LineTypeToolUse, MsgID: ev.MsgID, CallID: ev.ToolCall.ID, Name: ev.ToolCall.Name, Args: ev.ToolCall.Args, Turn: w.turn}
-	case agent.EventToolResult:
+	case events.EventToolResult:
 		succ := ev.ToolResult.Success
 		line = Line{Type: LineTypeToolResult, CallID: ev.ToolCall.ID, Success: &succ, Content: ev.ToolResult.Content, Turn: w.turn}
-	case agent.EventTurnDone:
+	case events.EventTurnDone:
 		line = Line{Type: LineTypeTurnEnd, Turn: w.turn}
 	default:
 		return // thinking_delta/text_delta（流式）/error 不落盘

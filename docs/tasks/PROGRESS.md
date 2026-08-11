@@ -4,6 +4,14 @@
 
 ## 2026-08-11
 
+### A2：session→agent 依赖倒置（agent.Event 下沉 internal/events）✅
+
+- **问题**：`session/transcript.go`、`session/session.go` import `internal/agent` 只为了拿 `agent.Event` 落盘——存储层反向依赖编排层（agent 的传递闭包含 provider/tools/middleware）。非运行 bug、无环，是分层倒置：transcript 无法持久化非 agent 来源事件；agent 新增事件类型时 session 的 switch 靠 default 静默丢弃（C2 同款风险的类型层版本）。
+- **决策**（用户逐点确认）：新建 `internal/events` 包（事件是回合生命周期概念，非消息数据，不进 messages）；全仓迁移 `events.*`（不保留 agent 别名）。
+- **`internal/events` 新建**：`EventType/Event`（含 `*messages.ToolCall/ToolResult`）+ 9 常量 + `OnEvent`，从 agent.go 整体搬移。
+- **全仓 12 文件迁移**：agent（agent.go + 2 测试）、session（transcript/session + 测试）、ui/render、ui/tui（controller + events + model + 3 测试）、cmd/run。`agent.Event*` → `events.Event*`；`agent.OnEvent` → `events.OnEvent`（Run/sample/runToolBatch 签名）。仅 controller/run 仍保留 `agent` import（用 `*agent.Agent`/`agent.Build`），其余文件 agent import 全删。
+- **验证**：`go build/vet/test ./...` 全绿（含 e2e）；grep 确认 session 无 agent 依赖、agent 无 session 依赖（无环）；无残留 `agent.Event`。
+
 ### C4 + B4：工具 schema 单一来源（jsonschema 生成）+ parseArgs 泛型 ✅
 
 - **背景**：7 个工具每份 schema 以手写 JSON 字符串声明在 `Spec()`，与 Handle 的 Go struct 双份靠 review 同步（改字段漏改 schema 不报错）；`anthropic_messages.go:114` 静默吞 schema 语法错（坏 schema 发空 properties 给模型）。

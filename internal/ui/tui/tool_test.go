@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/agent-project/harness/internal/agent"
+	"github.com/agent-project/harness/internal/events"
 	"github.com/agent-project/harness/internal/messages"
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -15,14 +15,14 @@ func TestToolStateMachine(t *testing.T) {
 	m := New(nil)
 	tc := &messages.ToolCall{ID: "c1", Name: "shell_command", Args: []byte(`{"command":"ls"}`)}
 
-	nm, _ := m.Update(agentEventMsg{ev: agent.Event{Type: agent.EventToolCall, ToolCall: tc}})
+	nm, _ := m.Update(agentEventMsg{ev: events.Event{Type: events.EventToolCall, ToolCall: tc}})
 	m = nm.(Model)
 	if len(m.tools) != 1 || m.tools[0].Done || m.tools[0].Summary != "shell_command: ls" {
 		t.Fatalf("tool_call 后 tools = %+v", m.tools)
 	}
 
 	res := &messages.ToolResult{Success: true, Content: "ok\n"}
-	nm, _ = m.Update(agentEventMsg{ev: agent.Event{Type: agent.EventToolResult, ToolCall: tc, ToolResult: res}})
+	nm, _ = m.Update(agentEventMsg{ev: events.Event{Type: events.EventToolResult, ToolCall: tc, ToolResult: res}})
 	m = nm.(Model)
 	if !m.tools[0].Done || m.tools[0].Failed {
 		t.Fatalf("tool_result 后 tools[0] = %+v", m.tools[0])
@@ -36,7 +36,7 @@ func TestReadFileToolCanExpand(t *testing.T) {
 	m := New(nil)
 	tc := &messages.ToolCall{ID: "read-expand", Name: "read_file", Args: []byte(`{"path":"README.md"}`)}
 	m.onToolCall(tc)
-	m.onToolResult(agent.Event{ToolCall: tc, ToolResult: &messages.ToolResult{Success: true, Content: "first\nsecond\nthird"}})
+	m.onToolResult(events.Event{ToolCall: tc, ToolResult: &messages.ToolResult{Success: true, Content: "first\nsecond\nthird"}})
 	if !m.tools[0].Expandable() {
 		t.Fatal("read_file should retain full output for expansion")
 	}

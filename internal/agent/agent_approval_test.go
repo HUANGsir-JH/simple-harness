@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/agent-project/harness/internal/agentstate"
+	"github.com/agent-project/harness/internal/events"
 	"github.com/agent-project/harness/internal/messages"
 	"github.com/agent-project/harness/internal/middleware"
 	"github.com/agent-project/harness/internal/middleware/impl"
@@ -69,7 +70,7 @@ func TestRunApprovalDenied(t *testing.T) {
 	if !strings.Contains(tr.ToolResults[0].Content, "用户拒绝") {
 		t.Errorf("拒绝理由: %q", tr.ToolResults[0].Content)
 	}
-	if !rec.has(EventTurnDone) {
+	if !rec.has(events.EventTurnDone) {
 		t.Error("拒绝后回合应继续到 turn_done")
 	}
 }
@@ -103,7 +104,7 @@ func TestRunApprovalAllow(t *testing.T) {
 	if !executed {
 		t.Error("允许后工具应执行")
 	}
-	if !rec.has(EventTurnDone) {
+	if !rec.has(events.EventTurnDone) {
 		t.Error("应到 turn_done")
 	}
 }
@@ -145,7 +146,7 @@ func TestRunApprovalNoApprover(t *testing.T) {
 	if !strings.Contains(tr.ToolResults[0].Content, "无法询问用户") {
 		t.Errorf("自动拒绝理由: %q", tr.ToolResults[0].Content)
 	}
-	if !rec.has(EventTurnDone) {
+	if !rec.has(events.EventTurnDone) {
 		t.Error("自动拒绝后回合应继续到 turn_done")
 	}
 }

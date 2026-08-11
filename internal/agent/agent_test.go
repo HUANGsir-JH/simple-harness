@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/agent-project/harness/internal/config"
+	"github.com/agent-project/harness/internal/events"
 	"github.com/agent-project/harness/internal/messages"
 	"github.com/agent-project/harness/internal/middleware"
 	"github.com/agent-project/harness/internal/middleware/impl"
@@ -56,25 +57,25 @@ func toolCallStream(name, args string) provider.EventStream {
 }
 
 // eventRecorder 记录回合事件序列。runToolBatch 并行工具 goroutine 同时 emit
-// EventToolResult（ADR-024），on 须加锁（写-写 race）。
+// events.EventToolResult（ADR-024），on 须加锁（写-写 race）。
 type eventRecorder struct {
 	mu     sync.Mutex
-	events []Event
+	events []events.Event
 }
 
-func (r *eventRecorder) on(e Event) {
+func (r *eventRecorder) on(e events.Event) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.events = append(r.events, e)
 }
-func (r *eventRecorder) types() []EventType {
-	out := make([]EventType, 0, len(r.events))
+func (r *eventRecorder) types() []events.EventType {
+	out := make([]events.EventType, 0, len(r.events))
 	for _, e := range r.events {
 		out = append(out, e.Type)
 	}
 	return out
 }
-func (r *eventRecorder) has(et EventType) bool {
+func (r *eventRecorder) has(et events.EventType) bool {
 	for _, e := range r.events {
 		if e.Type == et {
 			return true
@@ -116,7 +117,7 @@ func TestRunSingleTurn(t *testing.T) {
 	if err := a.Run(context.Background(), rcFor(conv), rec.on); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if rec.events[0].Type != EventTurnStart || rec.events[len(rec.events)-1].Type != EventTurnDone {
+	if rec.events[0].Type != events.EventTurnStart || rec.events[len(rec.events)-1].Type != events.EventTurnDone {
 		t.Errorf("边界事件: got %v", rec.types())
 	}
 	if len(conv.Messages) != 2 || conv.Messages[1].Role != messages.RoleAssistant {
@@ -152,7 +153,7 @@ func TestRunToolLoop(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 	// 事件含工具与回合边界。
-	if !rec.has(EventToolCall) || !rec.has(EventToolResult) || !rec.has(EventTurnDone) {
+	if !rec.has(events.EventToolCall) || !rec.has(events.EventToolResult) || !rec.has(events.EventTurnDone) {
 		t.Errorf("事件缺失: %v", rec.types())
 	}
 	// conversation：user, assistant(tool_calls), tool_result, assistant(text)
@@ -249,7 +250,7 @@ func TestRunToolRespondToModel(t *testing.T) {
 	if !strings.Contains(tr.ToolResults[0].Content, "recoverable") {
 		t.Errorf("tool result content: %q", tr.ToolResults[0].Content)
 	}
-	if !rec.has(EventTurnDone) {
+	if !rec.has(events.EventTurnDone) {
 		t.Error("RespondToModel 错误后回合应继续到 turn_done")
 	}
 }
@@ -271,7 +272,7 @@ func TestRunToolFatal(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "fatal") {
 		t.Fatalf("期望 Fatal 错误终止，got %v", err)
 	}
-	if rec.has(EventTurnDone) {
+	if rec.has(events.EventTurnDone) {
 		t.Error("Fatal 后不应有 turn_done")
 	}
 }
@@ -297,13 +298,13 @@ func TestRunThinkingDelta(t *testing.T) {
 	// 块完成事件透传（持久化订阅用）。
 	gotThinkingDone, gotTextDone := false, false
 	for _, e := range rec.events {
-		if e.Type == EventThinkingDelta && e.Text == "Let me think" {
+		if e.Type == events.EventThinkingDelta && e.Text == "Let me think" {
 			gotThinkingDone = true
 		}
-		if e.Type == EventThinkingDone && e.Text == "Let me think" {
+		if e.Type == events.EventThinkingDone && e.Text == "Let me think" {
 			gotThinkingDone = true
 		}
-		if e.Type == EventTextDone && e.Text == "answer" {
+		if e.Type == events.EventTextDone && e.Text == "answer" {
 			gotTextDone = true
 		}
 	}
@@ -407,7 +408,7 @@ func TestRunOnAgentWrapsTurn(t *testing.T) {
 	var seq []string
 	a.SetMiddleware(middleware.NewChain(&agentSpy{seq: &seq}))
 
-	if err := a.Run(context.Background(), rcFor(newConversation()), func(e Event) { seq = append(seq, string(e.Type)) }); err != nil {
+	if err := a.Run(context.Background(), rcFor(newConversation()), func(e events.Event) { seq = append(seq, string(e.Type)) }); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	bi, ti := indexOf(seq, "onAgent:before"), indexOf(seq, "turn_start")
@@ -431,8 +432,8 @@ func TestRunStreamError(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "boom") {
 		t.Errorf("期望 boom 错误，got %v", err)
 	}
-	if !rec.has(EventError) {
-		t.Error("应发出 EventError")
+	if !rec.has(events.EventError) {
+		t.Error("应发出 events.EventError")
 	}
 }
 
@@ -543,13 +544,13 @@ func TestEmitBeforeTruncation(t *testing.T) {
 	// ① emit 的事件是完整结果（transcript 侧全量，未截断）。
 	var emitted *messages.ToolResult
 	for _, e := range rec.events {
-		if e.Type == EventToolResult && e.ToolResult != nil {
+		if e.Type == events.EventToolResult && e.ToolResult != nil {
 			emitted = e.ToolResult
 			break
 		}
 	}
 	if emitted == nil {
-		t.Fatal("无 EventToolResult")
+		t.Fatal("无 events.EventToolResult")
 	}
 	if emitted.Content != long {
 		t.Errorf("emit 应为完整结果，got 前 80 字节: %s", head80(emitted.Content))

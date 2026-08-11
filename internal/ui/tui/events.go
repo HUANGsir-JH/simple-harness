@@ -1,14 +1,14 @@
 package tui
 
 import (
-	"github.com/agent-project/harness/internal/agent"
+	"github.com/agent-project/harness/internal/events"
 	"github.com/agent-project/harness/internal/middleware"
 )
 
 // 内部消息类型（bubbletea Msg；跨 goroutine 经 program.Send 传入 Update）。
 type (
 	// agentEventMsg 是 agent 回合级事件桥（onEvent → program.Send，ADR-030）。
-	agentEventMsg struct{ ev agent.Event }
+	agentEventMsg struct{ ev events.Event }
 
 	// runDoneMsg 标记一个回合结束（含错误）。
 	runDoneMsg struct{ err error }
