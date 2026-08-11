@@ -42,7 +42,8 @@ func TestParseApprovalDecision(t *testing.T) {
 // TestChannelApproverRoundTrip 验证请求→主循环答复→决策回传的完整协调。
 func TestChannelApproverRoundTrip(t *testing.T) {
 	reqCh := make(chan *ApprovalPrompt, 1)
-	appr := NewChannelApprover(reqCh)
+	askCh := make(chan *AskPrompt, 1)
+	appr := NewChannelApprover(reqCh, askCh)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
@@ -85,7 +86,8 @@ func TestChannelApproverRoundTrip(t *testing.T) {
 // TestChannelApproverCtxCancel 验证 ctx canceled（Esc 中断）时返回 Deny + err。
 func TestChannelApproverCtxCancel(t *testing.T) {
 	reqCh := make(chan *ApprovalPrompt, 1)
-	appr := NewChannelApprover(reqCh)
+	askCh := make(chan *AskPrompt, 1)
+	appr := NewChannelApprover(reqCh, askCh)
 	ctx, cancel := context.WithCancel(context.Background())
 
 	resCh := make(chan struct{})
@@ -100,4 +102,91 @@ func TestChannelApproverCtxCancel(t *testing.T) {
 	<-reqCh  // 请求到达主循环
 	cancel() // 用户 Esc 中断
 	<-resCh
+}
+
+// TestParseAskAnswer 验证提问输入解析（编号选选项 / 自定义文本 / 非法）。
+func TestParseAskAnswer(t *testing.T) {
+	req := middleware.AskRequest{
+		Question:    "选哪个？",
+		Options:     []middleware.AskOption{{Label: "A"}, {Label: "B"}},
+		AllowCustom: true,
+	}
+	cases := []struct {
+		in   string
+		want middleware.AskResult
+		ok   bool
+	}{
+		{"1", middleware.AskResult{Selection: []string{"A"}}, true},
+		{"2", middleware.AskResult{Selection: []string{"B"}}, true},
+		{"自定义答案", middleware.AskResult{Custom: "自定义答案"}, true},
+		{"", middleware.AskResult{}, false},
+		{"3", middleware.AskResult{Custom: "3"}, true}, // 越界编号 → AllowCustom 时视为自定义文本
+	}
+	for _, c := range cases {
+		got, ok := ParseAskAnswer(c.in, req)
+		if ok != c.ok {
+			t.Errorf("parse(%q) ok=%v, want %v", c.in, ok, c.ok)
+			continue
+		}
+		if ok && (got.Custom != c.want.Custom || !slicesEqual(got.Selection, c.want.Selection)) {
+			t.Errorf("parse(%q) = %+v, want %+v", c.in, got, c.want)
+		}
+	}
+	// AllowCustom=false 时自定义文本非法。
+	if _, ok := ParseAskAnswer("x", middleware.AskRequest{Options: []middleware.AskOption{{Label: "A"}}}); ok {
+		t.Error("AllowCustom=false 时应拒绝自定义文本")
+	}
+}
+
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// TestChannelApproverAskRoundTrip 验证 Ask 请求→回答回传的协调。
+func TestChannelApproverAskRoundTrip(t *testing.T) {
+	reqCh := make(chan *ApprovalPrompt, 1)
+	askCh := make(chan *AskPrompt, 1)
+	appr := NewChannelApprover(reqCh, askCh)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	resCh := make(chan middleware.AskResult, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		r, err := appr.Ask(ctx, middleware.AskRequest{Question: "Q?", Options: []middleware.AskOption{{Label: "A"}}})
+		if err != nil {
+			errCh <- err
+			return
+		}
+		resCh <- r
+	}()
+
+	var ar *AskPrompt
+	select {
+	case ar = <-askCh:
+	case <-ctx.Done():
+		t.Fatal("Ask 请求未到达主循环")
+	}
+	if ar.Req.Question != "Q?" {
+		t.Errorf("问题: %+v", ar.Req)
+	}
+	ar.Resp <- middleware.AskResult{Selection: []string{"A"}}
+	select {
+	case r := <-resCh:
+		if len(r.Selection) != 1 || r.Selection[0] != "A" {
+			t.Errorf("回答: %+v", r)
+		}
+	case err := <-errCh:
+		t.Fatalf("Ask 错误: %v", err)
+	case <-ctx.Done():
+		t.Fatal("回答未回传")
+	}
 }

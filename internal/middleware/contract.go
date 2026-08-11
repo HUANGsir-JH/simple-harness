@@ -13,8 +13,60 @@ import "context"
 // Approver 是审批交互接口。CLI 注入实现（channel 协调 / 直接读行）；
 // ApprovalMiddleware 在 onActing 询问时从 rc.Approver 读取。nil = 自动拒绝
 // （非 TTY 场景）。
+//
+// ADR-036 起增 Ask 方法：Approver 同时承担"审批"（Request，y/s/n 枚举决策）与
+// "提问"（Ask，选项 + Other 自由文本）两个 HITL 通道。不新开接口/rc 字段——
+// 复用同一注入点（rc.Approver）与 TUI send 桥。ask_user/plan_enter/plan_done
+// 工具经 Ask 向用户提问。
 type Approver interface {
+	// Request 审批一次工具调用，返回 y/s/n 决策。
 	Request(ctx context.Context, req ApprovalRequest) (Decision, error)
+	// Ask 向用户提一个问题，返回选项选择 + 自定义文本（ADR-036）。
+	// Options 非空 = 选项选择；AllowCustom 允许用户在选项外输自定义文本；
+	// Multiple 允许多选。AskResult.Selection 是选中项 label 列表，Custom 是
+	// 用户自定义输入（非空表示选了 Other）。ctx canceled → 返回 error（调用
+	// 方按 Fatal 处理）。
+	Ask(ctx context.Context, req AskRequest) (AskResult, error)
+}
+
+// AskRequest 描述一次向用户的提问（参照 codex request_user_input / opencode
+// question，ADR-036）。
+type AskRequest struct {
+	// Question 是完整问题文本（展示给用户）。
+	Question string
+	// Header 是弹窗短标题（≤30 字符）。
+	Header string
+	// Options 是选项列表（label + description）。空 = 纯自由文本提问。
+	Options []AskOption
+	// Multiple 允许多选（默认单选；opencode multiple 对位）。
+	Multiple bool
+	// AllowCustom 允许用户在选项外输入自定义文本（默认 true；opencode
+	// custom 默认 true 对位）。
+	AllowCustom bool
+}
+
+// AskOption 是 Ask 的一个选项（opencode Option{label, description} 对位）。
+type AskOption struct {
+	Label       string
+	Description string
+}
+
+// AskResult 是用户对 Ask 的回答。
+type AskResult struct {
+	// Selection 是选中的选项 label（Multiple 时可多个）。
+	Selection []string
+	// Custom 是用户自定义输入文本（非空表示用户选了 Other 并输入）。
+	Custom string
+}
+
+// HasSelection 判断选中了给定 label（大小写敏感）。
+func (r AskResult) HasSelection(label string) bool {
+	for _, s := range r.Selection {
+		if s == label {
+			return true
+		}
+	}
+	return false
 }
 
 // ApprovalRequest 描述一次待审批的工具调用（展示给用户）。

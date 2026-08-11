@@ -55,6 +55,48 @@ func sse(eventType, data string) string {
 	return "event: " + eventType + "\ndata: " + data + "\n\n"
 }
 
+// writeToolUse 追加一个 tool_use 内容块到 SSE 输出（content_block_start/stop）。
+func writeToolUse(sb *strings.Builder, id, name, input string) {
+	sb.WriteString(sse("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"`+id+`","name":"`+name+`","input":`+input+`}}`))
+	sb.WriteString(sse("content_block_stop", `{"type":"content_block_stop","index":0}`))
+}
+
+// writeText 追加一个文本内容块到 SSE 输出（start/delta/stop）。
+func writeText(sb *strings.Builder, text string) {
+	sb.WriteString(sse("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`))
+	sb.WriteString(sse("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"`+text+`"}}`))
+	sb.WriteString(sse("content_block_stop", `{"type":"content_block_stop","index":0}`))
+}
+
+// mockLLMPlanServer 模拟 plan 模式闭环（ADR-036）的确定性请求序列：
+// 1. write_file（plan 模式下被拒）→ 2. write_plan（写计划）→
+// 3. plan_done（弹 HITL，用户批准）→ 4. write_file（退出后放行）→ 5. 文本回复。
+func mockLLMPlanServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	var reqCount atomic.Int32
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		var sb strings.Builder
+		sb.WriteString(sse("message_start", msgStart))
+		switch reqCount.Add(1) {
+		case 1:
+			writeToolUse(&sb, "call_1", "write_file", `{"path":"a.txt","content":"x"}`)
+		case 2:
+			writeToolUse(&sb, "call_2", "write_plan", `{"content":"## 实施计划\n1. 改 a.txt"}`)
+		case 3:
+			writeToolUse(&sb, "call_3", "plan_done", `{}`)
+		case 4:
+			writeToolUse(&sb, "call_4", "write_file", `{"path":"a.txt","content":"y"}`)
+		default:
+			writeText(&sb, "计划已批准，执行完成。")
+		}
+		sb.WriteString(sse("message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":5}}`))
+		sb.WriteString(sse("message_stop", `{"type":"message_stop"}`))
+		_, _ = w.Write([]byte(sb.String()))
+	}))
+}
+
 const msgStart = `{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"m","content":[],"stop_reason":null,"usage":{"input_tokens":10,"output_tokens":1}}}`
 
 // mockLLMServer 起一个确定性 mock：第 1 次请求返回 list_dir 工具调用，
@@ -204,6 +246,64 @@ func TestTUIApprovalE2E(t *testing.T) {
 	// readonly 下用户允许后工具确实执行（文件写入工作目录）。
 	if _, err := os.Stat(filepath.Join(workDir, "out.txt")); err != nil {
 		t.Errorf("write_file 未执行: %v", err)
+	}
+	sendKeys(cp, "/exit")
+	if _, err := cp.ExpectExitCode(0); err != nil {
+		t.Fatalf("expect exit 0: %v", err)
+	}
+}
+
+// TestTUIPlanModeE2E 验证 plan 模式闭环（ADR-036）：/plan on → write_file 被拒 →
+// write_plan 写计划 → plan_done 弹 ask 弹窗批准 → 退出 plan 模式 → write_file 放行
+// → 文本回复。
+func TestTUIPlanModeE2E(t *testing.T) {
+	srv := mockLLMPlanServer(t)
+	defer srv.Close()
+	workDir := t.TempDir()
+	writeConfigTo(t, srv.URL, filepath.Join(workDir, "config.local.yaml"))
+
+	cp, err := termtest.NewTest(t, termtest.Options{
+		CmdName:        harnessExe,
+		WorkDirectory:  workDir,
+		DefaultTimeout: 60 * time.Second,
+		Environment:    []string{"HARNESS_HOME=" + filepath.Join(t.TempDir(), ".harness-e2e")},
+	})
+	if err != nil {
+		t.Fatalf("newtest: %v", err)
+	}
+	defer cp.Close()
+
+	if _, err := cp.Expect("Ask anything"); err != nil {
+		t.Fatalf("expect TUI 输入区: %v", err)
+	}
+	// 进入 plan 模式。
+	sendKeys(cp, "/plan on")
+	if _, err := cp.Expect("Plan 模式已开启"); err != nil {
+		t.Fatalf("expect /plan on 反馈: %v", err)
+	}
+	// 触发回合。plan 模式下：write_file 被拒（非 Fatal，循环继续）→ write_plan
+	// 写计划 → plan_done 弹 HITL。中间工具块可能被弹窗覆盖（termtest 读不到），
+	// 直接期待 ask 弹窗——它出现即证明 plan 模式激活 + 只读阶段完成 + plan_done
+	// 走到 HITL（若 plan 模式未激活，write_file 会放行执行、plan_done 会被拒，
+	// 弹窗不会出现）。
+	sendKeys(cp, "规划一个功能")
+	if _, err := cp.Expect("PLAN APPROVAL"); err != nil {
+		t.Fatalf("expect plan_done ask 弹窗: %v", err)
+	}
+	sendKeys(cp, "") // 仅 CR = Enter，确认光标处"批准执行"
+	if _, err := cp.Expect("已批准"); err != nil {
+		t.Fatalf("expect plan_done 批准: %v", err)
+	}
+	// 退出 plan 模式后 write_file 放行执行（工具块摘要 "created <path>"）。
+	if _, err := cp.Expect("created a.txt"); err != nil {
+		t.Fatalf("expect write_file 执行: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(workDir, "a.txt")); err != nil {
+		t.Errorf("write_file 未执行（退出 plan 模式后应放行）: %v", err)
+	}
+	// 文本回复收尾。
+	if _, err := cp.Expect("执行完成"); err != nil {
+		t.Fatalf("expect 文本回复: %v", err)
 	}
 	sendKeys(cp, "/exit")
 	if _, err := cp.ExpectExitCode(0); err != nil {

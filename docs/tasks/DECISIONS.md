@@ -318,3 +318,43 @@
   4. **EvictContent/MaxOutputChars 下沉 tools 包**：断 tools→impl 反向依赖环（Bug03 需 impl→tools 报错暴露）。
 - **理由**："workspace 划定默认范围，审批负责范围之外交给人判断"（审查报告结论）——硬边界要么全允许要么全拒绝，用户无法参与；软边界让越界读/写进审批，合法越界（读外部配置、写 /tmp 输出）可批准，记忆粒度对齐 opencode multi-pattern。
 - **影响 ADR**：ADR-025——`AgentState.Permission.Approved` 的 key 语义从"工具名/命令前缀"扩展为"`<工具>:<绝对路径>` 多 key"；ADR-029——`Decide` 签名加 ws 参数、`ApprovalKey` 拆多 key `approvalKeys`；ADR-028——`EvictContent` 从 impl 移到 tools。
+
+## ADR-036：Plan Mode——模式切换 + plan 文件 + plan_done 交接（2026-08-11）
+
+- **背景**：用户要求加入 plan mode 规划模式（先规划、批准后再执行）。调研三个参照源：
+  - **codex**（`ModeKind::Plan` 协作模式）：会话内模式切换；独立 developer instructions + 可选不同 model/effort（`plan_mode_reasoning_effort`）；`update_plan`（TODO 工具）**禁止**（plan 不是 todo，产物是对话文本）；无用户输入的后台/空闲回合被拒；`request_user_input` 阻塞式 HITL；退出 = 用户手动切回。
+  - **opencode**（独立 plan agent）：`plan-mode.txt` 专门 system prompt + READ-ONLY 硬约束（唯一例外 = 编辑 plan 文件）；`plan_enter`/`plan_exit` 工具；`plan_exit` 弹 HITL 确认 → 批准后**注入合成消息** "plan 已批准，执行它" 并切回 build agent；产物 = 一个 plan 文件（handoff 工件）。
+  - **AgentScope**（此前调研吸收）：Plan Mode = 只读阶段 + plan_write + HITL 退出；`todo_write` 独立（plan 模式可用）。
+  经四个决策点问答确认：
+  1. **形态 = 模式切换**（codex 路线，而非独立 plan agent）
+  2. **产物 = plan 文件 + plan_done 交接**（opencode/AgentScope 完整版）
+  3. **提问 = 纯文本轮次**（`ask_user` 工具列入后续待办）
+  4. **只读强制 = onModelCall 过滤 + onActing `Decide` plan 分支兜底**
+- **选择**：
+  1. **`AgentState.PlanMode bool`**：`/plan` 命令切换（同 `/permission` 弹窗选择器），SessionMiddleware 落盘、resume 恢复；与 `Permission.Mode` **正交**——plan = 整轮只读规划，权限 = 逐操作审批；plan 激活时 plan 分支优先于权限模式（bypass 也先 /plan 关掉才能写）。plan 文件 `<会话>/plans/plan.md`（复用 `AgentState.Plan.Path`，写入指针），**单文件全量替换**。
+  2. **两个新工具**：
+     - `write_plan {content}`：全量替换 plan.md（同 update_todo 全量语义，模型每次传完整内容）；**plan 模式下唯一允许的写工具**（非 plan 模式调用 → 拒绝回填）；结果回填渲染（用户可读）。
+     - `plan_done`：规划完成信号 → **复用 Approver channel 弹 HITL 确认**（`DecisionAllow` = 批准执行 / `DecisionDeny` = 继续规划，`AllowSession` 归并 Allow）→ 批准：`rc.State.PlanMode=false`（随 SessionMiddleware 落盘）+ `rc.Messages.Add(NewUserMessage("plan 已批准，执行它"))` 注入合成用户消息 + 返回结果、循环继续——下一轮采样 onModelCall/onSystemPrompt 自动读到新状态（无状态 agent ADR-026 的零成本切换）；拒绝：返回"用户要继续规划"，模式不变循环继续。
+  3. **新 `PlanModeMiddleware`**（onSystemPrompt + onModelCall）：
+     - onSystemPrompt：PlanMode 激活时追加 plan-mode 指令段（只读约束 + 工作流：调研 → 文本提问 → write_plan 写 plan → plan_done；opencode plan-mode.txt 精简版）。
+     - onModelCall：PlanMode 激活时过滤 `in.Tools`——**摘掉 `write_file`/`apply_patch`**（模型看不见、省无效调用）；保留 read 三件套 + `update_todo`（AgentScope 路线，规划阶段可记步骤）+ `write_plan` + `shell_command`（只读 shell 仍需要）。
+  4. **`Decide` plan 分支**（onActing 兜底；纯函数加 plan 参数）：plan 激活时 classEdit → **Deny**、classShell → 仅 `isSafe` 放行否则 **Deny**、classRead/classTodo/write_plan → Allow、未知 → **Deny**（整轮强只读，非 Ask 打断用户）。
+  5. **TUI**：`/plan` 弹窗（on/off）+ 状态栏 `[PLAN]` 标记 + plan 路径系统行。
+  6. **不做（后续待办）**：`ask_user` 提问工具、plan 多版本文件、plan 文件 UI 预览面板、plan 模式独立 model/effort（codex `plan_mode_reasoning_effort`）。
+- **理由**：
+  - 模式切换契合无状态 agent 架构（ADR-026）：PlanMode 进 AgentState，middleware 读 rc.State 适配，无 agent 层改动、无新装配线；子 agent 机制（阶段 5）未做，独立 plan agent 概念过重。
+  - plan 文件 + plan_done 让规划有独立可审阅文档 + 明确执行交接点（对齐 opencode/AgentScope 的 HITL 一等公民）；合成消息注入复用既有 `messages.NewUserMessage`，零新基础设施。
+  - 过滤 + 拒绝双保险：模型看不见写工具（防无效调用），幻觉调用被 Decide 拒绝（安全兜底）。
+  - 纯文本提问渐进式（先跑通闭环，ask_user 后置）；update_todo 保留让规划阶段可维护步骤清单。
+- **影响 ADR**：ADR-025——`AgentState.Plan` 从预留到实现（新增 `PlanMode`）；ADR-029——`Decide` 签名加 plan 参数、审批分类新增 plan 工具类；ADR-030——命令集新增 `/plan`、状态栏新增 plan 标记；ADR-021——onSystemPrompt/onModelCall 挂载点新增 `PlanModeMiddleware`。
+
+- **修订（2026-08-11，规划期与用户逐点确认后）**：
+  1. **只读强制 = 可见但拒绝**（不做工具过滤）：codex 不过滤（靠 sandbox），opencode 权限 deny 不隐藏。我们没 sandbox，靠 `Decide` plan 分支直接 Deny——工具全量可见，被拒有明确反馈（"plan 模式下禁止写文件"）。**删除 `PlanModeMiddleware` 的工具过滤职责**。
+  2. **plan 指令 = 进入点持久化单次注入**（不做 per-round 注入 middleware，用户强调）：`/plan on` 经 `session.AddUser(tools.PlanInstructions)` 写 conversation+transcript；`plan_enter` 批准后完整指令放 tool_result（自然落盘）。后续轮次从历史可见，前缀缓存不受影响。
+  3. **Approver 增 `Ask` 方法**（用户指出"原本的 approver 不可以用吗"）：不新开 Asker 接口/rc 字段——`middleware.Approver` 加 `Ask(ctx, AskRequest) (AskResult, error)`（选项单选/多选 + Other 自定义文本，参照 codex request_user_input / opencode question）。复用 `rc.Approver` 字段、TUI `c.send` 桥、run `ChannelApprover`。**删除 `rc.Asker`**。
+  4. **退出 plan mode 必须询问用户，bypass 也不例外**：plan_done 恒走 `rc.Approver.Ask`（独立于权限模式）。
+  5. **`plan_done` Other 自定义 = 拒绝 + 反馈回填**（opencode CorrectedError 语义提前落地）：用户输入文本 → ToolResult 回填"用户未批准，反馈：<text>，请据此修订计划"，PlanMode 保持 true。**不注入合成消息**（anthropic tool_use→tool_result 邻接约束，ADR-024）。
+  6. **`plan_enter` 工具**（模型自主进 plan 模式）+ **`ask_user` 工具**（通用提问，两模式可用），共 4 个 plan 相关工具（plan_enter/write_plan/plan_done/ask_user）。
+  7. **`isPlanReadonlyShell`**：plan 模式 shell 放宽管道（原 isSafe 拒绝元字符，不适用规划期只读管道如 `grep foo | head`）；保留危险黑名单 + 拒绝 `>` 写重定向，按 `| && ;` 拆段逐段校验只读白名单。
+  8. **plan 文件感知**：write_plan/plan_done 工具结果显式携带绝对路径 + 全文。
+  9. **`/plan` 纯切换**（非弹窗）+ **`/plan view`** 查看计划文件。

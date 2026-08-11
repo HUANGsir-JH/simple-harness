@@ -28,3 +28,19 @@ func (a *tuiApprover) Request(ctx context.Context, req middleware.ApprovalReques
 		return middleware.DecisionDeny, ctx.Err()
 	}
 }
+
+// Ask 发送提问请求并等待用户回答（ADR-036；ask 弹窗在 Model.Update 处理，
+// 阶段 B 实现弹窗 UI）。ctx cancel 时返回空结果 + ctx.Err()。
+func (a *tuiApprover) Ask(ctx context.Context, req middleware.AskRequest) (middleware.AskResult, error) {
+	respCh := make(chan middleware.AskResult, 1)
+	if a.send == nil {
+		return middleware.AskResult{}, context.Canceled // 无桥（纯测试）→ 取消
+	}
+	a.send(askRequestMsg{req: req, respCh: respCh})
+	select {
+	case r := <-respCh:
+		return r, nil
+	case <-ctx.Done():
+		return middleware.AskResult{}, ctx.Err()
+	}
+}

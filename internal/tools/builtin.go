@@ -10,5 +10,9 @@ func Builtins() []Tool {
 		ShellCommandTool{},
 		ApplyPatchTool{},
 		UpdateTodoTool{},
+		AskUserTool{},
+		PlanEnterTool{},
+		WritePlanTool{},
+		PlanDoneTool{},
 	}
 }

@@ -2,12 +2,14 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 
 	"github.com/agent-project/harness/internal/config"
 	"github.com/agent-project/harness/internal/middleware/impl"
 	"github.com/agent-project/harness/internal/session"
+	"github.com/agent-project/harness/internal/tools"
 )
 
 // command 是一条斜杠命令（/switch /model /effort /permission /help /exit）。
@@ -146,6 +148,38 @@ func (c *Controller) SetThinking(enabled bool) error {
 		return err
 	}
 	return c.active.SetThinkingEnabled(&enabled)
+}
+
+// SetPlanMode 切换会话 plan 模式（/plan，ADR-036）。开启时注入一次 plan 指令
+// （持久化到 conversation + transcript，进入点注入；off→on 才注入，避免重复）。
+// 懒加载：无 active 先创建。
+func (c *Controller) SetPlanMode(on bool) error {
+	if err := c.ensureActive(); err != nil {
+		return err
+	}
+	wasOn := c.active.State().PlanMode
+	if err := c.active.SetPlanMode(on); err != nil {
+		return err
+	}
+	if on && !wasOn {
+		c.active.AddUser(tools.PlanInstructions)
+	}
+	return nil
+}
+
+// PlanContent 返回当前会话计划文件内容（/plan view；无计划文件返回空串 nil）。
+func (c *Controller) PlanContent() (string, error) {
+	if c.active == nil {
+		return "", nil
+	}
+	b, err := os.ReadFile(c.active.PlanFile())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	return string(b), nil
 }
 
 // Rename 重命名当前会话（/rename <名称>；懒加载：未创建则先创建再命名）。

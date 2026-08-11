@@ -104,18 +104,20 @@ func runCmd(args []string, jsonOut bool) error {
 		sess.OnAgentEvent(ev) // 块级实时落盘
 	}
 
-	// 输入层：TTY 时 raw mode + 单一读方事件循环（Esc 中断 + 审批协调，
-	// ADR-028/029）；非 TTY / MakeRaw 失败 → 不启用审批交互（自动拒绝）、
+	// 输入层：TTY 时 raw mode + 单一读方事件循环（Esc 中断 + 审批/提问协调，
+	// ADR-028/029/036）；非 TTY / MakeRaw 失败 → 不启用审批交互（自动拒绝）、
 	// 无 Esc 中断（跑完即退）。
 	fd := int(os.Stdin.Fd())
 	var inputCh <-chan ui.InputEvent
 	var reqCh chan *ui.ApprovalPrompt
+	var askCh chan *ui.AskPrompt
 	if term.IsTerminal(fd) {
 		if old, err := term.MakeRaw(fd); err == nil {
 			defer func() { _ = term.Restore(fd, old) }()
 			inputCh = ui.ReadStdinEvents(os.Stdin, os.Stdout)
 			reqCh = make(chan *ui.ApprovalPrompt, 8)
-			rc.Approver = ui.NewChannelApprover(reqCh)
+			askCh = make(chan *ui.AskPrompt, 8)
+			rc.Approver = ui.NewChannelApprover(reqCh, askCh)
 		}
 	}
 
@@ -125,6 +127,7 @@ func runCmd(args []string, jsonOut bool) error {
 	go func() { runDone <- a.Run(runCtx, rc, onEvent) }()
 
 	var pending *ui.ApprovalPrompt
+	var pendingAsk *ui.AskPrompt
 	for {
 		select {
 		case ev, ok := <-inputCh:
@@ -132,6 +135,22 @@ func runCmd(args []string, jsonOut bool) error {
 				// stdin EOF（Ctrl+D）：取消本轮，等 Run 退出。
 				cancel()
 				inputCh = nil
+				continue
+			}
+			// 提问挂起：输入路由为提问答复（选项编号 / 自定义文本 / Esc）。
+			if pendingAsk != nil {
+				if ev.Esc {
+					pendingAsk.Resp <- middleware.AskResult{}
+					pendingAsk = nil
+					continue
+				}
+				ans, ok := ui.ParseAskAnswer(ev.Line, pendingAsk.Req)
+				if !ok {
+					ui.PrintAskUI(pendingAsk.Req)
+					continue
+				}
+				pendingAsk.Resp <- ans
+				pendingAsk = nil
 				continue
 			}
 			// 审批挂起：输入路由为审批答复（y/s/n / Esc）。
@@ -166,6 +185,9 @@ func runCmd(args []string, jsonOut bool) error {
 			if jsonOut {
 				ui.EmitApprovalJSON(req.Req)
 			}
+		case ask := <-askCh:
+			pendingAsk = ask
+			ui.PrintAskUI(ask.Req)
 		case err := <-runDone:
 			if errors.Is(err, context.Canceled) {
 				fmt.Println("\n（已中断）")

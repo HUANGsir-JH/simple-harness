@@ -4,6 +4,19 @@
 
 ## 2026-08-11
 
+### Plan Mode（规划模式）✅ 版本 0.7.0（ADR-036）
+
+- **功能**：会话级 plan 模式——先只读调研、产出计划文件、批准后执行。4 工具：`plan_enter`（模型自主提议进规划，HITL 确认）/ `write_plan`（写 `<会话>/plans/plan.md`，路径+全文回填）/ `plan_done`（弹 HITL 交接：批准执行 / 继续规划 / **Other=拒绝+反馈回填**，bypass 也询问）/ `ask_user`（通用提问，选项+Other+单选多选）。
+- **设计要点**（规划期与用户 5 轮逐点确认）：
+  - **复用 Approver 扩展 `Ask`**：`middleware.Approver` 增 `Ask(ctx, AskRequest) (AskResult, error)`——不新开接口/rc 字段（用户指出"原本的 approver 不可以用吗"）；TUI `c.send` 桥 / run `ChannelApprover` 补 Ask。
+  - **只读强制 = 可见但拒绝**（不做工具过滤）：codex 不过滤（靠 sandbox）、opencode 权限 deny；我们 `Decide` plan 分支直接 Deny，被拒有明确反馈。
+  - **plan 指令进入点持久化单次注入**：`/plan on` 经 `session.AddUser(PlanInstructions)`、`plan_enter` 批准后随 tool_result——均落盘、只注入一次，无 per-round middleware（前缀缓存）。
+  - **`isPlanReadonlyShell`**：plan 模式 shell 放宽管道（`grep foo | head` 放行），保留危险黑名单 + 拒 `>` 写重定向，按 `| && ;` 拆段逐段校验只读白名单。
+  - **不做合成消息**（anthropic tool_use→tool_result 邻接约束，ADR-024）。
+- **TUI**：`/plan` 纯切换 + `/plan view` 读计划文件 + 状态栏 `[PLAN]` + ask 弹窗（↑/↓ 选项、Space 多选、打字=Other 自定义、Enter 提交、Esc 取消）。
+- **验证**：单测（4 工具行为 / Decide plan 分支 / isPlanReadonlyShell / ask 弹窗 / /plan 命令 / agent 集成闭环）+ e2e（plan 模式闭环）；`go build/vet/test ./...` 全绿；已 `go install`。
+- **经验**：tea.KeySpace 的 `String()` 返回 `" "` 而非 `"space"`（bubbletea 特例，handleTimelineKey 的 `case "space"` 是既有 latent bug）；`Approve` 接口扩展迫使所有实现（2 生产 + 3 mock）补 Ask——有界 ripple。
+
 ### TUI 输入框修复：粘贴拆条排查 + 高度动态（1→5 行 + 滚动）
 
 - **用户报告**：复制多行文字粘贴进输入框，被拆成多条消息塞进 queue。

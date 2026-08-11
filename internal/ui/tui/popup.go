@@ -45,6 +45,7 @@ var commandCatalog = []commandItem{
 	{name: "effort", short: "Set reasoning effort"},
 	{name: "thinking", short: "Toggle thinking on/off"},
 	{name: "permission", short: "Set approval policy"},
+	{name: "plan", short: "Toggle plan mode / view plan"},
 	{name: "help", short: "Commands and keys"},
 	{name: "exit", short: "Leave Harness"},
 }
@@ -149,6 +150,41 @@ func (m Model) runCommand(cmd command) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m.openPopup(popupThinking, "THINKING", thinkingItems(), thinkingCurrent(m.c.ActiveState())), nil
+	case "plan":
+		// /plan [on|off|view]；无参 toggle。on 时注入一次 plan 指令（Controller
+		// SetPlanMode 处理）；view 在 timeline 显示计划文件内容（ADR-036）。
+		if cmd.arg == "view" {
+			content, err := m.c.PlanContent()
+			if err != nil {
+				return m.sysErr(err), nil
+			}
+			if content == "" {
+				return m.sysOK("暂无计划文件（plan 模式下用 write_plan 写入）"), nil
+			}
+			m.appendSystem("PLAN FILE  "+m.c.active.PlanFile()+"\n"+content, false)
+			m.refresh(true)
+			return m, nil
+		}
+		current := false
+		if st := m.c.ActiveState(); st != nil {
+			current = st.PlanMode
+		}
+		on := !current
+		if cmd.arg == "on" {
+			on = true
+		} else if cmd.arg == "off" {
+			on = false
+		} else if cmd.arg != "" {
+			return m.sysErr(fmt.Errorf("unknown /plan arg %q (on|off|view)", cmd.arg)), nil
+		}
+		if err := m.c.SetPlanMode(on); err != nil {
+			return m.sysErr(err), nil
+		}
+		m.refreshStatus() // 状态栏 [PLAN] 即时更新
+		if on {
+			return m.sysOK("Plan 模式已开启（只读规划；/plan view 查看计划）"), nil
+		}
+		return m.sysOK("Plan 模式已关闭"), nil
 	case "rename":
 		if cmd.arg == "" {
 			return m.sysErr(fmt.Errorf("/rename 需要名称（用法：/rename <名称>）")), nil

@@ -175,6 +175,23 @@ func (s *Session) SetPermissionMode(mode string) error {
 	return agentstate.SaveFile(s.statePath, s.state)
 }
 
+// SetPlanMode 更新会话 plan 模式开关并立即落盘（/plan 运行时切换、plan_enter/
+// plan_done 工具也直接改 rc.State.PlanMode，ADR-036）。切换后下一轮采样生效
+// （ApprovalMiddleware 从 rc.State 读 plan 分支；plan 指令注入在进入点单独处理）。
+func (s *Session) SetPlanMode(on bool) error {
+	s.state.PlanMode = on
+	return agentstate.SaveFile(s.statePath, s.state)
+}
+
+// PlanFile 返回计划文件路径（state.Plan.Path 优先，否则 <会话>/plans/plan.md，
+// ADR-036）。/plan view 与 write_plan 同源。
+func (s *Session) PlanFile() string {
+	if s.state.Plan != nil && s.state.Plan.Path != "" {
+		return s.state.Plan.Path
+	}
+	return filepath.Join(s.dir, DirPlans, "plan.md")
+}
+
 // AddUser 添加一条用户消息：写入 conversation（模型可见）并记录 transcript（user 行）。
 func (s *Session) AddUser(content string) {
 	msg := messages.NewUserMessage(content)

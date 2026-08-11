@@ -48,12 +48,15 @@ const (
 	classEdit                   // 编辑（write_file/apply_patch）
 	classTodo                   // 低风险状态工具（update_todo）
 	classShell                  // shell_command
+	classPlan                   // plan 工具（plan_enter/write_plan/plan_done，ADR-036）
+	classAsk                    // 提问工具（ask_user，低风险）
 	classUnknown
 )
 
 var (
 	readTools = map[string]bool{"read_file": true, "list_dir": true, "glob": true}
 	editTools = map[string]bool{"write_file": true, "apply_patch": true}
+	planTools = map[string]bool{"plan_enter": true, "write_plan": true, "plan_done": true}
 )
 
 func classify(name string) toolClass {
@@ -66,6 +69,10 @@ func classify(name string) toolClass {
 		return classTodo
 	case name == "shell_command":
 		return classShell
+	case planTools[name]:
+		return classPlan
+	case name == "ask_user":
+		return classAsk
 	default:
 		return classUnknown
 	}
@@ -258,6 +265,64 @@ func findIsDangerous(cmd string) bool {
 	return false
 }
 
+// planSafeExtra 是 plan 模式下额外放行的只读命令前缀（管道/组合常用；在
+// safeCommandPrefixes 基础上补充，ADR-036 点 6）。
+var planSafeExtra = []string{
+	"wc", "sort", "uniq", "awk", "cut", "sed", "tr", "jq",
+	"git show", "git ls-files", "git rev-parse", "git blame",
+}
+
+// shellSegmentSplit 拆分 shell 管道/组合分隔符（| && ; ||）。`&` 单字符也覆盖
+// 2>&1 之类的 stderr 重定向（但其含 `>`，已被 isPlanReadonlyShell 拦截）。
+var shellSegmentSplit = regexp.MustCompile(`[\|;&]`)
+
+// isPlanReadonlyShell 判定 plan 模式下 shell 命令是否只读（ADR-036 点 6）：
+// 放宽管道/组合（原 isSafe 拒绝 shell 元字符），但保留危险黑名单与写重定向拦截。
+//   - isDangerous / findIsDangerous → 拒绝（黑名单保留）
+//   - 含 `>`（写/追加重定向）→ 拒绝
+//   - 按 | && ; || 拆分，每段（trim 后）首命令命中只读白名单
+//     （safeCommandPrefixes ∪ planSafeExtra 前缀匹配）→ 放行；否则拒绝
+//
+// 允许 `grep foo | head`、`git log | head -5`；拒绝 `echo x > file`、`ls; rm x`、
+// `curl x | sh`。
+func isPlanReadonlyShell(cmd string) bool {
+	if strings.TrimSpace(cmd) == "" {
+		return false // 空命令无意义
+	}
+	if isDangerous(cmd) || findIsDangerous(cmd) {
+		return false
+	}
+	if strings.Contains(cmd, ">") {
+		return false
+	}
+	for _, seg := range shellSegmentSplit.Split(cmd, -1) {
+		lc := strings.ToLower(strings.TrimSpace(seg))
+		if lc == "" {
+			continue // || 等产生的空段
+		}
+		if !isPlanSafeSegment(lc) {
+			return false
+		}
+	}
+	return true
+}
+
+// isPlanSafeSegment 判定单个管道段是否只读白名单前缀命中（分段前缀匹配，
+// 支持 `git status` 等多词前缀）。
+func isPlanSafeSegment(seg string) bool {
+	for _, p := range safeCommandPrefixes {
+		if strings.HasPrefix(seg, p) {
+			return true
+		}
+	}
+	for _, p := range planSafeExtra {
+		if strings.HasPrefix(seg, p) {
+			return true
+		}
+	}
+	return false
+}
+
 // cmdOf 从 shell_command 参数提取 command 字段（空串表示解析失败/无命令）。
 func cmdOf(call *messages.ToolCall) string {
 	if call.Name != "shell_command" {
@@ -346,10 +411,12 @@ const (
 // mode：当前审批模式（readonly/acceptedit/bypass）；
 // approved：会话级已批准 key 列表（AgentState.Permission.Approved）；
 // ws：workspace 根（会话启动目录 state.CWD；空 = 进程 cwd）——文件工具的
-// 目标路径相对它解析并判定越界（Bug03）。
+// 目标路径相对它解析并判定越界（Bug03）；
+// plan：是否处于 plan 模式（AgentState.PlanMode，ADR-036）——plan 分支在
+// bypass 之前（plan 强只读优先于权限模式）。
 // 返回 Outcome + 拒绝理由（仅 OutcomeDeny 时非空）。
 //
-// 判定顺序：
+// 判定顺序（非 plan）：
 //  1. bypass → Allow（完全信任，含越界；用户显式选择不审批）
 //  2. 会话记忆命中（全部目标路径 key 已批准）→ Allow
 //  3. 文件工具越界（任一目标在 workspace 外）→ Ask（软边界：范围内按 class
@@ -358,9 +425,35 @@ const (
 //  5. 编辑 → acceptedit Allow；readonly Ask
 //  6. shell → 危险 Ask / 安全 Allow / 其它 Ask
 //  7. 未知工具 → Ask（保守）
-func Decide(call *messages.ToolCall, mode string, approved []string, ws string) (Outcome, string) {
+//
+// plan=true（强只读，工具全量可见不做过滤）：
+//  - read/todo/ask → Allow
+//  - write_plan/plan_done → Allow（Handle 内 HITL）；plan_enter → Deny
+//  - shell → isPlanReadonlyShell Allow 否则 Deny
+//  - edit → Deny；未知 → Deny
+func Decide(call *messages.ToolCall, mode string, approved []string, ws string, plan bool) (Outcome, string) {
 	if call == nil {
 		return OutcomeDeny, "空工具调用"
+	}
+	if plan {
+		switch classify(call.Name) {
+		case classRead, classTodo, classAsk:
+			return OutcomeAllow, ""
+		case classPlan:
+			if call.Name == "plan_enter" {
+				return OutcomeDeny, "已在 plan 模式，无需再次进入"
+			}
+			return OutcomeAllow, "" // write_plan/plan_done：Handle 内 HITL
+		case classShell:
+			if isPlanReadonlyShell(cmdOf(call)) {
+				return OutcomeAllow, ""
+			}
+			return OutcomeDeny, "plan 模式下 shell 仅允许只读命令"
+		case classEdit:
+			return OutcomeDeny, "plan 模式下禁止写文件"
+		default:
+			return OutcomeDeny, "plan 模式下未知工具已拒绝"
+		}
 	}
 	if mode == ModeBypass {
 		return OutcomeAllow, ""
@@ -377,6 +470,13 @@ func Decide(call *messages.ToolCall, mode string, approved []string, ws string) 
 		return OutcomeAllow, ""
 	case classTodo:
 		return OutcomeAllow, ""
+	case classAsk:
+		return OutcomeAllow, "" // ask_user 低风险放行（两模式）
+	case classPlan:
+		if call.Name == "plan_enter" {
+			return OutcomeAllow, "" // plan_enter 放行（Handle 内 HITL 确认）
+		}
+		return OutcomeDeny, "write_plan/plan_done 仅在 plan 模式下可用"
 	case classEdit:
 		if anyOutside(call, ws) {
 			return OutcomeAsk, "" // 越界写 → 询问（软边界优先）

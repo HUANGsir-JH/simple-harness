@@ -63,6 +63,7 @@ type StatusBar struct {
 	SessionID      string
 	Permission     string
 	ThinkingEffort string
+	PlanMode       bool // [PLAN] 状态栏标记（ADR-036）
 	TodoCount      int
 	Todos          []agentstate.TodoItem
 }
@@ -86,6 +87,17 @@ type approvalPopup struct {
 	respCh chan middleware.Decision
 }
 
+// askPopup 是提问弹窗状态（ADR-036，Ask 方法）。req 是要展示的问题/选项，
+// respCh 回送用户回答（Selection/Custom）。cursor 高亮选项；selected 多选勾选；
+// custom 是 Other 自定义文本输入缓冲（用户直接打字追加）。
+type askPopup struct {
+	req      middleware.AskRequest
+	respCh   chan middleware.AskResult
+	cursor   int
+	selected []bool
+	custom   string
+}
+
 // overlayKind 是全屏覆盖层的互斥类型（Bug10）。
 type overlayKind uint8
 
@@ -93,9 +105,10 @@ const (
 	overlayApproval overlayKind = iota
 	overlaySelect
 	overlayHelp
+	overlayAsk
 )
 
-// overlay 是当前唯一的全屏覆盖层（审批 / 选择弹窗 / 帮助）。nil = 无覆盖层；
+// overlay 是当前唯一的全屏覆盖层（审批 / 选择弹窗 / 帮助 / 提问）。nil = 无覆盖层；
 // 非 nil 时按 kind 分派，一次只能有一个。原 appr/sel/help 三字段可同时为真
 // （审批未决时队列命令可开出第二层弹窗，Bug10），收成单字段后非法组合在
 // 类型层面不可表达，渲染与按键分发各自只剩一处判断。
@@ -103,6 +116,7 @@ type overlay struct {
 	kind overlayKind
 	appr *approvalPopup // kind == overlayApproval 时非 nil
 	sel  *selectPopup   // kind == overlaySelect 时非 nil
+	ask  *askPopup      // kind == overlayAsk 时非 nil
 }
 
 // openOverlay 打开新的覆盖层；已有覆盖层未决时拒绝（返回 false，不覆盖）——
@@ -123,6 +137,8 @@ func overlayName(k overlayKind) string {
 		return "approval"
 	case overlaySelect:
 		return "selector"
+	case overlayAsk:
+		return "ask"
 	default:
 		return "help"
 	}
@@ -226,6 +242,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.input.Blur()
 		m.refresh(false)
 		return m, nil
+	case askRequestMsg:
+		m.ovl = &overlay{kind: overlayAsk, ask: &askPopup{
+			req:      msg.req,
+			respCh:   msg.respCh,
+			selected: make([]bool, len(msg.req.Options)),
+		}}
+		m.input.Blur()
+		m.refresh(false)
+		return m, nil
 	case runDoneMsg:
 		return m.handleRunDone(msg.err)
 	case spinner.TickMsg:
@@ -247,6 +272,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.handleApprovalKey(msg)
 		case overlaySelect:
 			return m.handlePopupKey(msg)
+		case overlayAsk:
+			return m.handleAskKey(msg)
 		case overlayHelp:
 			if msg.String() == "esc" || msg.String() == "enter" || msg.String() == "/" {
 				m.ovl = nil
@@ -437,6 +464,75 @@ func (m Model) handleApprovalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.ovl.appr.respCh <- decision
+	m.ovl = nil
+	m.restoreFocus()
+	m.refresh(false)
+	return m, nil
+}
+
+// handleAskKey 处理 ask 弹窗按键（ADR-036）：
+//   - ↑/↓ 导航选项（可打印字符留作自定义输入，故不用 k/j）
+//   - Space 多选勾选；Enter 提交（自定义文本非空优先）；Esc 取消
+//   - 其它可打印字符追加到自定义输入缓冲（Other）
+func (m Model) handleAskKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	ask := m.ovl.ask
+	switch msg.String() {
+	case "up":
+		if ask.cursor > 0 {
+			ask.cursor--
+		}
+	case "down":
+		if len(ask.req.Options) > 0 && ask.cursor < len(ask.req.Options)-1 {
+			ask.cursor++
+		}
+	case " ": // tea.KeySpace.String() = " "（bubbletea 特例）
+		if ask.req.Multiple && len(ask.selected) > 0 {
+			ask.selected[ask.cursor] = !ask.selected[ask.cursor]
+		}
+	case "enter":
+		return m.finishAsk(ask)
+	case "esc":
+		ask.respCh <- middleware.AskResult{} // 取消 = 空回答
+		m.ovl = nil
+		m.restoreFocus()
+		m.refresh(false)
+		return m, nil
+	case "backspace":
+		if r := []rune(ask.custom); len(r) > 0 {
+			ask.custom = string(r[:len(r)-1])
+		}
+	case "tab", "shift+enter", "alt+enter", "ctrl+c", "pgup", "pgdown", "home", "end":
+		// 忽略（防误触全局快捷键）
+	default:
+		if len(msg.Runes) > 0 {
+			ask.custom += string(msg.Runes) // 可打印字符 → Other 自定义输入
+		}
+	}
+	m.refresh(false)
+	return m, nil
+}
+
+// finishAsk 提交 ask 回答并关闭弹窗：自定义文本非空 → Custom；否则单选提交
+// 当前高亮 / 多选提交全部勾选项。
+func (m Model) finishAsk(ask *askPopup) (tea.Model, tea.Cmd) {
+	if custom := strings.TrimSpace(ask.custom); custom != "" {
+		ask.respCh <- middleware.AskResult{Custom: custom}
+		m.ovl = nil
+		m.restoreFocus()
+		m.refresh(false)
+		return m, nil
+	}
+	var selection []string
+	if ask.req.Multiple {
+		for i, on := range ask.selected {
+			if on {
+				selection = append(selection, ask.req.Options[i].Label)
+			}
+		}
+	} else if len(ask.req.Options) > 0 {
+		selection = []string{ask.req.Options[ask.cursor].Label}
+	}
+	ask.respCh <- middleware.AskResult{Selection: selection}
 	m.ovl = nil
 	m.restoreFocus()
 	m.refresh(false)
@@ -682,6 +778,7 @@ func (m *Model) refreshStatus() {
 	if st == nil {
 		m.status.Permission = ""
 		m.status.ThinkingEffort = ""
+		m.status.PlanMode = false
 		m.status.TodoCount = 0
 		m.status.Todos = nil
 		return
@@ -691,6 +788,7 @@ func (m *Model) refreshStatus() {
 		m.status.Permission = st.Permission.Mode
 	}
 	m.status.ThinkingEffort = st.ThinkingEffort
+	m.status.PlanMode = st.PlanMode
 	m.status.TodoCount = len(st.Todos)
 	m.status.Todos = sortTodos(st.Todos)
 }

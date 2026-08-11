@@ -6,7 +6,7 @@
 
 参照 OpenAI Codex CLI（`../codex/codex-rs`，Rust）+ AgentScope Java v2 的架构，用 Go 构建一个**可真实使用**的极简 agent harness（命令行）。定位为**通用框架**，未来可被 resume-agent 等其它项目引用。
 
-**现状（2026-08-09）**：阶段 1（骨架+消息+provider+最小 loop）→ 阶段 2（工具系统+并发+渲染+middleware 骨架+REPL）→ 阶段 2.5（Workspace+AgentState+会话落盘/resume）→ 架构重构（ADR-026 无状态 agent+运行时切换）→ todo 工具（ADR-027）→ 工具结果截断/用户中断/shell 缓解（ADR-028）→ **阶段 3 审批（ADR-029）全部完成 ✅**。待办：阶段 4 剩余（AGENTS.md 注入 + 系统提示词拼接 + 上下文压缩）、阶段 5（子 agent）、阶段 6（可选）。
+**现状（2026-08-11）**：阶段 1（骨架+消息+provider+最小 loop）→ 阶段 2（工具系统+并发+渲染+middleware 骨架+REPL）→ 阶段 2.5（Workspace+AgentState+会话落盘/resume）→ 架构重构（ADR-026 无状态 agent+运行时切换）→ todo 工具（ADR-027）→ 工具结果截断/用户中断/shell 缓解（ADR-028）→ **阶段 3 审批（ADR-029）✅** → 配置层独立 + 装配根 → **Plan Mode（ADR-036）✅ 2026-08-11**。待办：阶段 4 剩余（AGENTS.md 注入 + 系统提示词拼接 + 上下文压缩）、阶段 5（子 agent）、阶段 6（可选）。
 
 ## 已确认决策（当前生效）
 
@@ -188,6 +188,7 @@ type Tool interface {
 - **工具结果截断 + Esc 用户中断 + shell 长任务缓解 + state.CWD 修正**（2026-08-09，ADR-028）：ToolOutputMiddleware（20K head/tail + evictions/ 落盘）；raw mode 单一读方事件循环；shell 超时输出落盘 + 系统提示引导。
 - **阶段 3：审批**（2026-08-09，ADR-029）：approval 包三层设计 + ApprovalMiddleware + DeniedError + 会话级记忆 + config 播种 + `/permission` + channelApprover 协调；e2e 真实 TTY 审批交互。**错误重试非本阶段交付**（429 由 SDK 承担 ADR-012；流中断恢复独立待办）。
 - **配置层独立 + 装配根**（2026-08-09）：配置域从 provider 拆出为 `internal/config`（类型 + 加载 + 解析 + 校验），provider 回归单 wire；`internal/app` 进程级装配根（`App{Config, Provider}` 惰性单例，替代 cmd defaultApp）；`agent.Build(res, mode)` 装配工厂（buildAgent 从 cmd 下沉）；cmd 薄化为 `app.Load() + agent.Build()`。为 subagent 提供不同装配铺路。
+- **Plan Mode（规划模式）**（2026-08-11，ADR-036）：会话级 `PlanMode` 标记 + 4 工具（plan_enter 自主进 / write_plan 写计划文件 / plan_done 弹 HITL 交接 / ask_user 通用提问）+ `Approver` 增 `Ask` 方法（选项单选/多选 + Other 自定义，复用 rc.Approver）+ `Decide` plan 分支（可见但拒绝，不做工具过滤）+ `isPlanReadonlyShell`（plan 模式 shell 放宽管道）+ plan 指令进入点持久化单次注入 + TUI `/plan` 切换 / `/plan view` / 状态栏 `[PLAN]` / ask 弹窗；版本 0.7.0。plan_done 的 Other = 拒绝 + 反馈回填模型修订计划。
 
 ### ⏳ 待办（未完成）
 

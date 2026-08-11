@@ -32,7 +32,7 @@ func (m ApprovalMiddleware) OnActing(ctx context.Context, rc *middleware.Runtime
 	}
 	mode := m.mode(rc)
 	ws := workspaceOf(rc)
-	outcome, reason := Decide(in.Call, mode, approvedOf(rc), ws)
+	outcome, reason := Decide(in.Call, mode, approvedOf(rc), ws, planModeOf(rc))
 	switch outcome {
 	case OutcomeAllow:
 		return next(ctx, rc, in)
@@ -92,6 +92,14 @@ func approvedOf(rc *middleware.RuntimeContext) []string {
 		return nil
 	}
 	return rc.State.Permission.Approved
+}
+
+// planModeOf 读取当前是否 plan 模式（ADR-036）。plan 分支强只读优先于权限模式。
+func planModeOf(rc *middleware.RuntimeContext) bool {
+	if rc == nil || rc.State == nil {
+		return false
+	}
+	return rc.State.PlanMode
 }
 
 // workspaceOf 取审批判定的 workspace 根：rc.State.CWD（会话启动目录，ADR-028）

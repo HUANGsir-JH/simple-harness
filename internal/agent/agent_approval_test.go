@@ -22,11 +22,19 @@ func (denyApprover) Request(context.Context, middleware.ApprovalRequest) (middle
 	return middleware.DecisionDeny, nil
 }
 
+func (denyApprover) Ask(context.Context, middleware.AskRequest) (middleware.AskResult, error) {
+	return middleware.AskResult{}, nil // 空回答 = 取消/无
+}
+
 // allowApprover 是始终允许的测试审批者。
 type allowApprover struct{}
 
 func (allowApprover) Request(context.Context, middleware.ApprovalRequest) (middleware.Decision, error) {
 	return middleware.DecisionAllow, nil
+}
+
+func (allowApprover) Ask(context.Context, middleware.AskRequest) (middleware.AskResult, error) {
+	return middleware.AskResult{Selection: []string{"批准执行"}}, nil
 }
 
 // TestRunApprovalDenied 验证审批拒绝（DeniedError，ADR-029）：工具不执行、

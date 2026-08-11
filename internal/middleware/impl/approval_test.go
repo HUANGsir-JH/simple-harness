@@ -21,6 +21,10 @@ func (m *mockApprover) Request(_ context.Context, req middleware.ApprovalRequest
 	return m.decision, m.err
 }
 
+func (m *mockApprover) Ask(context.Context, middleware.AskRequest) (middleware.AskResult, error) {
+	return middleware.AskResult{}, nil
+}
+
 // newRC 构造带 State + Approver 的 RuntimeContext（测试辅助）。
 func newRC(t *testing.T, approver middleware.Approver) *middleware.RuntimeContext {
 	t.Helper()

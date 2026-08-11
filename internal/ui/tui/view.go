@@ -119,7 +119,10 @@ func (m Model) footerView() string {
 	} else {
 		left = styleSuccess.Render("READY")
 	}
-	rightParts := make([]string, 0, 4)
+	rightParts := make([]string, 0, 5)
+	if m.status.PlanMode {
+		rightParts = append(rightParts, "[PLAN]")
+	}
 	if m.status.Permission != "" {
 		rightParts = append(rightParts, m.status.Permission)
 	}
@@ -256,6 +259,8 @@ func (m Model) modalArea() string {
 			content = renderApproval(m.ovl.appr, m.width)
 		case overlaySelect:
 			content = renderPopup(m.ovl.sel, m.width, m.viewport.Height)
+		case overlayAsk:
+			content = renderAsk(m.ovl.ask, m.width)
 		case overlayHelp:
 			content = renderHelp(m.width)
 		}
@@ -287,6 +292,52 @@ func renderApproval(appr *approvalPopup, width int) string {
 	return modalStyle(panelWidth).Render(content)
 }
 
+// renderAsk 渲染提问弹窗（ADR-036）：header + 问题 + 选项列表（单选 Enter 高亮 /
+// 多选 Space 勾选）+ Other 自定义输入行 + 提示。
+func renderAsk(ask *askPopup, width int) string {
+	panelWidth := modalPanelWidth(width, 40, 84)
+	bodyWidth := modalInnerWidth(panelWidth)
+	header := ask.req.Header
+	if header == "" {
+		header = "QUESTION"
+	}
+	question := ansi.Hardwrap(ask.req.Question, bodyWidth, true)
+	rows := make([]string, 0, len(ask.req.Options))
+	for i, o := range ask.req.Options {
+		mark := "  "
+		if ask.req.Multiple && i < len(ask.selected) && ask.selected[i] {
+			mark = "[x] "
+		}
+		prefix := mark
+		if i == ask.cursor {
+			prefix = "> " + mark
+		}
+		row := ansi.Truncate(prefix+o.Label, maxInt(1, bodyWidth), "...")
+		if i == ask.cursor {
+			row = styleSelected.Width(bodyWidth).Render(row)
+		} else {
+			row = lipgloss.NewStyle().Width(bodyWidth).Render(row)
+		}
+		rows = append(rows, row)
+	}
+	hint := "Enter confirm   Esc cancel"
+	if ask.req.Multiple {
+		hint = "Space toggle   Enter confirm   Esc cancel"
+	}
+	if ask.req.AllowCustom {
+		hint += "   type = custom"
+	}
+	customLine := "Custom: " + ask.custom + "_"
+	content := styleRunning.Render(header) + "\n\n" +
+		styleText.Render(question)
+	if len(rows) > 0 {
+		content += "\n\n" + strings.Join(rows, "\n")
+	}
+	content += "\n\n" + styleMuted.Render(ansi.Truncate(customLine, maxInt(1, bodyWidth), "...")) + "\n" +
+		styleMuted.Render(hint)
+	return modalStyle(panelWidth).Render(content)
+}
+
 func renderHelp(width int) string {
 	panelWidth := modalPanelWidth(width, 38, 78)
 	innerWidth := modalInnerWidth(panelWidth)
@@ -296,6 +347,7 @@ func renderHelp(width int) string {
 		"/model       change model",
 		"/effort      reasoning effort",
 		"/permission  approval policy",
+		"/plan        toggle plan mode",
 		"/exit        leave Harness",
 	}, "\n")
 	right := strings.Join([]string{

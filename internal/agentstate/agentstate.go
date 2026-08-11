@@ -30,8 +30,9 @@ type AgentState struct {
 	CreatedAt       string           `json:"created_at"`
 	UpdatedAt       string           `json:"updated_at"`
 	Todos           []TodoItem       `json:"todos,omitempty"`      // todo 工具挂这
-	Permission      *PermissionState `json:"permission,omitempty"` // 阶段三填，预留
-	Plan            *PlanState       `json:"plan,omitempty"`       // plan 文件指针，预留
+	Permission      *PermissionState `json:"permission,omitempty"` // 审批状态（ADR-029）
+	PlanMode        bool             `json:"plan_mode,omitempty"`  // plan 模式开关（/plan 或 plan_enter/plan_done，ADR-036）
+	Plan            *PlanState       `json:"plan,omitempty"`       // plan 文件指针（ADR-036）
 	Summary         string           `json:"summary,omitempty"`    // 压缩摘要，预留
 }
 

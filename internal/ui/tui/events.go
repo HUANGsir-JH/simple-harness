@@ -22,4 +22,11 @@ type (
 		req    middleware.ApprovalRequest
 		respCh chan middleware.Decision
 	}
+
+	// askRequestMsg 是提问请求桥（tuiApprover.Ask → program.Send，ADR-036）。
+	// Update 弹 ask 输入弹窗（选项 + Other）后经 respCh 回送回答。
+	askRequestMsg struct {
+		req    middleware.AskRequest
+		respCh chan middleware.AskResult
+	}
 )

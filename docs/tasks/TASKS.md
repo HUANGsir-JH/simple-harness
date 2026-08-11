@@ -94,6 +94,20 @@
 | R3 | ASCII/颜色视觉层、窄屏布局、鼠标命中与工具/思考展开 | 已完成 2026-08-09 |
 | R4 | 单测、PTY e2e、race/vet/build 收尾 | 已完成 2026-08-09 |
 
+## Plan Mode（规划模式，ADR-036）
+
+- **目标**：会话级 plan 模式——先只读调研、产出计划文件、批准后执行。4 工具（`plan_enter` 自主进 / `write_plan` 写 `<会话>/plans/plan.md` / `plan_done` 弹 HITL 交接 / `ask_user` 通用提问）；`Approver` 增 `Ask` 方法（选项单选/多选 + Other 自定义文本，复用 rc.Approver）；`Decide` plan 分支（可见但拒绝，不做工具过滤）+ `isPlanReadonlyShell`（plan 模式 shell 放宽管道）；plan 指令进入点持久化单次注入；TUI `/plan` 切换 + `/plan view` + 状态栏 `[PLAN]` + ask 弹窗。版本 0.7.0。
+- **成功标准**：plan 模式下 write_file 被拒、write_plan 写文件、plan_done 批准后退出并放行写；ask_user 选项/Other 自由文本；bypass 下退出仍询问；e2e 闭环。
+- **状态**：✅ **已完成（2026-08-11，ADR-036）**。
+
+### 任务单元
+
+| # | 单元 | 状态 |
+|---|---|---|
+| P1 | 核心闭环：AgentState.PlanMode + Approver.Ask 契约 + 4 工具 + Decide plan 分支 + isPlanReadonlyShell + 注册 + 单测 | ✅ 2026-08-11 |
+| P2 | TUI：/plan 切换 + /plan view + 状态栏 [PLAN] + ask 弹窗（选项/Other/单选多选）+ ChannelApprover.Ask + 单测 | ✅ 2026-08-11 |
+| P3 | 集成 + e2e（plan 模式闭环）+ 版本 0.7.0 + 文档（ADR-036 修订/IMPLEMENTATION_PLAN/TASKS/PROGRESS） | ✅ 2026-08-11 |
+
 ## 阶段 6（TUI 后后续可选）：摘要式压缩 / grep 工具 / 双向通信
 
 - **状态**：未开始（TUI 已提前为独立阶段；本阶段为压缩/grep/双向通信剩余项）

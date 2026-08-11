@@ -44,17 +44,18 @@ func toolCall(name string, args map[string]any) *messages.ToolCall {
 }
 
 // wantAsk / wantAllow / wantDeny 断言 Decide 的 Outcome。workspace = testWS，
-// 测试路径相对它解析（确定性；Decide 是纯函数，不碰文件系统）。
+// 测试路径相对它解析（确定性；Decide 是纯函数，不碰文件系统）。plan=false
+// （plan 分支用例单独测）。
 func wantAsk(t *testing.T, call *messages.ToolCall, mode string, approved []string) {
 	t.Helper()
-	if o, _ := Decide(call, mode, approved, testWS); o != OutcomeAsk {
+	if o, _ := Decide(call, mode, approved, testWS, false); o != OutcomeAsk {
 		t.Errorf("%s/%s: want Ask, got %v", call.Name, string(call.Args), o)
 	}
 }
 
 func wantAllow(t *testing.T, call *messages.ToolCall, mode string, approved []string) {
 	t.Helper()
-	if o, _ := Decide(call, mode, approved, testWS); o != OutcomeAllow {
+	if o, _ := Decide(call, mode, approved, testWS, false); o != OutcomeAllow {
 		t.Errorf("%s/%s: want Allow, got %v", call.Name, string(call.Args), o)
 	}
 }
@@ -145,7 +146,7 @@ func TestDecideUnknownTool(t *testing.T) {
 
 // TestDecideNilCall 验证空调用拒绝。
 func TestDecideNilCall(t *testing.T) {
-	if o, reason := Decide(nil, ModeAcceptEdits, nil, ""); o != OutcomeDeny || reason == "" {
+	if o, reason := Decide(nil, ModeAcceptEdits, nil, "", false); o != OutcomeDeny || reason == "" {
 		t.Errorf("nil call: want Deny with reason, got %v %q", o, reason)
 	}
 }
@@ -246,7 +247,7 @@ func TestDecideWorkspaceBoundary(t *testing.T) {
 		{"bypass-write-out", toolCall("write_file", map[string]any{"path": outsidePath("etc", "passwd")}), ModeBypass, OutcomeAllow},
 	}
 	for _, tc := range cases {
-		o, _ := Decide(tc.call, tc.mode, nil, "/ws")
+		o, _ := Decide(tc.call, tc.mode, nil, "/ws", false)
 		if o != tc.want {
 			t.Errorf("%s: Decide(%s/%s) = %v, want %v", tc.name, tc.call.Name, string(tc.call.Args), o, tc.want)
 		}
