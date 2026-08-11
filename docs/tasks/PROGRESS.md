@@ -15,6 +15,13 @@
   - `EvictContent/MaxOutputChars` 下沉 tools 包：断 tools→impl 反向依赖环（#105 前置项）。
 - **验证**：`go build/vet/test ./...` 全绿（含 e2e/TUI 强制重跑）；新增 policy 边界测试 20+ 用例、workspace 单测、工具 CWD 解析测试；shell 超时落盘测试修 flaky（PowerShell 冷启动放宽 timeout）。
 - **Bug10（overlay tagged union）**：TUI 三个覆盖层字段 appr/sel/help 可并存（审批未决时 runDone 消费队列命令叠开第二层弹窗，help 被遮、答完浮现）。收成 `ovl *overlay` 单字段（kind=approval/select/help）+ `openOverlay` 叠开守卫，非法组合类型层面不可表达；新增 `TestOverlayMutuallyExclusive` 回归。已 install。
+- **C1-C6（审查"其余已核实问题"批量，2026-08-10）**：
+  - C1 AgentState 原子写临时名带 pid + fsync（两进程 resume 互踩、断电丢内容）
+  - C2 transcript 行类型抽 `LineType*` 常量统一三处（写/读/TUI 渲染），load 的 switch 加 default 跳过未知类型
+  - C3 resume 复用段续接 ordinal/turn，新增 `TestResumeContinuesOrdinal`
+  - C5 thinking 不重放测试（`TestToAnthropicMessagesStripsThinking`）
+  - C6 双轨审计时序契约：agent.go/tool_output.go 注释声明 + `TestEmitBeforeTruncation` 锁定
+  - **C4 记下一批**：工具 schema 双份声明（手写 JSON 字符串 vs Go struct）→ 用户决定引入 `invopop/jsonschema` 从 Go struct 注解生成 schema 消双份，工作量高留待单独排期；另修 `anthropic_messages.go` 静默吞 schema 语法错（采样时校验）。
 
 ## 2026-08-09
 
