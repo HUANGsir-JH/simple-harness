@@ -35,21 +35,21 @@ import (
 type AgentState struct {
 	mu sync.Mutex `json:"-"` // 不序列化；New/LoadFile 反序列化后零值即可用
 
-	SessionID       string           `json:"session_id"`
-	Name            string           `json:"name,omitempty"`             // 会话名（首消息自动命名或 /rename；空 = 未命名）
-	Model           string           `json:"model,omitempty"`            // 会话使用的模型（resume 恢复）
-	ThinkingEnabled *bool            `json:"thinking_enabled,omitempty"` // nil = 默认开启（/thinking 切换后显式 true/false）
-	ThinkingEffort  string           `json:"thinking_effort,omitempty"`  // 推理档位；空 = 继承 client 默认
-	CWD             string           `json:"cwd,omitempty"`
-	CreatedAt       string           `json:"created_at"`
-	UpdatedAt       string           `json:"updated_at"`
-	Todos           []TodoItem       `json:"todos,omitempty"`      // todo 工具挂这
-	Permission      *PermissionState `json:"permission,omitempty"` // 审批状态（ADR-029）
-	PlanMode        bool             `json:"plan_mode,omitempty"`  // plan 模式开关（/plan 或 plan_enter/plan_done，ADR-036）
-	Plan            *PlanState       `json:"plan,omitempty"`       // plan 文件指针（ADR-036）
-	Summary         string           `json:"summary,omitempty"`    // 压缩摘要，预留
-	Usage           *messages.Usage  `json:"usage,omitempty"`      // 会话累计 token 用量（/usage 展示；ADR-037）
-	LastContextTokens int64          `json:"last_context_tokens,omitempty"` // 最近一次请求 input_tokens = 当前上下文占用（footer 与压缩触发，ADR-037）
+	SessionID         string           `json:"session_id"`
+	Name              string           `json:"name,omitempty"`             // 会话名（首消息自动命名或 /rename；空 = 未命名）
+	Model             string           `json:"model,omitempty"`            // 会话使用的模型（resume 恢复）
+	ThinkingEnabled   *bool            `json:"thinking_enabled,omitempty"` // nil = 默认开启（/thinking 切换后显式 true/false）
+	ThinkingEffort    string           `json:"thinking_effort,omitempty"`  // 推理档位；空 = 继承 client 默认
+	CWD               string           `json:"cwd,omitempty"`
+	CreatedAt         string           `json:"created_at"`
+	UpdatedAt         string           `json:"updated_at"`
+	Todos             []TodoItem       `json:"todos,omitempty"`               // todo 工具挂这
+	Permission        *PermissionState `json:"permission,omitempty"`          // 审批状态（ADR-029）
+	PlanMode          bool             `json:"plan_mode,omitempty"`           // plan 模式开关（/plan 或 plan_enter/plan_done，ADR-036）
+	Plan              *PlanState       `json:"plan,omitempty"`                // plan 文件指针（ADR-036）
+	Summary           string           `json:"summary,omitempty"`             // 压缩摘要，预留
+	Usage             *messages.Usage  `json:"usage,omitempty"`               // 会话累计 token 用量（/usage 展示；ADR-037）
+	LastContextTokens int64            `json:"last_context_tokens,omitempty"` // 最近一次请求的完整上下文占用（单轮 input+cache+output，footer 与压缩触发，ADR-037）
 }
 
 // TodoItem 是单个任务项（AgentScope tasksContext 对位）。对照 codex/opencode
@@ -244,8 +244,11 @@ func (a *AgentState) AddUsage(u messages.Usage) {
 	a.Usage.OutputTokens += u.OutputTokens
 }
 
-// SetLastContextTokens 记录最近一次请求的 input_tokens（当前上下文占用，
-// footer 与压缩触发用；压缩后重置为 0 防重入）。
+// SetLastContextTokens 记录最近一次请求的**完整上下文占用**（单轮
+// input + cache_read + cache_creation + output，opencode tokens.total 口径，
+// ADR-037 勘误）。footer 实时展示与压缩触发（ShouldCompact）用；压缩后重置
+// 为 0 防重入。注意：不能只记 input_tokens——端点只统计未缓存新增，历史在
+// cache_read，只记 input 会低估十几倍（footer 显示 0k + 压缩永不触发）。
 func (a *AgentState) SetLastContextTokens(n int64) {
 	a.mu.Lock()
 	a.LastContextTokens = n

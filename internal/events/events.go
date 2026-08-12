@@ -38,9 +38,9 @@ const (
 
 // Event 是单个回合级事件。
 type Event struct {
-	Type       EventType
-	MsgID      string // 事件所属消息 id（assistant 块事件；tool_result 为空）
-	Text       string
+	Type  EventType
+	MsgID string // 事件所属消息 id（assistant 块事件；tool_result 为空）
+	Text  string
 	// Signature 是 thinking 块的数字签名（仅 EventThinkingDone 携带；provider
 	// content_block_start 捕获，transcript thinking 行落盘，ADR-025 修订）。
 	Signature  string

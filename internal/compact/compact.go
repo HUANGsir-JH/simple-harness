@@ -71,9 +71,9 @@ func BuildSummaryPrompt(previousSummary string) string {
 	return "Create a new anchored summary from the conversation history.\n\n" + summaryTemplate
 }
 
-// contextSize 返回当前上下文占用（token）：实际 usage（LastContextTokens = 最近
-// 一次请求 input_tokens）优先；未捕获（0）时用估算兜底（EstimateTokens 镜像
-// 实际发送，含 thinking 回传）。ADR-037。
+// contextSize 返回当前上下文占用（token）：实际 usage（LastContextTokens =
+// 最近一次请求的完整占用，单轮 input+cache+output，ADR-037 勘误）优先；
+// 未捕获（0）时用估算兜底（EstimateTokens 镜像实际发送，含 thinking 回传）。
 func contextSize(rc *middleware.RuntimeContext) int64 {
 	if rc != nil && rc.State != nil && rc.State.CurrentContextTokens() > 0 {
 		return rc.State.CurrentContextTokens()
@@ -100,7 +100,7 @@ func ShouldCompact(rc *middleware.RuntimeContext, opts Options) bool {
 // 请求 = 完整 conversation + 摘要 prompt 作最后一条 user 消息，无工具，
 // max_tokens 4096。conversation 经 client 内部 toAnthropicMessages 转换（含
 // thinking 完整回传 + 工具邻接正确），摘要模型看到的上下文与正常采样一致
-//（上下文基线依赖阶段 B，ADR-025 修订）。
+// （上下文基线依赖阶段 B，ADR-025 修订）。
 type Summarizer struct {
 	client provider.Client
 	opts   Options
@@ -177,7 +177,7 @@ func NewRunner(summarizer *Summarizer, opts Options) *Runner {
 // Run 执行一次压缩：force=false 时先 ShouldCompact（85% 阈值，超才压）；
 // force=true 强制（手动 /compact）。成功返回 true；未超限返回 false, nil。
 // 摘要失败/取消返回错误（调用方终止 Run，ADR-037）；**失败绝不重写 conversation**
-//（不丢历史，下轮可再触发或手动 /compact）。Esc 中断 = ctx 错误原样传播。
+// （不丢历史，下轮可再触发或手动 /compact）。Esc 中断 = ctx 错误原样传播。
 func (r *Runner) Run(ctx context.Context, rc *middleware.RuntimeContext, force bool) (bool, error) {
 	if r == nil || r.summarizer == nil {
 		return false, nil

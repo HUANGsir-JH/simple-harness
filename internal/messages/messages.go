@@ -26,10 +26,10 @@ const (
 // Message 是统一消息类型，也是核心层唯一操作的消息类型；
 // provider 适配层负责与各后端原生格式互转。
 type Message struct {
-	ID          string            `json:"id,omitempty"`
-	Role        Role              `json:"role"`
-	Content     string            `json:"content,omitempty"`
-	Thinking    string            `json:"thinking,omitempty"` // assistant 推理文本
+	ID       string `json:"id,omitempty"`
+	Role     Role   `json:"role"`
+	Content  string `json:"content,omitempty"`
+	Thinking string `json:"thinking,omitempty"` // assistant 推理文本
 	// ThinkingSignature 是 thinking 块的数字签名（ADR-025 修订完整回传）：
 	// 非空时 provider 重放 thinking 块（ThinkingBlockParam 首块）；空则只存不重放
 	//（严格端点兼容；DeepSeek 兼容端点恒返回）。JSON 序列化进 transcript，resume 恢复。
@@ -66,10 +66,10 @@ type ToolResult struct {
 // 模型层，provider（wire 用量）、events（回合级事件）、agentstate（会话累计）
 // 三方复用同一类型，避免 provider 类型泄漏到存储层。
 type Usage struct {
-	InputTokens             int64 `json:"input_tokens"`
-	CacheReadInputTokens    int64 `json:"cache_read_input_tokens,omitempty"`
+	InputTokens              int64 `json:"input_tokens"`
+	CacheReadInputTokens     int64 `json:"cache_read_input_tokens,omitempty"`
 	CacheCreationInputTokens int64 `json:"cache_creation_input_tokens,omitempty"`
-	OutputTokens            int64 `json:"output_tokens"`
+	OutputTokens             int64 `json:"output_tokens"`
 }
 
 // IsZero 报告用量是否全为零（未捕获到 usage 时判断展示）。

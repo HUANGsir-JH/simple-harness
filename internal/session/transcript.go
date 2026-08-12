@@ -54,8 +54,8 @@ type Line struct {
 	Text      string          `json:"text,omitempty"`
 	// Signature 是 thinking 行的数字签名（ADR-025 修订完整回传）：块级落盘，
 	// resume 恢复回 Message.ThinkingSignature（重放 thinking 块的凭据）。
-	Signature string          `json:"signature,omitempty"`
-	Sync      chan struct{}   `json:"-"` // 内部 flush 确认（不序列化）
+	Signature string        `json:"signature,omitempty"`
+	Sync      chan struct{} `json:"-"` // 内部 flush 确认（不序列化）
 }
 
 // TranscriptWriter 是块级 transcript 的异步 writer（ADR-025）。

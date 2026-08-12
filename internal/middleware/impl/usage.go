@@ -13,8 +13,12 @@ import (
 // 数据流：agent.sample 在模型调用完成后把本轮 usage 存 rc.attrs["round_usage"]
 // （agent 核心不碰 state，ADR-021），本中间件在采样返回后读取并：
 //   - AddUsage：累计会话总账（/usage 命令展示，跨轮 + resume 恢复）
-//   - SetLastContextTokens：记录最近一次请求的 input_tokens = 当前上下文占用
-//     （TUI footer 实时展示 + 压缩触发，阶段 C 用）
+//   - SetLastContextTokens：记录最近一次请求的**完整上下文占用**（单轮
+//     input + cache_read + cache_creation + output，opencode tokens.total 口径，
+//     ADR-037 勘误）：TUI footer 实时展示 + 压缩触发（ShouldCompact）用。
+//     注意不能只记 input_tokens——DeepSeek 等端点的 input_tokens 只统计未命中
+//     缓存的新增输入，历史上下文在 cache_read 里；只记 input 会把占用低估
+//     十几倍，导致 footer 显示异常（ctx 0k）且压缩永不触发（ADR-037 勘误）。
 //
 // 无状态（ADR-026）：不持有会话对象，从 rc.State 读写；共享 chain 可并发。
 type UsageMiddleware struct {
@@ -28,7 +32,9 @@ func (m UsageMiddleware) OnReasoning(ctx context.Context, rc *middleware.Runtime
 	}
 	if u, ok := rc.Get("round_usage").(*messages.Usage); ok && u != nil {
 		rc.State.AddUsage(*u)
-		rc.State.SetLastContextTokens(u.InputTokens)
+		// 单轮完整占用（opencode tokens.total 同款）：全部输入（含缓存）+ 输出。
+		// cache_read 即"当前历史大小"（缓存前缀=历史全量），总和天然随会话单调增长。
+		rc.State.SetLastContextTokens(u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens + u.OutputTokens)
 	}
 	return err
 }

@@ -47,10 +47,10 @@ func (s *anthropicStream) Next() bool {
 		case "message_start":
 			// 首块 usage：input + cache（output 是初始占位 1，后续 message_delta 覆盖）。
 			s.usage = &messages.Usage{
-				InputTokens:             ev.Message.Usage.InputTokens,
-				CacheReadInputTokens:    ev.Message.Usage.CacheReadInputTokens,
+				InputTokens:              ev.Message.Usage.InputTokens,
+				CacheReadInputTokens:     ev.Message.Usage.CacheReadInputTokens,
 				CacheCreationInputTokens: ev.Message.Usage.CacheCreationInputTokens,
-				OutputTokens:            ev.Message.Usage.OutputTokens,
+				OutputTokens:             ev.Message.Usage.OutputTokens,
 			}
 			continue
 		case "message_delta":

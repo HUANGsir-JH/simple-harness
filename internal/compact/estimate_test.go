@@ -28,7 +28,7 @@ func TestEstimateTokens(t *testing.T) {
 // TestEstimateTokensNoThinking 验证无 thinking 时不受影响（普通会话估算正常）。
 func TestEstimateTokensNoThinking(t *testing.T) {
 	msgs := []*messages.Message{
-		{Role: messages.RoleUser, Content: "hello"}, // 5
+		{Role: messages.RoleUser, Content: "hello"},   // 5
 		{Role: messages.RoleAssistant, Content: "hi"}, // 2
 	}
 	if got := EstimateTokens(msgs); got != 1 { // 7/4 = 1

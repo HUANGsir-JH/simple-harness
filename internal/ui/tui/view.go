@@ -668,11 +668,15 @@ func shortSession(id string) string {
 	return id[:8] + "..." + id[len(id)-4:]
 }
 
-// fmtTokens 把 token 数格式化为紧凑显示（<1M 用 k、≥1M 用 M），footer 的
-// `ctx 128k/1.0M` 与 /usage 用量展示共用。
+// fmtTokens 把 token 数格式化为紧凑显示（<1K 显示原值、<1M 用 k、≥1M 用 M），
+// footer 的 `ctx 128k/1.0M` 与 /usage 用量展示共用。
+// 小值显示原数字而非 0k（ADR-037 勘误：input 小但 cache 大时避免误导）。
 func fmtTokens(n int64) string {
 	if n >= 1000000 {
 		return fmt.Sprintf("%.1fM", float64(n)/1e6)
+	}
+	if n < 1000 {
+		return fmt.Sprintf("%d", n)
 	}
 	return fmt.Sprintf("%dk", n/1000)
 }
