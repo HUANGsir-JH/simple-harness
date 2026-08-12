@@ -203,6 +203,42 @@ func (c *Controller) WaitRuns() {
 	}
 }
 
+// RunCompact 手动压缩当前会话（/compact，ADR-037）。tea.Cmd 内构造 rc 跑
+// compactor.Run(force=true)（含 LLM 摘要调用，避免阻塞 UI；toast"压缩中…"）。
+// 返回 compactDoneMsg 标记完成。压缩成功重写 rc.Messages = [summary user]（指向
+// 会话 conversation）+ rc.Segment 切新 transcript 段，TUI 收到后 reloadSession
+// 显示摘要占位。摘要失败返回错误（不重写 conversation，历史保留）。
+func (c *Controller) RunCompact() tea.Cmd {
+	c.runs.Add(1)
+	return func() tea.Msg {
+		defer c.runs.Done()
+		if err := c.ensureActive(); err != nil {
+			return compactDoneMsg{err: err}
+		}
+		compactor := c.a.Compactor()
+		if compactor == nil {
+			return compactDoneMsg{err: fmt.Errorf("此装配不支持上下文压缩")}
+		}
+		rc := c.active.RuntimeContext()
+		runCtx, cancel := context.WithCancel(c.ctx)
+		c.setCancel(cancel)
+		defer c.clearCancel()
+		done, err := compactor.Run(runCtx, rc, true)
+		if err != nil {
+			return compactDoneMsg{err: err}
+		}
+		if done {
+			// 压缩成功：AgentState 摘要/LastContextTokens 已改（内存）。手动路径
+			// 不经 agent.Run → SessionMiddleware onAgent after 不会落盘，这里显式
+			// 持久化（resume 恢复 Summary；LastContextTokens 清零防重入）。
+			if err := agentstate.SaveFile(c.active.StatePath(), c.active.State()); err != nil {
+				return compactDoneMsg{err: fmt.Errorf("压缩后落盘 AgentState: %w", err)}
+			}
+		}
+		return compactDoneMsg{compacted: done}
+	}
+}
+
 // onEvent 双转发：program.Send（UI 渲染）+ transcript 落盘（块级，ADR-025）。
 func (c *Controller) onEvent(ev events.Event) {
 	if c.send != nil {

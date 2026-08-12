@@ -6,7 +6,7 @@
 
 参照 OpenAI Codex CLI（`../codex/codex-rs`，Rust）+ AgentScope Java v2 的架构，用 Go 构建一个**可真实使用**的极简 agent harness（命令行）。定位为**通用框架**，未来可被 resume-agent 等其它项目引用。
 
-**现状（2026-08-12）**：阶段 1（骨架+消息+provider+最小 loop）→ 阶段 2（工具系统+并发+渲染+middleware 骨架+REPL）→ 阶段 2.5（Workspace+AgentState+会话落盘/resume）→ 架构重构（ADR-026 无状态 agent+运行时切换）→ todo 工具（ADR-027）→ 工具结果截断/用户中断/shell 缓解（ADR-028）→ **阶段 3 审批（ADR-029）✅** → 配置层独立 + 装配根 → **Plan Mode（ADR-036）✅ 2026-08-11** → **Plan Mode 审查修复 ✅ 2026-08-12**（写黑名单反向判定 + 纯 Deny / AgentState 锁下沉 / TUI 待决请求队列，见 DECISIONS.md ADR-036 修订）→ **用量展示（ADR-037 第一段）✅ 2026-08-12**（provider 捕获 usage + AgentState 累计 + footer `/usage`，版本 0.7.1）→ **thinking 完整回传（ADR-025 修订，ADR-037 第二段）✅ 2026-08-12**（thinking signature 捕获→存储→重放，版本 0.7.2）。待办：阶段 4 剩余（**LLM 摘要压缩 ADR-037** + AGENTS.md 注入 + 系统提示词拼接）、阶段 5（子 agent）、阶段 6（可选）。
+**现状（2026-08-12）**：阶段 1（骨架+消息+provider+最小 loop）→ 阶段 2（工具系统+并发+渲染+middleware 骨架+REPL）→ 阶段 2.5（Workspace+AgentState+会话落盘/resume）→ 架构重构（ADR-026 无状态 agent+运行时切换）→ todo 工具（ADR-027）→ 工具结果截断/用户中断/shell 缓解（ADR-028）→ **阶段 3 审批（ADR-029）✅** → 配置层独立 + 装配根 → **Plan Mode（ADR-036）✅ 2026-08-11** → **Plan Mode 审查修复 ✅ 2026-08-12**（写黑名单反向判定 + 纯 Deny / AgentState 锁下沉 / TUI 待决请求队列，见 DECISIONS.md ADR-036 修订）→ **用量展示（ADR-037 第一段）✅ 2026-08-12**（provider 捕获 usage + AgentState 累计 + footer `/usage`，版本 0.7.1）→ **thinking 完整回传（ADR-025 修订，ADR-037 第二段）✅ 2026-08-12**（thinking signature 捕获→存储→重放，版本 0.7.2）→ **LLM 摘要压缩（ADR-037 第三段）✅ 2026-08-12**（compact 包 + Segment 钩子 + CompactMiddleware + /compact，版本 0.8.0）。待办：阶段 4 剩余（**AGENTS.md 注入** + 系统提示词拼接）、阶段 5（子 agent）、阶段 6（可选）。
 
 ## 已确认决策（当前生效）
 
@@ -27,7 +27,7 @@
 | 配置 | YAML（~/.harness/config.yaml + 项目级 config.local.yaml），加载/校验统一在 **internal/config** 包；`app.Load()` 惰性单例（ADR-026，2026-08-09 配置层独立） |
 | thinking | **默认开启**（ADR-034，2026-08-10 删 enabled 配置项）；模型配置只留 efforts（档位集）+ CLI `--effort/--thinking/--no-thinking` 覆盖 + TUI `/thinking` 会话切换（持久化 AgentState，nil = 默认开启）；按 anthropic 标准参数传递 |
 | 内置工具 | 11 个：read_file / list_dir / glob / write_file / shell_command / apply_patch / update_todo + plan 4 个（plan_enter / write_plan / plan_done / ask_user，ADR-036） |
-| 压缩 / 子 agent / AGENTS.md / TUI / Hooks | **规划中（未实现）**，见"待办阶段" |
+| 压缩 / 子 agent / AGENTS.md / TUI / Hooks | **压缩 ✅ 2026-08-12（ADR-037 第三段）**；子 agent / AGENTS.md 注入规划中，见"待办阶段" |
 
 ## 架构总览（当前实际目录）
 
@@ -44,8 +44,9 @@ harness/
 │   ├── tools/            # Tool 接口（Handle 带 rc）+ 注册表 + 7 内置工具
 │   ├── agentstate/       # AgentState 快照（模型/档位/todo/权限/CWD/plan/摘要）+ 原子落盘
 │   ├── session/          # workspace 项目分桶 + 块级 transcript 异步 writer + resume
+│   ├── compact/           # ★ 上下文压缩（ADR-037 第三段）：EstimateTokens/ShouldCompact/Summarizer/Runner
 │   ├── e2e/              # 进程外端到端测试（termtest 真实 TTY + mock HTTP）
-│   └── # 规划中（未实现）：compact / agentsmd / hooks；TUI（internal/ui 扩展，规划）
+│   └── # 规划中（未实现）：agentsmd / hooks；TUI（internal/ui 扩展，规划）
 ├── config.example.yaml   # 配置示例
 └── docs/                 # 设计文档（DECISIONS/TASKS/PROGRESS + DATA_STRUCTURES）
 ```
@@ -147,13 +148,13 @@ type Tool interface {
 - **项目分桶**：`~/.harness/workspaces/<项目转义>/<session-id>/{historys, plans, agentstate.json, evictions}`；bucket = FindProject 项目根，`state.CWD` = 会话启动目录（ADR-028，两者解耦）。
 - **resume**：只读最大序号 transcript 文件逐行重建 + LoadFile 恢复 AgentState。
 
-### 7. 规划：上下文压缩（internal/compact/）
+### 7. 上下文压缩（internal/compact/）✅ 2026-08-12（ADR-037 第三段）
 
-- **v1 TokenBudget**：token 超限 → 清历史保留最近 N 条 + 占位；**v2 摘要式**：LLM 生成摘要 + 保留最近用户消息。
-- 触发：turn 开始前（PreTurn）+ 采样后超限（MidTurn）；触发时 `NewSegment` 切新文件，seed = 摘要+保留。
-- **不做 overflow 安全网**（eviction 撑宽度，ADR-009/028）。
-- 作为 onReasoning middleware 挂载（ADR-021 挂载映射）。
-- **注意**：大工具结果 eviction（20K 落盘 evictions/）已由 ADR-028 完成，不属于本模块。
+- **实现 = LLM 摘要式**（不做 v1 TokenBudget）：`EstimateTokens`（bytes/4 含 thinking，镜像实际发送，估算兜底）+ `ShouldCompact`（contextSize >= 85%·ContextWindow 硬编码；实际 usage（LastContextTokens）驱动 + 估算兜底）+ `Summarizer`（codex 方式：完整 conversation + 摘要 prompt 尾 user，无工具，max_tokens 4096；opencode 结构化模板 + previous summary 更新式）+ `Runner.Run(ctx, rc, force)`。
+- 触发：onReasoning **before**（CompactMiddleware，每轮采样前）+ 手动 `/compact`（Controller.RunCompact）。
+- 压缩后：conversation = **单一 summary user 消息（纯占位）**；`RuntimeContext.Segment` 钩子切新文件（`NewSegment` + seed + Flush），resume 从新段重建；`AgentState.Summary` + `SetLastContextTokens(0)` 防重入。
+- 摘要失败/Esc：**跳过 + 终止 run**，绝不重写 conversation。
+- 不做 overflow 安全网（eviction 撑宽度，ADR-009/028）。
 
 ### 8. 规划：子 Agent（internal/agent/subagent.go）
 
@@ -192,10 +193,10 @@ type Tool interface {
 
 ### ⏳ 待办（未完成）
 
-- **阶段 4（剩余）：LLM 摘要压缩 + AGENTS.md 注入 + 系统提示词拼接**
+- **阶段 4（剩余）：AGENTS.md 注入 + 系统提示词拼接**
   - **用量展示 ✅ 2026-08-12（ADR-037 第一段）**：provider 捕获 usage → `messages.Usage` → agent `EventUsage` → AgentState `Usage`/`LastContextTokens` → TUI footer `ctx Nk/Mk` + `/usage`。版本 0.7.1。
   - **thinking 完整回传 ✅ 2026-08-12（ADR-025 修订，ADR-037 第二段）**：捕获 thinking signature → `Message.ThinkingSignature` + transcript Line.Signature → `toAnthropicAssistantMessage` 重放 `ThinkingBlockParam`（仅签名非空）；thinking-only assistant 带签名不再跳过；估算镜像 `compact.EstimateTokens` 含 thinking。DeepSeek 实测通过。版本 0.7.2。
-  - `compact`（ADR-037 第三段）：**直接 LLM 摘要式**（不做 v1 TokenBudget）——onReasoning 触发，context_window 85% 硬编码阈值，实际 usage 驱动 + 估算兜底；codex 方式发送摘要请求（完整 conversation + 摘要 prompt 尾 user，无工具，max_tokens 4096，opencode 结构化模板 + previous summary 更新式）；压缩后 = 单一 summary user 消息（纯占位）；`RuntimeContext.Segment` 钩子切新段（`NewSegment` + seed）；摘要失败 = 跳过 + 终止 run（Esc 同处理）；自动 + 手动 `/compact`。不做 overflow 安全网。
+  - **LLM 摘要压缩 ✅ 2026-08-12（ADR-037 第三段）**：`internal/compact`（ShouldCompact 85% 硬编码 + Summarizer codex 方式 + Runner.Run）；`RuntimeContext.Segment` 钩子（NewSegment + seed + Flush）；`impl.CompactMiddleware`（onReasoning before，摘要失败终止 run，Esc 同）；`events.EventCompacted` + `/compact` 手动（Controller.RunCompact 成功显式落盘 AgentState）。版本 0.8.0。
   - `agentsmd`（onSystemPrompt：项目级 AGENTS.md 向上搜索 + 全局拼接 + 动态系统提示词组装）
   - 注：大工具结果 eviction 已完成（ADR-028），不属于本阶段。
 - **阶段 5：子 agent（内置 + 并行 + 状态 + 单向通信）**

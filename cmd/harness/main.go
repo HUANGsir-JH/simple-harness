@@ -7,7 +7,7 @@ import (
 
 // version 是 harness 版本号。每次有用户可见变更（功能 → minor、修复 → patch）
 // 随提交 bump，`harness version` 输出。
-const version = "0.7.2"
+const version = "0.8.0"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -74,7 +74,8 @@ func usage() {
 	fmt.Println("  --no-thinking-display        do not show thinking text")
 	fmt.Println()
 	fmt.Println("TUI commands:")
-	fmt.Println("  /switch /model /effort /permission    popup pickers (real-time config lists)")
+	fmt.Println("  /switch /model /effort /permission /thinking    popup pickers (real-time config lists)")
+	fmt.Println("  /compact                              compress context (LLM summary)")
 	fmt.Println("  /help /exit")
 	fmt.Println()
 	fmt.Println("config: project config.local.yaml or ~/.harness/config.yaml")

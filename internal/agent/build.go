@@ -3,6 +3,7 @@ package agent
 import (
 	"fmt"
 
+	"github.com/agent-project/harness/internal/compact"
 	"github.com/agent-project/harness/internal/config"
 	"github.com/agent-project/harness/internal/middleware"
 	"github.com/agent-project/harness/internal/middleware/impl"
@@ -34,16 +35,26 @@ func Build(res *config.ProviderConfig, defaultMode string) (*Agent, error) {
 	// 工具说明注入系统提示（onSystemPrompt middleware；阶段四 AGENTS.md 等在此
 	// 追加）。SessionMiddleware 无状态，从 rc.StatePath 读写 AgentState。
 	// TodoReminderMiddleware 在模型连续多轮不更新 todo 时注入偏离提醒。
+	// CompactMiddleware 上下文压缩（onReasoning before，ADR-037）：每轮采样前
+	// 检查 85% 阈值（实际 usage 驱动 + 估算兜底），超则 LLM 摘要压缩。注册在
+	// UsageMiddleware 之前——压缩的 before 先于采样、用量的 after 后于采样。
 	// UsageMiddleware 累计每轮采样 token 用量进 AgentState（ADR-037 用量展示：
-	// /usage 总账 + LastContextTokens 供 footer 与阶段 C 压缩触发）。
+	// /usage 总账 + LastContextTokens 供 footer 与压缩触发）。
 	// ToolOutputMiddleware 统一截断工具结果（超长落盘 evictions/ + head/tail preview，ADR-028）。
 	// ApprovalMiddleware 工具审批（onActing，三档模式 + 会话级记忆，ADR-029）；
 	// 审批交互器经 rc.Approver 注入（TUI/runCmd 各自 channelApprover，非 TTY 不设）。
 	// DefaultMode 与会话创建播种同源（App.DefaultApprovalMode，config approval.mode）。
+	opts := compact.Options{
+		ContextWindow:   int64(res.ContextWindow),
+		Model:           res.Model,
+		MaxOutputTokens: 4096, // codex/opencode 同值，ADR-037
+	}
+	compactor := compact.NewRunner(compact.NewSummarizer(client, opts), opts)
 	mw := middleware.NewChain(
 		impl.ToolInstructionsMiddleware{Tools: reg.Specs()},
 		impl.SessionMiddleware{},
 		impl.TodoReminderMiddleware{},
+		impl.CompactMiddleware{Runner: compactor},
 		impl.UsageMiddleware{},
 		impl.ToolOutputMiddleware{},
 		impl.ApprovalMiddleware{DefaultMode: defaultMode},
@@ -52,5 +63,6 @@ func Build(res *config.ProviderConfig, defaultMode string) (*Agent, error) {
 	a := New(client, res.Model)
 	a.SetTools(reg)
 	a.SetMiddleware(mw)
+	a.SetCompactor(compactor)
 	return a, nil
 }

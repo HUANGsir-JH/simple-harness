@@ -1,0 +1,216 @@
+package compact
+
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"github.com/agent-project/harness/internal/messages"
+	"github.com/agent-project/harness/internal/middleware"
+	"github.com/agent-project/harness/internal/provider"
+)
+
+// ThresholdPercent 是压缩触发阈值：context_window 的 85%（ADR-037，硬编码无配置）。
+const ThresholdPercent = 85
+
+// summaryOutputTokens 是摘要请求的 max_tokens（codex/opencode 同值 4096，ADR-037）。
+const summaryOutputTokens = 4096
+
+// Options 是压缩选项。全程不加配置（ADR-037）：ContextWindow 来自模型配置，
+// Model/MaxOutputTokens 由装配根（agent.Build）从 client 解析。
+type Options struct {
+	ContextWindow   int64  // 模型 context_window（token；0 = 无法判定阈值 → 不触发）
+	Model           string // 摘要请求模型（正常采样同款；空 = client 默认）
+	MaxOutputTokens int    // 摘要请求最大输出（codex 方式 4096；0 = 用 summaryOutputTokens）
+}
+
+// summaryTemplate 是 opencode 的锚定摘要模板（Objective / Important Details /
+// Work State(Completed/Active/Blocked) / Next Move / Relevant Files）。逐字沿用
+// opencode 原文（ADR-037 用户选定的结构化模板）。
+const summaryTemplate = `Output exactly the Markdown structure shown inside <template> and keep the section order unchanged. Do not include the <template> tags in your response.
+<template>
+## Objective
+- [one or two brief sentences describing what the user is trying to accomplish]
+
+## Important Details
+- [constraints/preferences, decisions and why, important facts/assumptions, exact context needed to continue, or "(none)"]
+
+## Work State
+### Completed
+- [finished work, verified facts, or changes made; otherwise "(none)"]
+
+### Active
+- [current work, partial changes, or investigation state; otherwise "(none)"]
+
+### Blocked
+- [blockers, failing commands, or unknowns; otherwise "(none)"]
+
+## Next Move
+1. [immediate concrete action, or "(none)"]
+2. [next action if known, or "(none)"]
+
+## Relevant Files
+- [file or directory path: why it matters, or "(none)"]
+</template>
+
+Rules:
+- Keep every section, even when empty.
+- Use terse bullets, not prose paragraphs.
+- Preserve exact file paths, symbols, commands, error strings, URLs, and identifiers when known.
+- Do not mention the summary process or that context was compacted.`
+
+// BuildSummaryPrompt 构造摘要 prompt：previous summary 更新式（opencode
+// buildPrompt 同款：已有摘要 → 续接合并；无 → 新建）+ 锚定模板。作为最后一条
+// user 消息追加到完整 conversation（codex 方式发送，ADR-037）。
+func BuildSummaryPrompt(previousSummary string) string {
+	if strings.TrimSpace(previousSummary) != "" {
+		return "Update the anchored summary below using the conversation history above.\n" +
+			"Preserve still-true details, remove stale details, and merge in the new facts.\n" +
+			"<previous-summary>\n" + previousSummary + "\n</previous-summary>\n\n" + summaryTemplate
+	}
+	return "Create a new anchored summary from the conversation history.\n\n" + summaryTemplate
+}
+
+// contextSize 返回当前上下文占用（token）：实际 usage（LastContextTokens = 最近
+// 一次请求 input_tokens）优先；未捕获（0）时用估算兜底（EstimateTokens 镜像
+// 实际发送，含 thinking 回传）。ADR-037。
+func contextSize(rc *middleware.RuntimeContext) int64 {
+	if rc != nil && rc.State != nil && rc.State.CurrentContextTokens() > 0 {
+		return rc.State.CurrentContextTokens()
+	}
+	return int64(EstimateTokens(messagesOf(rc)))
+}
+
+func messagesOf(rc *middleware.RuntimeContext) []*messages.Message {
+	if rc == nil || rc.Messages == nil {
+		return nil
+	}
+	return rc.Messages.Messages
+}
+
+// ShouldCompact 判断当前上下文是否超过压缩阈值（85% · ContextWindow）。
+func ShouldCompact(rc *middleware.RuntimeContext, opts Options) bool {
+	if opts.ContextWindow <= 0 {
+		return false
+	}
+	return contextSize(rc) >= int64(float64(opts.ContextWindow)*ThresholdPercent/100)
+}
+
+// Summarizer 生成压缩摘要：复用 provider.Client 单独采样（codex 方式，ADR-037）——
+// 请求 = 完整 conversation + 摘要 prompt 作最后一条 user 消息，无工具，
+// max_tokens 4096。conversation 经 client 内部 toAnthropicMessages 转换（含
+// thinking 完整回传 + 工具邻接正确），摘要模型看到的上下文与正常采样一致
+//（上下文基线依赖阶段 B，ADR-025 修订）。
+type Summarizer struct {
+	client provider.Client
+	opts   Options
+}
+
+// NewSummarizer 构造摘要器（client 复用正常采样的 provider.Client）。
+func NewSummarizer(client provider.Client, opts Options) *Summarizer {
+	return &Summarizer{client: client, opts: opts}
+}
+
+// Summarize 生成摘要。失败返回错误（**不写 conversation**；调用方决定终止）。
+// ctx 取消（Esc 中断压缩）返回 ctx 错误，与摘要失败同处理（ADR-037）。
+func (s *Summarizer) Summarize(ctx context.Context, rc *middleware.RuntimeContext) (string, error) {
+	if s.client == nil {
+		return "", fmt.Errorf("compact: 未配置摘要客户端")
+	}
+	msgs := messagesOf(rc)
+	reqMsgs := make([]*messages.Message, 0, len(msgs)+1)
+	reqMsgs = append(reqMsgs, msgs...)
+	previous := ""
+	if rc != nil && rc.State != nil {
+		previous = rc.State.Summary
+	}
+	reqMsgs = append(reqMsgs, &messages.Message{Role: messages.RoleUser, Content: BuildSummaryPrompt(previous)})
+
+	maxOut := s.opts.MaxOutputTokens
+	if maxOut <= 0 {
+		maxOut = summaryOutputTokens
+	}
+	es, err := s.client.Stream(ctx, provider.Request{
+		Model:           s.opts.Model,
+		Messages:        reqMsgs,
+		MaxOutputTokens: maxOut,
+		// Tools 空：摘要请求不提供工具（codex/opencode 同，ADR-037）。
+	})
+	if err != nil {
+		return "", err
+	}
+	defer es.Close()
+
+	var sb strings.Builder
+	for es.Next() {
+		switch ev := es.Current(); ev.Type {
+		// 只收 EventTextDone（整块文本，同 agent.sample 组装逻辑）：EventTextDelta
+		// 是流式增量、块完成时总和等于块全文——delta+done 都收会双重计数。
+		case provider.EventTextDone:
+			sb.WriteString(ev.Text)
+		case provider.EventError:
+			if ev.Error != nil {
+				return "", ev.Error
+			}
+		case provider.EventDone:
+			return strings.TrimSpace(sb.String()), nil
+		}
+	}
+	if err := es.Err(); err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(sb.String()), nil
+}
+
+// Runner 执行上下文压缩（自动 onReasoning + 手动 /compact 共用同一实例；
+// 无状态：Summarizer + Options 不可变，只从 rc 读写，共享 chain 可并发）。
+type Runner struct {
+	summarizer *Summarizer
+	opts       Options
+}
+
+// NewRunner 构造压缩执行器。
+func NewRunner(summarizer *Summarizer, opts Options) *Runner {
+	return &Runner{summarizer: summarizer, opts: opts}
+}
+
+// Run 执行一次压缩：force=false 时先 ShouldCompact（85% 阈值，超才压）；
+// force=true 强制（手动 /compact）。成功返回 true；未超限返回 false, nil。
+// 摘要失败/取消返回错误（调用方终止 Run，ADR-037）；**失败绝不重写 conversation**
+//（不丢历史，下轮可再触发或手动 /compact）。Esc 中断 = ctx 错误原样传播。
+func (r *Runner) Run(ctx context.Context, rc *middleware.RuntimeContext, force bool) (bool, error) {
+	if r == nil || r.summarizer == nil {
+		return false, nil
+	}
+	if !force && !ShouldCompact(rc, r.opts) {
+		return false, nil
+	}
+	if rc == nil || rc.Messages == nil {
+		return false, fmt.Errorf("compact: 无会话上下文")
+	}
+
+	summary, err := r.summarizer.Summarize(ctx, rc)
+	if err != nil {
+		return false, fmt.Errorf("上下文压缩失败: %w", err)
+	}
+	if strings.TrimSpace(summary) == "" {
+		return false, fmt.Errorf("上下文压缩失败: 摘要为空")
+	}
+
+	// 重写 conversation = 单一 summary user 消息（纯占位，ADR-037）。"保留最新
+	// 信息"由摘要 prompt 交给 LLM（opencode 结构化模板）；tool_use→tool_result
+	// 邻接天然安全（纯占位全丢，无残留配对问题）。
+	summaryMsg := messages.NewUserMessage(summary)
+	rc.Messages.Messages = []*messages.Message{summaryMsg}
+	if rc.State != nil {
+		rc.State.SetSummary(summary)
+		rc.State.SetLastContextTokens(0) // 防重入：压缩后上下文占用清零
+	}
+	if rc.Segment != nil {
+		if err := rc.Segment([]*messages.Message{summaryMsg}); err != nil {
+			return false, fmt.Errorf("上下文压缩落盘失败: %w", err)
+		}
+	}
+	rc.Set(middleware.CompactedKey, true)
+	return true, nil
+}

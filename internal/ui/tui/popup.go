@@ -47,6 +47,7 @@ var commandCatalog = []commandItem{
 	{name: "permission", short: "Set approval policy"},
 	{name: "plan", short: "Toggle plan mode / view plan"},
 	{name: "usage", short: "Show token usage"},
+	{name: "compact", short: "Compress context (LLM summary)"},
 	{name: "help", short: "Commands and keys"},
 	{name: "exit", short: "Leave Harness"},
 }
@@ -215,6 +216,16 @@ func (m Model) runCommand(cmd command) (tea.Model, tea.Cmd) {
 		m.appendSystem("USAGE  "+strings.Join(parts, "  "), false)
 		m.refresh(false)
 		return m, nil
+	case "compact":
+		// 手动压缩（ADR-037）：tea.Cmd 内跑 compactor.Run(force=true)（含 LLM
+		// 摘要调用，避免阻塞 UI）；完成经 compactDoneMsg reloadSession 显示摘要
+		// 占位。摘要失败不重写 conversation，系统行提示重试。
+		if m.c.active == nil {
+			return m.sysErr(fmt.Errorf("无会话（先发一条消息）")), nil
+		}
+		m.toast = "压缩中…"
+		m.refresh(false)
+		return m, m.c.RunCompact()
 	default:
 		return m.sysErr(fmt.Errorf("unknown command /%s", cmd.name)), nil
 	}

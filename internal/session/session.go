@@ -140,6 +140,30 @@ func (s *Session) RuntimeContext() *middleware.RuntimeContext {
 		v := *s.state.ThinkingEnabled
 		rc.ThinkingEnabled = &v
 	}
+	// Segment 压缩落盘钩子（ADR-037）：压缩中间件重写 conversation 为纯占位后
+	// 调用——切新 transcript 段（writer.NewSegment）+ seed 消息（摘要 user 行）
+	// 落盘，resume 从新段重建（conversation = 单一 summary user）。与 rc.Approver
+	// 同模式：session 知道 writer、压缩包不知道，防环（compact → session 会成环）。
+	rc.Segment = func(seed []*messages.Message) error {
+		s.writer.NewSegment()
+		for _, m := range seed {
+			if m == nil {
+				continue
+			}
+			// seed 通常为 [summary user 消息]；user 行 + Content 重建 user 消息。
+			// 兼容非 user（text 行），未来 seed 扩展不破读侧。
+			switch m.Role {
+			case messages.RoleAssistant:
+				s.writer.Write(Line{Type: LineTypeText, MsgID: m.ID, Text: m.Content})
+			default:
+				s.writer.Write(Line{Type: LineTypeUser, MsgID: m.ID, Content: m.Content})
+			}
+		}
+		// 异步 writer 落盘同步：压缩后 TUI reloadSession（手动 /compact）读盘显示
+		// 摘要占位；不等 Flush 会读到旧段/空段。
+		s.writer.Flush()
+		return nil
+	}
 	return rc
 }
 

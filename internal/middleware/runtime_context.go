@@ -44,8 +44,21 @@ type RuntimeContext struct {
 	// ApprovalMiddleware 在 onActing 询问时从 rc 读取。
 	Approver Approver
 
+	// Segment 是压缩落盘钩子（ADR-037）：中间件重写 conversation 为纯占位后
+	// 调用，切新 transcript 段（writer.NewSegment）并以 seed 消息（摘要 user
+	// 行）开头，resume 从新段重建。session 注入闭包（与 rc.Approver 同模式：
+	// session 知道中间件、反之不成立，防环）；nil = 不落盘（非会话场景）。
+
+	// seed 是压缩后要落盘的消息序列（通常为 [summary user 消息]）。
+	Segment func(seed []*messages.Message) error
+
 	attrs map[string]any
 }
+
+// CompactedKey 是 rc.attrs 的压缩完成标记键：compact.Run 成功后置 true，
+// agent.Run 读取并发出 events.EventCompacted（TUI 系统行"上下文已压缩"）。
+// 放 middleware 包（compact 与 agent 都已依赖它，避免新增依赖边）。
+const CompactedKey = "compacted"
 
 // NewRuntimeContext 创建空上下文。
 func NewRuntimeContext() *RuntimeContext {

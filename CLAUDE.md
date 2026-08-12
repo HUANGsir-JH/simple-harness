@@ -6,9 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 一个参照 OpenAI Codex CLI（`../codex/codex-rs`，Rust 源码）+ AgentScope Java v2 架构、用 Go 构建的**可真实使用**的极简 agent harness（命令行形式）。定位为通用框架，未来可被其它项目（如 resume-agent）引用。
 
-**当前状态**：阶段 1（骨架+统一消息模型+Provider+最小 loop）✅ 2026-08-04；阶段 2（工具系统 + 并发执行 + 终端渲染 + middleware 骨架 + 交互式 CLI）✅ 2026-08-07；阶段 2.5（Workspace + AgentState + 会话落盘/resume）✅ 2026-08-08；**架构重构（ADR-026 无状态 agent + 运行时切换 + 配置统一 init）**✅ 2026-08-08；**todo 工具（update_todo 全量替换 + 跨轮偏离提醒，ADR-027）**✅ 2026-08-08；**工具结果截断中间件 + Esc 用户中断 + shell 长任务缓解 + state.CWD 修正（ADR-028）**✅ 2026-08-09；**工具审批（三档权限 + onActing middleware + 会话级记忆，ADR-029）**✅ 2026-08-09；**TUI（bubbletea 全屏交互 UI 替代 REPL，ADR-030）**🔨 2026-08-09。**规划文档 `IMPLEMENTATION_PLAN.md` 是权威来源**（含已确认决策表与实施阶段状态，**已完成/待办严格区分**）；架构决策在 `docs/tasks/DECISIONS.md`（ADR-021~029 为核心）；任务跟踪在 `docs/tasks/{TASKS,PROGRESS}.md`。实现前先读 `IMPLEMENTATION_PLAN.md`。
+**当前状态**：阶段 1（骨架+统一消息模型+Provider+最小 loop）✅ 2026-08-04；阶段 2（工具系统 + 并发执行 + 终端渲染 + middleware 骨架 + 交互式 CLI）✅ 2026-08-07；阶段 2.5（Workspace + AgentState + 会话落盘/resume）✅ 2026-08-08；**架构重构（ADR-026 无状态 agent + 运行时切换 + 配置统一 init）**✅ 2026-08-08；**todo 工具（update_todo 全量替换 + 跨轮偏离提醒，ADR-027）**✅ 2026-08-08；**工具结果截断中间件 + Esc 用户中断 + shell 长任务缓解 + state.CWD 修正（ADR-028）**✅ 2026-08-09；**工具审批（三档权限 + onActing middleware + 会话级记忆，ADR-029）**✅ 2026-08-09；**TUI（bubbletea 全屏交互 UI 替代 REPL，ADR-030）**🔨 2026-08-09；**用量展示（ADR-037 第一段，footer ctx + /usage）✅ 2026-08-12**；**thinking 完整回传（ADR-025 修订，ADR-037 第二段）✅ 2026-08-12**；**LLM 摘要压缩（ADR-037 第三段，compact 包 + /compact）✅ 2026-08-12（版本 0.8.0）**。**规划文档 `IMPLEMENTATION_PLAN.md` 是权威来源**（含已确认决策表与实施阶段状态，**已完成/待办严格区分**）；架构决策在 `docs/tasks/DECISIONS.md`（ADR-021~037 为核心）；任务跟踪在 `docs/tasks/{TASKS,PROGRESS}.md`。实现前先读 `IMPLEMENTATION_PLAN.md`。
 
-**实施顺序**：~~阶段 3 审批~~ → **todo 工具**（挂 state，已完）→ **工具结果落盘/中断/shell 缓解**（ADR-028，已完）→ **工具审批（ADR-029，已完）**→ **TUI（bubbletea 替代 REPL，ADR-030，进行中）**→ 阶段 4 剩余（AGENTS.md 注入/压缩）→ 阶段 5（子 agent，并行已由无状态 agent 架构支撑）→ 阶段 6 剩余（摘要式压缩/grep/双向通信）。
+**实施顺序**：~~阶段 3 审批~~ → **todo 工具**（挂 state，已完）→ **工具结果落盘/中断/shell 缓解**（ADR-028，已完）→ **工具审批（ADR-029，已完）**→ **TUI（bubbletea 替代 REPL，ADR-030，进行中）**→ **用量展示 + thinking 回传 + LLM 摘要压缩（ADR-037，已完 0.8.0）**→ 阶段 4 剩余（AGENTS.md 注入/系统提示词拼接）→ 阶段 5（子 agent，并行已由无状态 agent 架构支撑）→ 阶段 6 剩余（grep/双向通信）。
 
 ## 常用命令
 
@@ -47,10 +47,11 @@ internal/
   provider/           # 单 anthropic wire（ADR-022）+ 块事件适配 + per-call 覆盖（Request.Model/ThinkingEnabled/Effort，ADR-026）；配置已拆至 config
   messages/           # 统一 Message 模型（含 Thinking）+ JSON 序列化
   tools/              # Tool 接口（Handle 带 rc）+ 注册表 + 7 内置工具（含 update_todo，ADR-027）
-  agentstate/         # AgentState 快照（模型/thinking 档位/todo/权限/plan/摘要）+ 原子落盘
+  agentstate/         # AgentState 快照（模型/thinking 档位/todo/权限/plan/摘要/用量）+ 原子落盘
+  compact/            # ★ 上下文压缩（ADR-037 第三段）：EstimateTokens/ShouldCompact/Summarizer/Runner.Run
   session/            # workspace 项目分桶 + 块级 transcript 异步 writer + resume
   e2e/                # 进程外端到端测试（termtest）
-  # 规划中（未实现）：compact（压缩）/ agentsmd（AGENTS.md 注入）/ hooks（子进程，远期）；TUI（internal/ui 扩展，规划）
+  # 规划中（未实现）：agentsmd（AGENTS.md 注入）/ hooks（子进程，远期）；TUI（internal/ui 扩展，规划）
 ```
 
 ## 核心架构约束（来自 ADR，见 docs/tasks/DECISIONS.md）

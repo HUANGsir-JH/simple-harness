@@ -1,5 +1,17 @@
 ## 2026-08-12
 
+### 阶段 C：LLM 摘要式压缩 ✅ 版本 0.8.0（ADR-037 第三段）
+
+- **背景**：阶段 A/B 完成后续接压缩。三阶段收尾——"用量展示 + 上下文压缩"任务全部落地。核心决策（规划期用户拍板，ADR-037）：直接 LLM 摘要式（不做 v1 TokenBudget）、85% 硬编码阈值（实际 usage 驱动 + 估算兜底）、纯占位压缩（conversation = 单一 summary user，不保留最近消息，由摘要 prompt 交 LLM）、摘要失败跳过 + 终止 run（Esc 同）、全程不加配置。
+- **交付**：
+  - **compact 包**（新）：`EstimateTokens`（bytes/4 含 thinking/签名/工具参数，镜像实际发送，阶段 B 已建）+ `ShouldCompact`（contextSize >= 85%·ContextWindow；LastContextTokens 真实优先，0 → 估算）+ `BuildSummaryPrompt`（opencode 锚定模板 Objective/Important Details/Work State(Completed/Active/Blocked)/Next Move/Relevant Files + previous summary 更新式，opencode buildPrompt 同款）+ `Summarizer.Summarize`（**codex 方式**：完整 conversation + 摘要 prompt 尾 user，无工具，max_tokens 4096；client 内部 toAnthropicMessages 转换含 thinking 完整回传）+ `Runner.Run(ctx, rc, force)`（force=false 先 ShouldCompact；成功重写 rc.Messages=[summary user] + State.Summary + SetLastContextTokens(0) 防重入 + rc.Segment 落盘 + 置 compacted 标记；**失败/取消绝不重写 conversation**）。
+  - **Segment 钩子**：`RuntimeContext.Segment func(seed) error`；`Session.RuntimeContext()` 注入（writer.NewSegment + seed 消息→transcript 行 + **Flush 同步**——异步 writer 不等 Flush 则手动 /compact 后 reloadSession 读盘读到旧段/空段）。
+  - **CompactMiddleware**（onReasoning **before**，注册在 UsageMiddleware 之前使压缩 before 先于采样、用量 after 后于采样）：`Runner.Run(force=false)`，错误返回 → agent.Run 终止。
+  - **挂载 + 手动**：`agent.Build` 构造 compactor（context_window 来自模型配置）+ 入链 + `agent.Compactor()` 访问器；`Controller.RunCompact`（tea.Cmd + 成功显式 `agentstate.SaveFile`——手动路径不经 SessionMiddleware onAgent after，不显式落盘则 resume 丢 Summary）+ `compactDoneMsg`；`/compact` 命令 + catalog；`events.EventCompacted` → TUI 系统行"上下文已压缩"（自动压缩回合中不 reloadSession——会清运行态/队列，只打系统行；手动走 handleCompactDone → reloadSession 显示摘要占位）。
+- **测试**：compact 纯函数（ShouldCompact 真实/估算/边界 + BuildSummaryPrompt 新建/更新）+ Summarizer（请求形状 3 消息+无工具+4096 + 流错误）+ Runner（压缩全链路/未超阈值透传/force 强制/**失败保历史**/**Esc 取消保历史**）+ agent 集成（TestRunAutoCompact：超阈值压缩+EventCompacted / 未超阈值透传）+ session resume 重建（切段后 conversation = 单一 summary user + State.Summary 恢复）+ TUI /compact 3 例。`go build/vet/test ./...` + `-race` 重点包全绿；e2e 全过。
+- **踩坑**：① **Summarizer 双重计数**——`EventTextDelta` + `EventTextDone` 都收会翻倍（done 是整块文本），只收 done（同 agent.sample 组装逻辑）；② **手动 /compact 状态不落盘**——SessionMiddleware 只在 agent 回合后落盘，Controller 直跑 Runner 绕过 → 成功压缩后显式 SaveFile；③ **异步 writer 读盘竞态**——压缩切段后 reloadSession 读 transcript，writer 未 Flush 读到旧段/空段 → Segment 闭包末尾 Flush。
+- **下一步**：阶段 4 剩余另一项 `agentsmd`（AGENTS.md 注入 + 系统提示词拼接）；然后阶段 5（子 agent）。
+
 ### 阶段 B：thinking 完整回传 ✅ 版本 0.7.2（ADR-025 修订 + ADR-037 第二段）
 
 - **背景**：阶段 A 完成后接续。ADR-025 原定"thinking 存但不重放"（免格式适配）；DeepSeek anthropic 端点实测推翻该约束——thinking 块含 signature，回传 200 且计入 input_tokens（99→136），1M 窗口容纳大 thinking。用户拍板**完整回传**（这是阶段 C 压缩的上下文基线：摘要请求经 toAnthropicMessages 完整重放 thinking，模型看到的上下文才与正常采样一致）。

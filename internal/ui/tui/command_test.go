@@ -1,15 +1,20 @@
 package tui
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"sync/atomic"
 	"testing"
 
+	"github.com/agent-project/harness/internal/agent"
 	"github.com/agent-project/harness/internal/agentstate"
+	"github.com/agent-project/harness/internal/compact"
 	"github.com/agent-project/harness/internal/config"
 	"github.com/agent-project/harness/internal/messages"
 	"github.com/agent-project/harness/internal/middleware"
 	"github.com/agent-project/harness/internal/middleware/impl"
+	"github.com/agent-project/harness/internal/provider"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
@@ -387,5 +392,98 @@ func TestFooterNoContextBeforeUsage(t *testing.T) {
 	m = nm.(Model)
 	if view := m.View(); strings.Contains(view, "ctx ") {
 		t.Errorf("无用量时不应显示 ctx，got:\n%s", view)
+	}
+}
+
+// newCompactController 构造带压缩能力（compactor + CompactMiddleware）的桥。
+func newCompactController(t *testing.T) *Controller {
+	t.Helper()
+	sess, proj := newTestSession(t)
+	client := &provider.FakeClient{StreamFn: func(ctx context.Context, req provider.Request) (provider.EventStream, error) {
+		return provider.NewFakeStream([]provider.Event{
+			{Type: provider.EventTextDone, Text: "压缩摘要"},
+			{Type: provider.EventDone},
+		}), nil
+	}}
+	opts := compact.Options{ContextWindow: 1_000_000}
+	compactor := compact.NewRunner(compact.NewSummarizer(client, opts), opts)
+	a := agent.New(client, "test-model")
+	a.SetCompactor(compactor)
+	a.SetMiddleware(middleware.NewChain(impl.CompactMiddleware{Runner: compactor}))
+	return NewController(a, proj, config.Config{}, sess, nil, context.Background())
+}
+
+// TestCompactCommandRunsCompaction 验证 /compact → tea.Cmd → compactDoneMsg 压缩
+// 完成（conversation 重写为摘要占位 + AgentState 落盘）。
+func TestCompactCommandRunsCompaction(t *testing.T) {
+	c := newCompactController(t)
+	m := New(c)
+	nm, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = nm.(Model)
+
+	m.input.SetValue("/compact")
+	nm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = nm.(Model)
+	if cmd == nil {
+		t.Fatal("/compact 应返回 tea.Cmd")
+	}
+	// 运行 cmd → compactDoneMsg。
+	msg := cmd()
+	cd, ok := msg.(compactDoneMsg)
+	if !ok || !cd.compacted || cd.err != nil {
+		t.Fatalf("应返回 compactDoneMsg{compacted:true}, got %+v", msg)
+	}
+	// conversation 重写为单一摘要占位。
+	conv := c.active.Conversation()
+	if len(conv.Messages) != 1 || conv.Messages[0].Role != messages.RoleUser || conv.Messages[0].Content != "压缩摘要" {
+		t.Fatalf("conversation 应为摘要占位: %+v", conv.Messages)
+	}
+	// AgentState 落盘（手动 /compact 持久化，resume 恢复 Summary）。
+	st, err := agentstate.LoadFile(c.active.StatePath())
+	if err != nil || st.Summary != "压缩摘要" {
+		t.Errorf("落盘 summary: %q err=%v", st.Summary, err)
+	}
+}
+
+// TestCompactDoneMsgShowsSystemLine 验证 compactDoneMsg → handleCompactDone：
+// reloadSession（transcript 新段摘要）+ 系统行"上下文已压缩"。
+func TestCompactDoneMsgShowsSystemLine(t *testing.T) {
+	c := newCompactController(t)
+	m := New(c)
+	nm, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = nm.(Model)
+	m.c.active.State().SetLastContextTokens(900_000)
+
+	// 先跑一次压缩（conversation 重写 + 切段落盘），再交付完成消息。
+	msg := c.RunCompact()()
+	cd := msg.(compactDoneMsg)
+	if !cd.compacted {
+		t.Fatal("压缩应成功")
+	}
+	nm, _ = m.Update(cd)
+	m = nm.(Model)
+	if view := m.View(); !strings.Contains(view, "上下文已压缩") {
+		t.Errorf("View 应含系统行，got:\n%s", view)
+	}
+	if view := m.View(); !strings.Contains(view, "压缩摘要") {
+		t.Errorf("reloadSession 应显示摘要占位，got:\n%s", view)
+	}
+}
+
+// TestCompactDoneMsgError 验证摘要失败 → 系统行错误、不重写 conversation。
+func TestCompactDoneMsgError(t *testing.T) {
+	c := newCompactController(t)
+	m := New(c)
+	nm, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = nm.(Model)
+	before := len(c.active.Conversation().Messages)
+
+	nm, _ = m.Update(compactDoneMsg{err: errors.New("压缩失败")})
+	m = nm.(Model)
+	if view := m.View(); !strings.Contains(view, "压缩失败") {
+		t.Errorf("View 应含错误系统行，got:\n%s", view)
+	}
+	if len(c.active.Conversation().Messages) != before {
+		t.Error("失败不应重写 conversation")
 	}
 }

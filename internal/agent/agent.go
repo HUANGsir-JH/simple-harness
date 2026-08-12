@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/agent-project/harness/internal/compact"
 	"github.com/agent-project/harness/internal/events"
 	"github.com/agent-project/harness/internal/messages"
 	"github.com/agent-project/harness/internal/middleware"
@@ -28,6 +29,9 @@ type Agent struct {
 	instructions string
 	tools        *tools.Registry
 	mw           *middleware.Chain
+	// compactor 是上下文压缩执行器（ADR-037）：装配时挂载（Build），
+	// CompactMiddleware 自动触发（onReasoning）+ Controller 手动 /compact 复用。
+	compactor *compact.Runner
 }
 
 // New 创建绑定到 provider 客户端与模型的 Agent。
@@ -54,6 +58,12 @@ func (a *Agent) SetMiddleware(c *middleware.Chain) {
 		a.mw = c
 	}
 }
+
+// SetCompactor 设置上下文压缩执行器（ADR-037；Build 装配，Controller /compact 复用）。
+func (a *Agent) SetCompactor(r *compact.Runner) { a.compactor = r }
+
+// Compactor 返回上下文压缩执行器（nil = 未装配；手动 /compact 用）。
+func (a *Agent) Compactor() *compact.Runner { return a.compactor }
 
 // SetInstructions 设置基础系统提示（阶段四 AGENTS.md 等动态拼接替换）。
 func (a *Agent) SetInstructions(s string) { a.instructions = s }
@@ -107,6 +117,13 @@ func (a *Agent) Run(ctx context.Context, rc *middleware.RuntimeContext, onEvent 
 			if err := reasoning(ctx, rc, middleware.ReasoningInput{Messages: conversation.Messages, Tools: a.tools.Specs()}); err != nil {
 				emit(events.Event{Type: events.EventError, Err: err})
 				return err
+			}
+			// 压缩完成标记（ADR-037）：CompactMiddleware（onReasoning before）压缩
+			// 成功后置 rc.attrs；此处发出回合级事件（TUI 系统行"上下文已压缩"）。
+			// 读后清标记，避免同一轮后续采样重复发出。
+			if rc != nil && rc.Get(middleware.CompactedKey) == true {
+				rc.Set(middleware.CompactedKey, false)
+				emit(events.Event{Type: events.EventCompacted})
 			}
 			conversation.Add(result.assistant)
 			// 每轮采样后透出用量（ADR-037）：非零才发，避免无 usage 数据时的

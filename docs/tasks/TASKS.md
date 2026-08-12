@@ -142,6 +142,22 @@
 | B3 | toAnthropicAssistantMessage 重放 thinking 块（首块，仅签名非空）+ thinking-only 不跳过 | ✅ 2026-08-12 |
 | B4 | 估算镜像（compact.EstimateTokens 含 thinking）+ 测试 + 文档 + 版本 0.7.2 | ✅ 2026-08-12 |
 
+## 阶段 C（ADR-037）：LLM 摘要式压缩 ✅
+
+- **目标**：上下文超阈值（context_window 85%，实际 usage 驱动 + 估算兜底）→ LLM 生成摘要（codex 方式：完整 conversation + 摘要 prompt 尾 user，无工具，max_tokens 4096；opencode 结构化模板 + previous summary 更新式）→ conversation 重写为单一 summary user（纯占位）+ 切新 transcript 段。自动（onReasoning before）+ 手动 `/compact`。
+- **成功标准**：长会话自动压缩后 resume 重建为摘要占位；摘要失败终止 run 且不丢历史；Esc 中断压缩同失败处理；`/compact` 手动压缩并显示结果。
+- **状态**：✅ 已完成（2026-08-12，ADR-037 第三段，版本 0.8.0）
+- **说明**：三阶段（用量展示 → thinking 回传 → 压缩）全部完成；摘要请求经 `toAnthropicMessages` 完整回传 thinking（阶段 B 依赖），摘要模型看到的上下文与正常采样一致。
+
+### 任务单元
+
+| # | 单元 | 状态 |
+|---|---|---|
+| C1 | compact 核心：ShouldCompact(85%)/Summarizer(codex 方式)/Runner.Run + BuildSummaryPrompt(previous 更新式) | ✅ 2026-08-12 |
+| C2 | RuntimeContext.Segment 钩子（session 注入 NewSegment+seed+Flush）+ CompactMiddleware（onReasoning before，失败终止） | ✅ 2026-08-12 |
+| C3 | 挂载（build.go）+ agent.Compactor 访问器 + Controller.RunCompact + /compact + EventCompacted + TUI 系统行 | ✅ 2026-08-12 |
+| C4 | 测试（compact 纯函数/Summarizer/Runner 失败与取消/agent 集成 EventCompacted/session resume 重建//compact TUI）+ 文档 + 版本 0.8.0 | ✅ 2026-08-12 |
+
 ## 阶段 6（TUI 后后续可选）：摘要式压缩 / grep 工具 / 双向通信
 
 - **状态**：未开始（TUI 已提前为独立阶段；本阶段为压缩/grep/双向通信剩余项）

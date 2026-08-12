@@ -1,14 +1,17 @@
 package session
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/agent-project/harness/internal/agentstate"
+	"github.com/agent-project/harness/internal/compact"
 	"github.com/agent-project/harness/internal/events"
 	"github.com/agent-project/harness/internal/messages"
+	"github.com/agent-project/harness/internal/provider"
 )
 
 // TestSessionCreateResume 验证 创建 → 落盘（meta/user/agent 块）→ resume 重建
@@ -237,5 +240,61 @@ func TestSessionSetNamePersist(t *testing.T) {
 	list, err := proj.Sessions()
 	if err != nil || len(list) != 1 || list[0].Name != "修复 bug" {
 		t.Errorf("Sessions 填充 name: %+v err=%v", list, err)
+	}
+}
+
+// TestCompactSegmentResume 验证压缩切段 + seed 落盘 → resume 重建 conversation =
+// 单一 summary user（ADR-037 纯占位）：transcript 新段以摘要行开头，旧段纯审计。
+func TestCompactSegmentResume(t *testing.T) {
+	root := t.TempDir()
+	store := NewAt(root)
+	proj := &Project{Path: filepath.Join(root, "proj"), Dir: store.ProjectDir(filepath.Join(root, "proj"))}
+	sess, err := proj.Create("m1", filepath.Join(root, "proj"), "")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	sess.AddUser("hello")
+	sess.OnAgentEvent(events.Event{Type: events.EventTurnStart})
+	sess.OnAgentEvent(events.Event{Type: events.EventTextDone, MsgID: "m1", Text: "ans"})
+	sess.OnAgentEvent(events.Event{Type: events.EventTurnDone})
+
+	// 超阈值跑压缩（Runner 经 rc.Segment 注入的真实 writer 切段 + seed 落盘）。
+	rc := sess.RuntimeContext()
+	rc.State.SetLastContextTokens(900_000)
+	fc := &provider.FakeClient{StreamFn: func(ctx context.Context, req provider.Request) (provider.EventStream, error) {
+		return provider.NewFakeStream([]provider.Event{
+			{Type: provider.EventTextDone, Text: "压缩摘要"},
+			{Type: provider.EventDone},
+		}), nil
+	}}
+	r := compact.NewRunner(compact.NewSummarizer(fc, compact.Options{ContextWindow: 1_000_000}), compact.Options{ContextWindow: 1_000_000})
+	if done, err := r.Run(context.Background(), rc, false); err != nil || !done {
+		t.Fatalf("compact Run: done=%v err=%v", done, err)
+	}
+	// AgentState 落盘（真实流程：自动压缩由 SessionMiddleware onAgent after 落盘、
+	// 手动 /compact 由 Controller.RunCompact 显式落盘；这里模拟）。
+	if err := agentstate.SaveFile(sess.StatePath(), sess.State()); err != nil {
+		t.Fatalf("SaveFile: %v", err)
+	}
+	if err := sess.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// resume：conversation = 单一 summary user，State.Summary 恢复。
+	info, ok := proj.Last()
+	if !ok {
+		t.Fatal("Last 无会话")
+	}
+	rs, err := proj.Resume(info)
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	defer rs.Close()
+	conv := rs.Conversation()
+	if len(conv.Messages) != 1 || conv.Messages[0].Role != messages.RoleUser || conv.Messages[0].Content != "压缩摘要" {
+		t.Fatalf("resume conversation 应为单一 summary user: %+v", conv.Messages)
+	}
+	if rs.State().Summary != "压缩摘要" {
+		t.Errorf("resume State.Summary = %q, want 压缩摘要", rs.State().Summary)
 	}
 }

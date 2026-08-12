@@ -252,6 +252,14 @@ func (a *AgentState) SetLastContextTokens(n int64) {
 	a.mu.Unlock()
 }
 
+// SetSummary 写入压缩摘要（ADR-037：resume 恢复，下轮压缩时作 previous-summary
+// 更新式续接）。压缩成功才写；失败/取消不碰（历史仍在 conversation）。
+func (a *AgentState) SetSummary(summary string) {
+	a.mu.Lock()
+	a.Summary = summary
+	a.mu.Unlock()
+}
+
 // UsageTotals 返回累计用量的防御性拷贝（/usage 展示；不受并发写影响）。
 func (a *AgentState) UsageTotals() messages.Usage {
 	a.mu.Lock()

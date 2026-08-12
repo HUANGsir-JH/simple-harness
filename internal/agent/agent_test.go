@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/agent-project/harness/internal/agentstate"
+	"github.com/agent-project/harness/internal/compact"
 	"github.com/agent-project/harness/internal/config"
 	"github.com/agent-project/harness/internal/events"
 	"github.com/agent-project/harness/internal/messages"
@@ -849,5 +851,62 @@ func TestRunSkipsZeroUsage(t *testing.T) {
 	}
 	if rec.has(events.EventUsage) {
 		t.Error("无用量数据不应发出 EventUsage")
+	}
+}
+
+// TestRunAutoCompact 验证 onReasoning 自动压缩（ADR-037）：超 85% 阈值 → 采样
+// 前压缩 → conversation 重写为单一摘要占位 + emit EventCompacted；未超阈值 →
+// 正常透传不压缩。
+func TestRunAutoCompact(t *testing.T) {
+	// StreamFn 按请求末条是否摘要 prompt 区分：摘要请求 → 摘要流，采样 → 正常流。
+	fc := &provider.FakeClient{StreamFn: func(ctx context.Context, req provider.Request) (provider.EventStream, error) {
+		if n := len(req.Messages); n > 0 && strings.Contains(req.Messages[n-1].Content, "anchored summary") {
+			return textStream("总结内容"), nil
+		}
+		return textStream("final answer"), nil
+	}}
+	compactor := compact.NewRunner(
+		compact.NewSummarizer(fc, compact.Options{ContextWindow: 1_000_000}),
+		compact.Options{ContextWindow: 1_000_000},
+	)
+	a := New(fc, "m")
+	a.SetTools(tools.NewRegistry())
+	a.SetMiddleware(middleware.NewChain(impl.CompactMiddleware{Runner: compactor}))
+	a.SetCompactor(compactor)
+
+	// 超阈值：压缩 + emit EventCompacted。
+	conv := newConversation()
+	rc := rcFor(conv)
+	rc.State = agentstate.New("s1", "m", ".")
+	rc.State.SetLastContextTokens(900_000)
+	rec := &eventRecorder{}
+	if err := a.Run(context.Background(), rc, rec.on); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !rec.has(events.EventCompacted) {
+		t.Errorf("应 emit EventCompacted: %v", rec.types())
+	}
+	// conversation = [summary user 占位, assistant 采样]（压缩重写后采样追加）。
+	if len(conv.Messages) != 2 {
+		t.Fatalf("conversation 消息数 = %d, want 2", len(conv.Messages))
+	}
+	if conv.Messages[0].Role != messages.RoleUser || conv.Messages[0].Content != "总结内容" {
+		t.Errorf("conversation[0] 应为摘要占位: %+v", conv.Messages[0])
+	}
+
+	// 未超阈值：不压缩、不 emit EventCompacted、历史保留。
+	conv2 := newConversation()
+	rc2 := rcFor(conv2)
+	rc2.State = agentstate.New("s2", "m", ".")
+	rc2.State.SetLastContextTokens(100)
+	rec2 := &eventRecorder{}
+	if err := a.Run(context.Background(), rc2, rec2.on); err != nil {
+		t.Fatalf("Run (under threshold): %v", err)
+	}
+	if rec2.has(events.EventCompacted) {
+		t.Errorf("未超阈值不应 emit EventCompacted: %v", rec2.types())
+	}
+	if len(conv2.Messages) != 2 || conv2.Messages[0].Content != "hi" {
+		t.Errorf("未压缩 conversation 应保留原样 + assistant: %+v", conv2.Messages)
 	}
 }

@@ -13,6 +13,13 @@ type (
 	// runDoneMsg 标记一个回合结束（含错误）。
 	runDoneMsg struct{ err error }
 
+	// compactDoneMsg 标记手动 /compact 完成（compacted = 是否真的压缩；err 非
+	// nil = 摘要失败，不重写 conversation）。Update 内 reloadSession + 展示。
+	compactDoneMsg struct {
+		compacted bool
+		err       error
+	}
+
 	// submitMsg 是用户提交的一行输入（Enter；run 期间进队列，W4 扩展）。
 	submitMsg struct{ line string }
 

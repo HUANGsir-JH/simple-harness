@@ -292,6 +292,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case runDoneMsg:
 		return m.handleRunDone(msg.err)
+	case compactDoneMsg:
+		return m.handleCompactDone(msg)
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.sp, cmd = m.sp.Update(msg)
@@ -676,6 +678,11 @@ func (m Model) handleAgentEvent(ev events.Event) (tea.Model, tea.Cmd) {
 	case events.EventUsage:
 		// 用量已由 UsageMiddleware 写入 AgentState.LastContextTokens，尾部
 		// refresh 读取并更新 footer（ctx 占用，ADR-037）；此处无需处理。
+	case events.EventCompacted:
+		// 自动压缩成功（ADR-037）：conversation 已重写为摘要占位。回合进行中
+		// 不能 reloadSession（会清空运行态/队列）；只打系统行，视图保持历史
+		// 渲染。手动 /compact 走 compactDoneMsg（可安全 reloadSession）。
+		m.appendSystem("上下文已压缩", false)
 	case events.EventError:
 		m.eventError = true
 		if ev.Err != nil {
@@ -721,6 +728,20 @@ func (m Model) handleRunDone(err error) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 	return m.handleInput(next)
+}
+
+// handleCompactDone 处理手动 /compact 完成（ADR-037）。空闲时执行（命令不在
+// run 队列），可安全 reloadSession 显示压缩后的 transcript（摘要占位）。
+func (m Model) handleCompactDone(msg compactDoneMsg) (tea.Model, tea.Cmd) {
+	if msg.err != nil {
+		return m.sysErr(msg.err), nil
+	}
+	if !msg.compacted {
+		return m.sysOK("上下文未超阈值，无需压缩"), nil
+	}
+	// conversation 已重写为单一摘要占位 + transcript 已切新段 → 重载视图。
+	m.reloadSession()
+	return m.sysOK("上下文已压缩"), nil
 }
 
 func (m *Model) ensureStream(msgID string) {

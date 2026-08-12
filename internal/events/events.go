@@ -29,6 +29,9 @@ const (
 	// EventUsage 是一次采样轮的 token 用量（agent 每轮采样后发出；renderer
 	// 未知类型默认忽略，transcript 不落盘——用量属 AgentState 非消息）。
 	EventUsage EventType = "usage"
+	// EventCompacted 是上下文压缩完成通知（agent 读 rc.attrs 压缩标记后发出；
+	// TUI 显示系统行"上下文已压缩"，ADR-037）。
+	EventCompacted EventType = "compacted"
 	// EventError 是回合级错误。
 	EventError EventType = "error"
 )
