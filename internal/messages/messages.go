@@ -57,6 +57,23 @@ type ToolResult struct {
 	Content string `json:"content"`
 }
 
+// Usage 是单次采样请求的 token 用量（anthropic wire：message_start 的
+// input/cache + 最后一个 message_delta 的累计 output_tokens）。放在统一消息
+// 模型层，provider（wire 用量）、events（回合级事件）、agentstate（会话累计）
+// 三方复用同一类型，避免 provider 类型泄漏到存储层。
+type Usage struct {
+	InputTokens             int64 `json:"input_tokens"`
+	CacheReadInputTokens    int64 `json:"cache_read_input_tokens,omitempty"`
+	CacheCreationInputTokens int64 `json:"cache_creation_input_tokens,omitempty"`
+	OutputTokens            int64 `json:"output_tokens"`
+}
+
+// IsZero 报告用量是否全为零（未捕获到 usage 时判断展示）。
+func (u *Usage) IsZero() bool {
+	return u == nil || (u.InputTokens == 0 && u.CacheReadInputTokens == 0 &&
+		u.CacheCreationInputTokens == 0 && u.OutputTokens == 0)
+}
+
 // Conversation 是消息序列，也是会话 JSONL 文件的存储单元。
 type Conversation struct {
 	ID        string     `json:"id"`

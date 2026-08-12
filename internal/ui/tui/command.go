@@ -86,6 +86,20 @@ func (c *Controller) Models() []string {
 	return names
 }
 
+// ActiveContextWindow 返回当前会话模型的上下文窗口（token；ADR-037 footer
+// 实时上下文占用用）。无 active / 解析失败返回 0。纯计算（config.Resolve），
+// 每次调用可接受；模型经 /model 切换后自然取新值。
+func (c *Controller) ActiveContextWindow() int {
+	if c.active == nil {
+		return 0
+	}
+	res, err := config.Resolve(c.cfg, c.active.Model())
+	if err != nil {
+		return 0
+	}
+	return res.ContextWindow
+}
+
 // SetModel 切换会话模型 + 重置档位为模型默认（ADR-026 运行时切换）。
 // 懒加载：无 active 时先创建会话（用户决策：状态命令也触发创建）。
 func (c *Controller) SetModel(name string) error {

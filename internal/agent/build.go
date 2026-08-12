@@ -34,6 +34,8 @@ func Build(res *config.ProviderConfig, defaultMode string) (*Agent, error) {
 	// 工具说明注入系统提示（onSystemPrompt middleware；阶段四 AGENTS.md 等在此
 	// 追加）。SessionMiddleware 无状态，从 rc.StatePath 读写 AgentState。
 	// TodoReminderMiddleware 在模型连续多轮不更新 todo 时注入偏离提醒。
+	// UsageMiddleware 累计每轮采样 token 用量进 AgentState（ADR-037 用量展示：
+	// /usage 总账 + LastContextTokens 供 footer 与阶段 C 压缩触发）。
 	// ToolOutputMiddleware 统一截断工具结果（超长落盘 evictions/ + head/tail preview，ADR-028）。
 	// ApprovalMiddleware 工具审批（onActing，三档模式 + 会话级记忆，ADR-029）；
 	// 审批交互器经 rc.Approver 注入（TUI/runCmd 各自 channelApprover，非 TTY 不设）。
@@ -42,6 +44,7 @@ func Build(res *config.ProviderConfig, defaultMode string) (*Agent, error) {
 		impl.ToolInstructionsMiddleware{Tools: reg.Specs()},
 		impl.SessionMiddleware{},
 		impl.TodoReminderMiddleware{},
+		impl.UsageMiddleware{},
 		impl.ToolOutputMiddleware{},
 		impl.ApprovalMiddleware{DefaultMode: defaultMode},
 	)

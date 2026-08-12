@@ -7,6 +7,7 @@ import (
 
 	"github.com/agent-project/harness/internal/agentstate"
 	"github.com/agent-project/harness/internal/config"
+	"github.com/agent-project/harness/internal/messages"
 	"github.com/agent-project/harness/internal/middleware"
 	"github.com/agent-project/harness/internal/middleware/impl"
 	tea "github.com/charmbracelet/bubbletea"
@@ -319,5 +320,72 @@ func TestModalsFitPanelWidth(t *testing.T) {
 				t.Fatalf("%s@%d 弹窗宽度 %d 超出屏幕", tc.name, screenWidth, panelWidth)
 			}
 		}
+	}
+}
+
+// cfgWithContextWindow 构造带 context_window 的配置（footer ctx / /usage 的
+// ContextWindow 解析数据源）。
+func cfgWithContextWindow(model string, window int) config.Config {
+	return config.Config{Providers: map[string]config.ProviderSpec{
+		"p": {APIKey: "test-key", Models: map[string]config.Model{model: {ContextWindow: window}}},
+	}}
+}
+
+// TestUsageCommandShowsTotals 验证 /usage 显示会话累计用量 + 当前上下文占用
+// （ADR-037 用量展示，系统行）。
+func TestUsageCommandShowsTotals(t *testing.T) {
+	c := newTestController(t, nil)
+	c.cfg = cfgWithContextWindow("m1", 128000)
+	if err := c.active.SetModel("m1"); err != nil {
+		t.Fatal(err)
+	}
+	c.active.State().AddUsage(messages.Usage{InputTokens: 100000, OutputTokens: 5000, CacheReadInputTokens: 20000})
+	c.active.State().SetLastContextTokens(100000)
+
+	m := New(c)
+	nm, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = nm.(Model)
+	m.input.SetValue("/usage")
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = nm.(Model)
+
+	view := m.View()
+	for _, want := range []string{"USAGE", "input=100k", "cache_read=20k", "output=5k", "ctx=100k/128k"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("/usage 应显示 %q，got:\n%s", want, view)
+		}
+	}
+}
+
+// TestFooterShowsContext 验证 footer 实时显示当前上下文占用（ADR-037）。
+func TestFooterShowsContext(t *testing.T) {
+	c := newTestController(t, nil)
+	c.cfg = cfgWithContextWindow("m1", 1000000)
+	if err := c.active.SetModel("m1"); err != nil {
+		t.Fatal(err)
+	}
+	c.active.State().SetLastContextTokens(128000)
+
+	m := New(c)
+	nm, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = nm.(Model)
+	m.refreshStatus()
+	if view := m.View(); !strings.Contains(view, "ctx 128k/1.0M") {
+		t.Errorf("footer 应显示 ctx 占用，got:\n%s", view)
+	}
+}
+
+// TestFooterNoContextBeforeUsage 验证无用量数据时 footer 不显示 ctx（避免噪音）。
+func TestFooterNoContextBeforeUsage(t *testing.T) {
+	c := newTestController(t, nil)
+	c.cfg = cfgWithContextWindow("m1", 128000)
+	if err := c.active.SetModel("m1"); err != nil {
+		t.Fatal(err)
+	}
+	m := New(c)
+	nm, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = nm.(Model)
+	if view := m.View(); strings.Contains(view, "ctx ") {
+		t.Errorf("无用量时不应显示 ctx，got:\n%s", view)
 	}
 }

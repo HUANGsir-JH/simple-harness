@@ -15,6 +15,10 @@ type anthropicStream struct {
 	stream *ssestream.Stream[anthropic.MessageStreamEventUnion]
 	cur    Event
 	err    error
+	// usage 是本次采样的 token 用量（ADR-037 用量展示）：message_start 记录
+	// input/cache，message_delta 覆盖累计 output/input，message_stop 时随
+	// EventDone 一并发出（input_tokens 即"当前上下文占用"，供 footer 与压缩触发）。
+	usage *messages.Usage
 	// blocks 跟踪所有内容块（按 content block index），content_block_stop 时
 	// 按块类型发出完整块事件（text_done / thinking_done / tool_call）。ADR-025。
 	// text/thinking 累积 delta 文本；tool_use 累积 input_json_delta 参数分片。
@@ -37,6 +41,33 @@ func (s *anthropicStream) Next() bool {
 	for s.stream.Next() {
 		ev := s.stream.Current()
 		switch ev.Type {
+		case "message_start":
+			// 首块 usage：input + cache（output 是初始占位 1，后续 message_delta 覆盖）。
+			s.usage = &messages.Usage{
+				InputTokens:             ev.Message.Usage.InputTokens,
+				CacheReadInputTokens:    ev.Message.Usage.CacheReadInputTokens,
+				CacheCreationInputTokens: ev.Message.Usage.CacheCreationInputTokens,
+				OutputTokens:            ev.Message.Usage.OutputTokens,
+			}
+			continue
+		case "message_delta":
+			// output_tokens 随流累计（覆盖式取最后一条为最终值）；input/cache 由
+			// message_start 提供，规范上 message_delta 不带——仅当兼容端点确实在
+			// delta 返回非零 input/cache 时才覆盖，避免冲掉 message_start 的正确值。
+			if s.usage == nil {
+				s.usage = &messages.Usage{}
+			}
+			s.usage.OutputTokens = ev.Usage.OutputTokens
+			if ev.Usage.InputTokens > 0 {
+				s.usage.InputTokens = ev.Usage.InputTokens
+			}
+			if ev.Usage.CacheReadInputTokens > 0 {
+				s.usage.CacheReadInputTokens = ev.Usage.CacheReadInputTokens
+			}
+			if ev.Usage.CacheCreationInputTokens > 0 {
+				s.usage.CacheCreationInputTokens = ev.Usage.CacheCreationInputTokens
+			}
+			continue
 		case "content_block_start":
 			cb := ev.ContentBlock
 			pb := &pendingBlock{kind: cb.Type}
@@ -98,7 +129,8 @@ func (s *anthropicStream) Next() bool {
 			}
 			continue
 		case "message_stop":
-			s.cur = Event{Type: EventDone}
+			// 采样结束：usage 随 EventDone 一并发出（渲染/AgentState 累计用）。
+			s.cur = Event{Type: EventDone, Usage: s.usage}
 			return true
 		default:
 			continue

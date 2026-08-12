@@ -66,6 +66,11 @@ type StatusBar struct {
 	PlanMode       bool // [PLAN] 状态栏标记（ADR-036）
 	TodoCount      int
 	Todos          []agentstate.TodoItem
+	// ContextTokens / ContextWindow 是当前上下文占用（token）与模型窗口
+	// （ADR-037 用量展示 footer：`ctx 128k/1.0M`）。ContextTokens 来自
+	// AgentState.LastContextTokens（UsageMiddleware 每轮更新，实时）。
+	ContextTokens int64
+	ContextWindow int
 }
 
 type timelineItem struct {
@@ -668,6 +673,9 @@ func (m Model) handleAgentEvent(ev events.Event) (tea.Model, tea.Cmd) {
 	case events.EventTurnDone:
 		m.flushStream()
 		m.turnDone = true
+	case events.EventUsage:
+		// 用量已由 UsageMiddleware 写入 AgentState.LastContextTokens，尾部
+		// refresh 读取并更新 footer（ctx 占用，ADR-037）；此处无需处理。
 	case events.EventError:
 		m.eventError = true
 		if ev.Err != nil {
@@ -804,6 +812,7 @@ func (m *Model) refreshStatus() {
 	m.status.Model = m.c.ActiveModel()
 	m.status.SessionName = m.c.Name()
 	m.status.SessionID = m.c.ActiveID()
+	m.status.ContextWindow = m.c.ActiveContextWindow()
 	st := m.c.ActiveState()
 	if st == nil {
 		m.status.Permission = ""
@@ -811,6 +820,7 @@ func (m *Model) refreshStatus() {
 		m.status.PlanMode = false
 		m.status.TodoCount = 0
 		m.status.Todos = nil
+		m.status.ContextTokens = 0
 		return
 	}
 	m.status.Permission = st.PermissionMode()
@@ -818,6 +828,9 @@ func (m *Model) refreshStatus() {
 	m.status.PlanMode = st.IsPlanMode()
 	m.status.TodoCount = st.TodoCount()
 	m.status.Todos = sortTodos(st.TodoItems())
+	// 当前上下文占用（UsageMiddleware 每轮更新 LastContextTokens；EventUsage
+	// 事件触发刷新时已是最新值，ADR-037）。
+	m.status.ContextTokens = st.CurrentContextTokens()
 }
 
 func (m *Model) toggleFocus() {

@@ -109,6 +109,23 @@
 | P3 | 集成 + e2e（plan 模式闭环）+ 版本 0.7.0 + 文档（ADR-036 修订/IMPLEMENTATION_PLAN/TASKS/PROGRESS） | ✅ 2026-08-11 |
 | P4 | 审查修复（plan-mode-review-2026-08-12）：写黑名单反向判定 + 纯 Deny（缺陷 01/02）/ AgentState 锁下沉（缺陷 04）/ TUI 待决请求队列 + AllowCustom（缺陷 03）+ 并发回归测试 + 文档 | ✅ 2026-08-12 |
 
+## 阶段 A（ADR-037）：用量展示 ✅
+
+- **目标**：provider 捕获 token 用量（anthropic message_start/message_delta usage）→ 统一 `messages.Usage` → agent 回合级 `EventUsage` → AgentState 累计（`Usage` + `LastContextTokens`）→ TUI footer 实时上下文占用 + `/usage` 命令。
+- **成功标准**：`harness run` / TUI 长对话 footer 显示 `ctx Nk/Mk`；`/usage` 显示会话累计 input/cache_read/output；resume 恢复累计用量。
+- **状态**：✅ 已完成（2026-08-12，ADR-037，版本 0.7.1）
+- **说明**：本阶段是"用量展示 + 上下文压缩"三阶段的第一段；后续 阶段 B（thinking 完整回传，ADR-025 修订）→ 阶段 C（LLM 摘要压缩）按 ADR-037 决策实施。
+
+### 任务单元
+
+| # | 单元 | 状态 |
+|---|---|---|
+| A1 | provider 捕获 usage 挂 EventDone + `messages.Usage` + `events.EventUsage` | ✅ 2026-08-12 |
+| A2 | agent 透出 EventUsage（sampleResult.usage + emit + rc.attrs） | ✅ 2026-08-12 |
+| A3 | AgentState.Usage/LastContextTokens + UsageMiddleware | ✅ 2026-08-12 |
+| A4 | TUI footer ctx + /usage 命令 | ✅ 2026-08-12 |
+| A5 | 测试 + 文档 + 版本 0.7.1 | ✅ 2026-08-12 |
+
 ## 阶段 6（TUI 后后续可选）：摘要式压缩 / grep 工具 / 双向通信
 
 - **状态**：未开始（TUI 已提前为独立阶段；本阶段为压缩/grep/双向通信剩余项）

@@ -6,7 +6,7 @@
 
 参照 OpenAI Codex CLI（`../codex/codex-rs`，Rust）+ AgentScope Java v2 的架构，用 Go 构建一个**可真实使用**的极简 agent harness（命令行）。定位为**通用框架**，未来可被 resume-agent 等其它项目引用。
 
-**现状（2026-08-12）**：阶段 1（骨架+消息+provider+最小 loop）→ 阶段 2（工具系统+并发+渲染+middleware 骨架+REPL）→ 阶段 2.5（Workspace+AgentState+会话落盘/resume）→ 架构重构（ADR-026 无状态 agent+运行时切换）→ todo 工具（ADR-027）→ 工具结果截断/用户中断/shell 缓解（ADR-028）→ **阶段 3 审批（ADR-029）✅** → 配置层独立 + 装配根 → **Plan Mode（ADR-036）✅ 2026-08-11** → **Plan Mode 审查修复 ✅ 2026-08-12**（写黑名单反向判定 + 纯 Deny / AgentState 锁下沉 / TUI 待决请求队列，见 DECISIONS.md ADR-036 修订）。待办：阶段 4 剩余（AGENTS.md 注入 + 系统提示词拼接 + 上下文压缩）、阶段 5（子 agent）、阶段 6（可选）。
+**现状（2026-08-12）**：阶段 1（骨架+消息+provider+最小 loop）→ 阶段 2（工具系统+并发+渲染+middleware 骨架+REPL）→ 阶段 2.5（Workspace+AgentState+会话落盘/resume）→ 架构重构（ADR-026 无状态 agent+运行时切换）→ todo 工具（ADR-027）→ 工具结果截断/用户中断/shell 缓解（ADR-028）→ **阶段 3 审批（ADR-029）✅** → 配置层独立 + 装配根 → **Plan Mode（ADR-036）✅ 2026-08-11** → **Plan Mode 审查修复 ✅ 2026-08-12**（写黑名单反向判定 + 纯 Deny / AgentState 锁下沉 / TUI 待决请求队列，见 DECISIONS.md ADR-036 修订）→ **用量展示（ADR-037 第一段）✅ 2026-08-12**（provider 捕获 usage + AgentState 累计 + footer `/usage`，版本 0.7.1）。待办：阶段 4 剩余（**thinking 完整回传 ADR-025 修订** + **LLM 摘要压缩 ADR-037** + AGENTS.md 注入 + 系统提示词拼接）、阶段 5（子 agent）、阶段 6（可选）。
 
 ## 已确认决策（当前生效）
 
@@ -192,9 +192,11 @@ type Tool interface {
 
 ### ⏳ 待办（未完成）
 
-- **阶段 4（剩余）：系统提示词拼接 + AGENTS.md 注入 + 上下文压缩**
+- **阶段 4（剩余）：thinking 回传 + LLM 摘要压缩 + AGENTS.md 注入 + 系统提示词拼接**
+  - **用量展示 ✅ 2026-08-12（ADR-037 第一段）**：provider 捕获 usage → `messages.Usage` → agent `EventUsage` → AgentState `Usage`/`LastContextTokens` → TUI footer `ctx Nk/Mk` + `/usage`。版本 0.7.1。
+  - **thinking 完整回传（ADR-025 修订，ADR-037 第二段）**：捕获 thinking signature → `Message.ThinkingSignature` + transcript Line.Signature → `toAnthropicAssistantMessage` 重放 `ThinkingBlockParam`（仅 signature 非空）；thinking-only assistant 不跳过。DeepSeek 实测通过。
+  - `compact`（ADR-037 第三段）：**直接 LLM 摘要式**（不做 v1 TokenBudget）——onReasoning 触发，context_window 85% 硬编码阈值，实际 usage 驱动 + 估算兜底；codex 方式发送摘要请求（完整 conversation + 摘要 prompt 尾 user，无工具，max_tokens 4096，opencode 结构化模板 + previous summary 更新式）；压缩后 = 单一 summary user 消息（纯占位）；`RuntimeContext.Segment` 钩子切新段（`NewSegment` + seed）；摘要失败 = 跳过 + 终止 run（Esc 同处理）；自动 + 手动 `/compact`。不做 overflow 安全网。
   - `agentsmd`（onSystemPrompt：项目级 AGENTS.md 向上搜索 + 全局拼接 + 动态系统提示词组装）
-  - `compact`（onReasoning：TokenBudget v1 + 摘要式 + 触发时 `NewSegment` 切段；不做 overflow 安全网）
   - 注：大工具结果 eviction 已完成（ADR-028），不属于本阶段。
 - **阶段 5：子 agent（内置 + 并行 + 状态 + 单向通信）**
   - 内置子 agent + `spawn_agent` + 状态跟踪 + fork 过滤 + `send_message` 单向。

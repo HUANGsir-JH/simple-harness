@@ -1,3 +1,17 @@
+## 2026-08-12
+
+### 阶段 A：用量展示 ✅ 版本 0.7.1（ADR-037）
+
+- **背景**：阶段 4 剩余起步（用量展示 + 上下文压缩）。规划期与用户逐点确认：展示位置（footer 实时 ctx + /usage 累计）、压缩触发（85% 硬编码 + 实际 usage 驱动）、thinking 回传（完整回传，实测 DeepSeek 可行）、压缩直接 LLM 摘要式（不做 v1 TokenBudget）、摘要失败跳过+终止 run、全程不加配置。分三阶段：A 用量展示 → B thinking 回传 → C 压缩。
+- **交付**：
+  - **provider 捕获 usage**：`anthropicStream` 新增 `message_start`/`message_delta` case——start 记 input/cache，delta 覆盖累计 output（**input/cache 仅当非零才覆盖**，避免冲掉 start 的正确值——首版把 delta 的 0 值覆盖导致 input 归零，修复）；`EventDone` 携带 `Usage`（不新增事件类型，stream_test 严格 switch 免改）。`messages.Usage{Input/CacheRead/CacheCreation/Output}` 统一模型。
+  - **agent 透出**：`sample` 捕获 `EventDone.Usage` → `sampleResult.usage`；Run 采样轮后 emit `events.EventUsage`（非零才发）；`rc.Set("round_usage")` 交中间件。
+  - **AgentState + UsageMiddleware**：`Usage`（累计）+ `LastContextTokens`（当前上下文占用）+ 带锁方法（`AddUsage`/`SetLastContextTokens`/`UsageTotals`/`CurrentContextTokens`，ADR-036 锁下沉）；新建 `impl/usage.go`（onReasoning after，agent 核心不碰 state）。
+  - **TUI**：footer 右侧 `ctx 128k/1.0M`（LastContextTokens / ActiveContextWindow=config.Resolve）；`/usage` 命令系统行（input/cache_read/output + ctx）；commandCatalog 补全。
+- **测试**：provider usage 捕获 2 例（含无 usage 时 nil）+ agent EventUsage 透出/零用量跳过 + agentstate 累计/缺省/并发（-race）+ usage middleware 3 例 + TUI /usage/footer 3 例。`go build/vet/test ./...` + `-race` 重点包全绿；e2e 全过。
+- **踩坑**：message_delta 规范只带 output_tokens，首版整块覆盖把 input/cache 冲成 0——改成仅非零覆盖。
+- **下一步**：阶段 B（thinking 完整回传，ADR-025 修订）→ 阶段 C（LLM 摘要压缩）。
+
 # 开发日志
 
 > 按日期追加，最新在上。记录：进展、阻塞、问题、经验。

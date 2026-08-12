@@ -109,6 +109,11 @@ func (a *Agent) Run(ctx context.Context, rc *middleware.RuntimeContext, onEvent 
 				return err
 			}
 			conversation.Add(result.assistant)
+			// 每轮采样后透出用量（ADR-037）：非零才发，避免无 usage 数据时的
+			// 噪音事件。渲染器未知类型默认忽略，UsageMiddleware 经 rc.attrs 累计。
+			if result.usage != nil && !result.usage.IsZero() {
+				emit(events.Event{Type: events.EventUsage, Usage: result.usage})
+			}
 			if len(result.toolCalls) == 0 {
 				break // 无工具调用 → 回合结束
 			}
@@ -127,6 +132,9 @@ func (a *Agent) Run(ctx context.Context, rc *middleware.RuntimeContext, onEvent 
 type sampleResult struct {
 	assistant *messages.Message
 	toolCalls []*messages.ToolCall
+	// usage 是本次采样的 token 用量（provider EventDone 携带；nil = 未捕获）。
+	// agent 透出为回合级 EventUsage（ADR-037 用量展示）。
+	usage *messages.Usage
 }
 
 // sample 执行一次采样：模型调用（onModelCall 包裹）→ 收集 thinking/text/tool_call。
@@ -156,6 +164,9 @@ func (a *Agent) sample(ctx context.Context, rc *middleware.RuntimeContext, in mi
 	if rc != nil {
 		thinkingEffort = rc.ThinkingEffort
 	}
+	// usage 捕获自 provider EventDone（ADR-037）；经 rc.attrs 交给
+	// UsageMiddleware（onReasoning after）累计进 AgentState。
+	var usage *messages.Usage
 
 	wrapped := a.mw.WrapModelCall(func(ctx context.Context, rc *middleware.RuntimeContext, min middleware.ModelCallInput) error {
 		req := provider.Request{
@@ -188,6 +199,7 @@ func (a *Agent) sample(ctx context.Context, rc *middleware.RuntimeContext, in mi
 				calls = append(calls, ev.ToolCall)
 				emit(events.Event{Type: events.EventToolCall, ToolCall: ev.ToolCall, MsgID: msgID})
 			case provider.EventDone:
+				usage = ev.Usage
 				return nil
 			case provider.EventError:
 				return ev.Error
@@ -197,6 +209,9 @@ func (a *Agent) sample(ctx context.Context, rc *middleware.RuntimeContext, in mi
 	})
 	if err := wrapped(ctx, rc, middleware.ModelCallInput{Messages: in.Messages, Tools: in.Tools}); err != nil {
 		return nil, err
+	}
+	if rc != nil {
+		rc.Set("round_usage", usage)
 	}
 
 	// 值切片（消息模型存储）与指针切片（执行用）分开。
@@ -211,7 +226,7 @@ func (a *Agent) sample(ctx context.Context, rc *middleware.RuntimeContext, in mi
 		Thinking:  tb.String(),
 		ToolCalls: toolCallValues,
 	}
-	return &sampleResult{assistant: assistant, toolCalls: calls}, nil
+	return &sampleResult{assistant: assistant, toolCalls: calls, usage: usage}, nil
 }
 
 // runToolBatch 并发执行一批工具调用（onToolCall 包裹整批，onActing 包裹单个），

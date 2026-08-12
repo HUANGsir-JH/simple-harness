@@ -46,6 +46,7 @@ var commandCatalog = []commandItem{
 	{name: "thinking", short: "Toggle thinking on/off"},
 	{name: "permission", short: "Set approval policy"},
 	{name: "plan", short: "Toggle plan mode / view plan"},
+	{name: "usage", short: "Show token usage"},
 	{name: "help", short: "Commands and keys"},
 	{name: "exit", short: "Leave Harness"},
 }
@@ -194,6 +195,26 @@ func (m Model) runCommand(cmd command) (tea.Model, tea.Cmd) {
 		}
 		m.refreshStatus() // header 即时显示新名
 		return m.sysOK("Renamed to " + strings.TrimSpace(cmd.arg)), nil
+	case "usage":
+		// 会话累计用量 + 当前上下文占用（ADR-037 用量展示，系统行对齐 /plan view）。
+		if m.c == nil || m.c.active == nil {
+			return m.sysErr(fmt.Errorf("无会话（先发一条消息）")), nil
+		}
+		u := m.c.active.State().UsageTotals()
+		parts := []string{fmt.Sprintf("input=%s", fmtTokens(u.InputTokens))}
+		if u.CacheReadInputTokens > 0 {
+			parts = append(parts, fmt.Sprintf("cache_read=%s", fmtTokens(u.CacheReadInputTokens)))
+		}
+		if u.CacheCreationInputTokens > 0 {
+			parts = append(parts, fmt.Sprintf("cache_creation=%s", fmtTokens(u.CacheCreationInputTokens)))
+		}
+		parts = append(parts, fmt.Sprintf("output=%s", fmtTokens(u.OutputTokens)))
+		if cw := m.c.ActiveContextWindow(); cw > 0 {
+			parts = append(parts, fmt.Sprintf("ctx=%s/%s", fmtTokens(m.c.active.State().CurrentContextTokens()), fmtTokens(int64(cw))))
+		}
+		m.appendSystem("USAGE  "+strings.Join(parts, "  "), false)
+		m.refresh(false)
+		return m, nil
 	default:
 		return m.sysErr(fmt.Errorf("unknown command /%s", cmd.name)), nil
 	}

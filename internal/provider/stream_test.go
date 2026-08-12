@@ -365,3 +365,77 @@ func TestToAnthropicMessagesSkipsThinkingOnly(t *testing.T) {
 		t.Fatalf("正常 assistant 不应跳过，got %d", len(out2))
 	}
 }
+
+// TestAnthropicStreamCapturesUsage 验证 message_start（input/cache）+ 最后
+// message_delta（累计 output）合成 usage，随 EventDone 发出（ADR-037 用量展示）。
+func TestAnthropicStreamCapturesUsage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		var sb strings.Builder
+		sb.WriteString(anthropicSSE("message_start", `{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-sonnet-5","content":[],"stop_reason":null,"usage":{"input_tokens":10,"output_tokens":1,"cache_read_input_tokens":3}}}`))
+		sb.WriteString(anthropicSSE("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`))
+		sb.WriteString(anthropicSSE("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}`))
+		sb.WriteString(anthropicSSE("content_block_stop", `{"type":"content_block_stop","index":0}`))
+		sb.WriteString(anthropicSSE("message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":5}}`))
+		sb.WriteString(anthropicSSE("message_stop", `{"type":"message_stop"}`))
+		w.Write([]byte(sb.String()))
+	}))
+	defer srv.Close()
+
+	c := newAnthropicClient(&config.ProviderConfig{Model: "claude-sonnet-5", BaseURL: srv.URL, APIKey: "test-key"})
+	es, err := c.Stream(context.Background(), Request{Model: "claude-sonnet-5", Messages: []*messages.Message{NewTestUserMsg("hi")}})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	defer es.Close()
+
+	var usage *messages.Usage
+	done := false
+	for es.Next() {
+		ev := es.Current()
+		if ev.Type == EventDone {
+			done = true
+			usage = ev.Usage
+		}
+	}
+	if err := es.Err(); err != nil {
+		t.Fatalf("stream err: %v", err)
+	}
+	if !done {
+		t.Fatal("expected EventDone")
+	}
+	if usage == nil {
+		t.Fatal("expected usage on EventDone")
+	}
+	if usage.InputTokens != 10 {
+		t.Errorf("input_tokens: got %d want 10", usage.InputTokens)
+	}
+	if usage.OutputTokens != 5 {
+		t.Errorf("output_tokens: got %d want 5（最后 message_delta 覆盖）", usage.OutputTokens)
+	}
+	if usage.CacheReadInputTokens != 3 {
+		t.Errorf("cache_read_input_tokens: got %d want 3", usage.CacheReadInputTokens)
+	}
+}
+
+// TestAnthropicStreamUsageNilWithoutUsage 验证无 usage 字段时 EventDone.Usage 为 nil。
+func TestAnthropicStreamUsageNilWithoutUsage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte(anthropicSSE("message_stop", `{"type":"message_stop"}`)))
+	}))
+	defer srv.Close()
+
+	c := newAnthropicClient(&config.ProviderConfig{Model: "claude-sonnet-5", BaseURL: srv.URL, APIKey: "test-key"})
+	es, err := c.Stream(context.Background(), Request{Model: "claude-sonnet-5", Messages: []*messages.Message{NewTestUserMsg("hi")}})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	defer es.Close()
+
+	for es.Next() {
+		if ev := es.Current(); ev.Type == EventDone && ev.Usage != nil {
+			t.Error("无 usage 时 EventDone.Usage 应为 nil")
+		}
+	}
+}

@@ -26,6 +26,9 @@ const (
 	EventToolResult EventType = "tool_result"
 	// EventTurnDone 标记一个回合的结束（★ 测试锚点）。
 	EventTurnDone EventType = "turn_done"
+	// EventUsage 是一次采样轮的 token 用量（agent 每轮采样后发出；renderer
+	// 未知类型默认忽略，transcript 不落盘——用量属 AgentState 非消息）。
+	EventUsage EventType = "usage"
 	// EventError 是回合级错误。
 	EventError EventType = "error"
 )
@@ -37,6 +40,7 @@ type Event struct {
 	Text       string
 	ToolCall   *messages.ToolCall
 	ToolResult *messages.ToolResult
+	Usage      *messages.Usage // EventUsage 携带（nil 或 IsZero = 未捕获）
 	Err        error
 }
 

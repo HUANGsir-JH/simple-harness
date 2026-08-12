@@ -791,3 +791,54 @@ func head80(s string) string {
 	}
 	return s
 }
+
+// TestRunEmitsEventUsage 验证采样轮结束后透出 EventUsage（ADR-037 用量展示：
+// provider EventDone 携带的 usage → 回合级事件）。
+func TestRunEmitsEventUsage(t *testing.T) {
+	usage := &messages.Usage{InputTokens: 100, OutputTokens: 50, CacheReadInputTokens: 20}
+	fc := &provider.FakeClient{StreamFn: func(ctx context.Context, req provider.Request) (provider.EventStream, error) {
+		return provider.NewFakeStream([]provider.Event{
+			{Type: provider.EventTextDelta, Text: "hi"},
+			{Type: provider.EventTextDone, Text: "hi"},
+			{Type: provider.EventDone, Usage: usage},
+		}), nil
+	}}
+	a := noToolsAgent(fc)
+	conv := newConversation()
+	rec := &eventRecorder{}
+	if err := a.Run(context.Background(), rcFor(conv), rec.on); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	var got *messages.Usage
+	for _, e := range rec.events {
+		if e.Type == events.EventUsage {
+			got = e.Usage
+		}
+	}
+	if got == nil {
+		t.Fatalf("expected EventUsage, got %v", rec.types())
+	}
+	if got.InputTokens != 100 || got.OutputTokens != 50 || got.CacheReadInputTokens != 20 {
+		t.Errorf("usage: got %+v", got)
+	}
+	// assistant 正常入 conversation。
+	if len(conv.Messages) != 2 || conv.Messages[1].Content != "hi" {
+		t.Errorf("assistant: got %d messages", len(conv.Messages))
+	}
+}
+
+// TestRunSkipsZeroUsage 验证无 usage 数据（EventDone.Usage nil/全零）时不发
+// EventUsage（避免噪音事件）。
+func TestRunSkipsZeroUsage(t *testing.T) {
+	fc := &provider.FakeClient{StreamFn: func(ctx context.Context, req provider.Request) (provider.EventStream, error) {
+		return textStream("hi"), nil // EventDone 无 usage
+	}}
+	a := noToolsAgent(fc)
+	rec := &eventRecorder{}
+	if err := a.Run(context.Background(), rcFor(newConversation()), rec.on); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if rec.has(events.EventUsage) {
+		t.Error("无用量数据不应发出 EventUsage")
+	}
+}

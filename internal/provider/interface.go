@@ -73,5 +73,9 @@ type Event struct {
 	Type     EventType
 	Text     string
 	ToolCall *messages.ToolCall
-	Error    error
+	// Usage 是本次采样的 token 用量（仅 EventDone 携带；nil = 未捕获）。
+	// anthropic wire 从 message_start（input/cache）+ 最后一个 message_delta
+	// （累计 output_tokens）合成（ADR-037 用量展示）。
+	Usage *messages.Usage
+	Error error
 }

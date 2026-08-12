@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+
+	"github.com/agent-project/harness/internal/messages"
 )
 
 func TestSaveLoadRoundTrip(t *testing.T) {
@@ -137,4 +139,58 @@ func TestAgentStateConcurrentAccess(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+// TestAddUsageAccumulates 验证累计用量跨多轮累加（ADR-037 用量展示）。
+func TestAddUsageAccumulates(t *testing.T) {
+	a := New("s1", "m", ".")
+	a.AddUsage(messages.Usage{InputTokens: 100, OutputTokens: 50, CacheReadInputTokens: 20})
+	a.AddUsage(messages.Usage{InputTokens: 30, OutputTokens: 10})
+	got := a.UsageTotals()
+	if got.InputTokens != 130 || got.OutputTokens != 60 || got.CacheReadInputTokens != 20 {
+		t.Errorf("totals: got %+v", got)
+	}
+	a.SetLastContextTokens(130)
+	if a.CurrentContextTokens() != 130 {
+		t.Errorf("last context tokens: got %d", a.CurrentContextTokens())
+	}
+}
+
+// TestUsageFieldsOptional 验证 usage 字段缺省不出现在 json（omitempty）。
+func TestUsageFieldsOptional(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agentstate.json")
+	a := New("s1", "m", ".")
+	if err := SaveFile(path, a); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Usage != nil || got.LastContextTokens != 0 {
+		t.Errorf("usage 字段应缺省: %+v", got)
+	}
+}
+
+// TestAgentStateConcurrentUsage 验证并发累计用量无 data race（-race 必跑）。
+func TestAgentStateConcurrentUsage(t *testing.T) {
+	a := New("s1", "m", ".")
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 50; j++ {
+				a.AddUsage(messages.Usage{InputTokens: 1, OutputTokens: 1})
+				a.SetLastContextTokens(int64(j))
+			}
+			_ = a.UsageTotals()
+			_ = a.CurrentContextTokens()
+			_, _ = a.Marshal()
+		}()
+	}
+	wg.Wait()
+	if got := a.UsageTotals().InputTokens; got != 400 {
+		t.Errorf("input total: got %d want 400", got)
+	}
 }

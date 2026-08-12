@@ -18,6 +18,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/agent-project/harness/internal/messages"
 )
 
 // AgentState 是会话的运行时状态快照。
@@ -46,6 +48,8 @@ type AgentState struct {
 	PlanMode        bool             `json:"plan_mode,omitempty"`  // plan 模式开关（/plan 或 plan_enter/plan_done，ADR-036）
 	Plan            *PlanState       `json:"plan,omitempty"`       // plan 文件指针（ADR-036）
 	Summary         string           `json:"summary,omitempty"`    // 压缩摘要，预留
+	Usage           *messages.Usage  `json:"usage,omitempty"`      // 会话累计 token 用量（/usage 展示；ADR-037）
+	LastContextTokens int64          `json:"last_context_tokens,omitempty"` // 最近一次请求 input_tokens = 当前上下文占用（footer 与压缩触发，ADR-037）
 }
 
 // TodoItem 是单个任务项（AgentScope tasksContext 对位）。对照 codex/opencode
@@ -224,6 +228,46 @@ func (a *AgentState) AddApproved(keys []string) {
 			a.Permission.Approved = append(a.Permission.Approved, key)
 		}
 	}
+}
+
+// AddUsage 把一次采样的 token 用量累计进会话 Usage（/usage 展示；ADR-037）。
+// Usage 为 nil 时先建。并行工具批/多轮采样共享同一 *AgentState，带锁。
+func (a *AgentState) AddUsage(u messages.Usage) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.Usage == nil {
+		a.Usage = &messages.Usage{}
+	}
+	a.Usage.InputTokens += u.InputTokens
+	a.Usage.CacheReadInputTokens += u.CacheReadInputTokens
+	a.Usage.CacheCreationInputTokens += u.CacheCreationInputTokens
+	a.Usage.OutputTokens += u.OutputTokens
+}
+
+// SetLastContextTokens 记录最近一次请求的 input_tokens（当前上下文占用，
+// footer 与压缩触发用；压缩后重置为 0 防重入）。
+func (a *AgentState) SetLastContextTokens(n int64) {
+	a.mu.Lock()
+	a.LastContextTokens = n
+	a.mu.Unlock()
+}
+
+// UsageTotals 返回累计用量的防御性拷贝（/usage 展示；不受并发写影响）。
+func (a *AgentState) UsageTotals() messages.Usage {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.Usage == nil {
+		return messages.Usage{}
+	}
+	u := *a.Usage
+	return u
+}
+
+// CurrentContextTokens 读取最近一次请求的 input_tokens（无数据返回 0）。
+func (a *AgentState) CurrentContextTokens() int64 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.LastContextTokens
 }
 
 // IsPlanMode 读取 plan 模式开关（方法名避开字段 PlanMode，Go 不允许同名）。

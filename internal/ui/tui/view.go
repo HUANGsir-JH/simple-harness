@@ -119,7 +119,7 @@ func (m Model) footerView() string {
 	} else {
 		left = styleSuccess.Render("READY")
 	}
-	rightParts := make([]string, 0, 5)
+	rightParts := make([]string, 0, 6)
 	if m.status.PlanMode {
 		rightParts = append(rightParts, "[PLAN]")
 	}
@@ -128,6 +128,10 @@ func (m Model) footerView() string {
 	}
 	if m.status.ThinkingEffort != "" {
 		rightParts = append(rightParts, "effort:"+m.status.ThinkingEffort)
+	}
+	if m.status.ContextTokens > 0 && m.status.ContextWindow > 0 {
+		// 当前上下文占用（ADR-037 用量展示）：`ctx 128k/1.0M`。
+		rightParts = append(rightParts, "ctx "+fmtTokens(m.status.ContextTokens)+"/"+fmtTokens(int64(m.status.ContextWindow)))
 	}
 	if m.status.TodoCount > 0 {
 		rightParts = append(rightParts, fmt.Sprintf("todo:%d", m.status.TodoCount))
@@ -662,6 +666,15 @@ func shortSession(id string) string {
 		return id
 	}
 	return id[:8] + "..." + id[len(id)-4:]
+}
+
+// fmtTokens 把 token 数格式化为紧凑显示（<1M 用 k、≥1M 用 M），footer 的
+// `ctx 128k/1.0M` 与 /usage 用量展示共用。
+func fmtTokens(n int64) string {
+	if n >= 1000000 {
+		return fmt.Sprintf("%.1fM", float64(n)/1e6)
+	}
+	return fmt.Sprintf("%dk", n/1000)
 }
 
 func clamp(value, minValue, maxValue int) int {
