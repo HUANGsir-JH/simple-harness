@@ -105,6 +105,7 @@ func (c *Controller) Run(line string) tea.Cmd {
 		}
 		rc := c.active.RuntimeContext()
 		rc.Approver = c.approver() // W4 注入 TUIApprover；当前 nil = 自动拒绝
+		rc.Emit = c.onEvent        // 压缩开始通知（ADR-037 扩展）：中间件经 rc.Emit 推送
 		c.active.AddUser(line)
 		runCtx, cancel := context.WithCancel(c.ctx)
 		c.setCancel(cancel)

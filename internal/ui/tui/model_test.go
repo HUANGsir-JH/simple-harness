@@ -274,3 +274,17 @@ func TestHitRangesAlignWithRenderedLines(t *testing.T) {
 		}
 	}
 }
+
+// TestEventCompactStartSystemLine 验证压缩开始通知（ADR-037 扩展）：自动压缩
+// 开始事件 → 系统行"正在压缩上下文…"（与完成行"上下文已压缩"配对）。
+func TestEventCompactStartSystemLine(t *testing.T) {
+	m := New(nil)
+	nm, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = nm.(Model)
+
+	nm, _ = m.Update(agentEventMsg{ev: events.Event{Type: events.EventCompactStart}})
+	m = nm.(Model)
+	if view := m.View(); !strings.Contains(view, "正在压缩上下文…") {
+		t.Errorf("View 应含压缩开始系统行，got:\n%s", view)
+	}
+}

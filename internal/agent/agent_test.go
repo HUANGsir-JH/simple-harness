@@ -85,6 +85,16 @@ func (r *eventRecorder) has(et events.EventType) bool {
 	}
 	return false
 }
+// indexOf 返回事件类型首次出现的序号（-1 = 未出现）。时序断言用：
+// start 事件须先于完成事件。
+func (r *eventRecorder) indexOf(et events.EventType) int {
+	for i, e := range r.events {
+		if e.Type == et {
+			return i
+		}
+	}
+	return -1
+}
 
 func newConversation() *messages.Conversation {
 	conv := messages.NewConversation()
@@ -874,17 +884,24 @@ func TestRunAutoCompact(t *testing.T) {
 	a.SetMiddleware(middleware.NewChain(impl.CompactMiddleware{Runner: compactor}))
 	a.SetCompactor(compactor)
 
-	// 超阈值：压缩 + emit EventCompacted。
+	// 超阈值：压缩 + emit EventCompactStart（先）→ EventCompacted（后）。
 	conv := newConversation()
 	rc := rcFor(conv)
 	rc.State = agentstate.New("s1", "m", ".")
 	rc.State.SetLastContextTokens(900_000)
 	rec := &eventRecorder{}
+	rc.Emit = rec.on // 压缩开始通知出口（ADR-037 扩展）
 	if err := a.Run(context.Background(), rc, rec.on); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if !rec.has(events.EventCompacted) {
 		t.Errorf("应 emit EventCompacted: %v", rec.types())
+	}
+	if !rec.has(events.EventCompactStart) {
+		t.Errorf("应 emit EventCompactStart: %v", rec.types())
+	}
+	if i, j := rec.indexOf(events.EventCompactStart), rec.indexOf(events.EventCompacted); i < 0 || j < 0 || i >= j {
+		t.Errorf("EventCompactStart 应早于 EventCompacted: %v", rec.types())
 	}
 	// conversation = [summary user 占位, assistant 采样]（压缩重写后采样追加）。
 	if len(conv.Messages) != 2 {
@@ -894,17 +911,21 @@ func TestRunAutoCompact(t *testing.T) {
 		t.Errorf("conversation[0] 应为摘要占位: %+v", conv.Messages[0])
 	}
 
-	// 未超阈值：不压缩、不 emit EventCompacted、历史保留。
+	// 未超阈值：不压缩、不 emit EventCompacted/EventCompactStart、历史保留。
 	conv2 := newConversation()
 	rc2 := rcFor(conv2)
 	rc2.State = agentstate.New("s2", "m", ".")
 	rc2.State.SetLastContextTokens(100)
 	rec2 := &eventRecorder{}
+	rc2.Emit = rec2.on
 	if err := a.Run(context.Background(), rc2, rec2.on); err != nil {
 		t.Fatalf("Run (under threshold): %v", err)
 	}
 	if rec2.has(events.EventCompacted) {
 		t.Errorf("未超阈值不应 emit EventCompacted: %v", rec2.types())
+	}
+	if rec2.has(events.EventCompactStart) {
+		t.Errorf("未超阈值不应 emit EventCompactStart: %v", rec2.types())
 	}
 	if len(conv2.Messages) != 2 || conv2.Messages[0].Content != "hi" {
 		t.Errorf("未压缩 conversation 应保留原样 + assistant: %+v", conv2.Messages)

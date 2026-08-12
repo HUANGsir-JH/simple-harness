@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/agent-project/harness/internal/agentstate"
+	"github.com/agent-project/harness/internal/events"
 	"github.com/agent-project/harness/internal/messages"
 	"github.com/agent-project/harness/internal/middleware"
 	"github.com/agent-project/harness/internal/provider"
@@ -241,6 +242,48 @@ func TestRunnerRunForce(t *testing.T) {
 	}
 	if len(rc.Messages.Messages) != 1 {
 		t.Fatalf("conversation 应重写: %d", len(rc.Messages.Messages))
+	}
+}
+
+// TestRunnerRunEmitStart 验证压缩开始通知（ADR-037 扩展）：真实压缩起点
+// （超阈值 / force）经 rc.Emit 发出 EventCompactStart；未超阈值被门控拦截不发。
+func TestRunnerRunEmitStart(t *testing.T) {
+	fc := &provider.FakeClient{StreamFn: func(ctx context.Context, req provider.Request) (provider.EventStream, error) {
+		return summaryStream("压缩后的总结"), nil
+	}}
+	r := NewRunner(NewSummarizer(fc, Options{ContextWindow: 1_000_000}), Options{ContextWindow: 1_000_000})
+
+	// 超阈值：Summarize 前发出 1 次 start。
+	rc := testRC(overThresholdRC(900_000))
+	got := []events.EventType{}
+	rc.Emit = func(e events.Event) { got = append(got, e.Type) }
+	if _, err := r.Run(context.Background(), rc, false); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(got) != 1 || got[0] != events.EventCompactStart {
+		t.Errorf("超阈值应 emit 1 次 EventCompactStart: %v", got)
+	}
+
+	// 未超阈值：门控拦截，不发 start。
+	rc2 := testRC(overThresholdRC(100))
+	got2 := []events.EventType{}
+	rc2.Emit = func(e events.Event) { got2 = append(got2, e.Type) }
+	if _, err := r.Run(context.Background(), rc2, false); err != nil {
+		t.Fatalf("Run (under threshold): %v", err)
+	}
+	if len(got2) != 0 {
+		t.Errorf("未超阈值不应 emit start: %v", got2)
+	}
+
+	// force=true：未超阈值也压缩并发出 start（手动 /compact 同出口）。
+	rc3 := testRC(overThresholdRC(100))
+	got3 := []events.EventType{}
+	rc3.Emit = func(e events.Event) { got3 = append(got3, e.Type) }
+	if _, err := r.Run(context.Background(), rc3, true); err != nil {
+		t.Fatalf("Run (force): %v", err)
+	}
+	if len(got3) != 1 || got3[0] != events.EventCompactStart {
+		t.Errorf("force 应 emit 1 次 EventCompactStart: %v", got3)
 	}
 }
 

@@ -29,6 +29,10 @@ const (
 	// EventUsage 是一次采样轮的 token 用量（agent 每轮采样后发出；renderer
 	// 未知类型默认忽略，transcript 不落盘——用量属 AgentState 非消息）。
 	EventUsage EventType = "usage"
+	// EventCompactStart 是上下文压缩开始通知（compact.Run 在 Summarize 前经
+	// rc.Emit 发出；TUI 系统行"正在压缩上下文…"，ADR-037 扩展）。与
+	// EventCompacted（完成）配对，覆盖自动压缩阻塞期无反馈的空白。
+	EventCompactStart EventType = "compact_start"
 	// EventCompacted 是上下文压缩完成通知（agent 读 rc.attrs 压缩标记后发出；
 	// TUI 显示系统行"上下文已压缩"，ADR-037）。
 	EventCompacted EventType = "compacted"

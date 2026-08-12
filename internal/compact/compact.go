@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/agent-project/harness/internal/events"
 	"github.com/agent-project/harness/internal/messages"
 	"github.com/agent-project/harness/internal/middleware"
 	"github.com/agent-project/harness/internal/provider"
@@ -187,6 +188,12 @@ func (r *Runner) Run(ctx context.Context, rc *middleware.RuntimeContext, force b
 	}
 	if rc == nil || rc.Messages == nil {
 		return false, fmt.Errorf("compact: 无会话上下文")
+	}
+
+	// 压缩开始通知（ADR-037 扩展）：Summarize 阻塞调用前经 rc.Emit 发出
+	// （自动/手动共用此起点；未超阈值已被上面门控拦截，不会误报 start）。
+	if rc.Emit != nil {
+		rc.Emit(events.Event{Type: events.EventCompactStart})
 	}
 
 	summary, err := r.summarizer.Summarize(ctx, rc)

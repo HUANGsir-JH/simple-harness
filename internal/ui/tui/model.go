@@ -678,6 +678,10 @@ func (m Model) handleAgentEvent(ev events.Event) (tea.Model, tea.Cmd) {
 	case events.EventUsage:
 		// 用量已由 UsageMiddleware 写入 AgentState.LastContextTokens，尾部
 		// refresh 读取并更新 footer（ctx 占用，ADR-037）；此处无需处理。
+	case events.EventCompactStart:
+		// 自动压缩开始（ADR-037 扩展）：Summarize 阻塞期间先给反馈，与完成行
+		// 配对。经 rc.Emit 发出（中间件层无 agent 事件通道）。
+		m.appendSystem("正在压缩上下文…", false)
 	case events.EventCompacted:
 		// 自动压缩成功（ADR-037）：conversation 已重写为摘要占位。回合进行中
 		// 不能 reloadSession（会清空运行态/队列）；只打系统行，视图保持历史

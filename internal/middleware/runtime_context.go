@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"github.com/agent-project/harness/internal/agentstate"
+	"github.com/agent-project/harness/internal/events"
 	"github.com/agent-project/harness/internal/messages"
 )
 
@@ -51,6 +52,12 @@ type RuntimeContext struct {
 
 	// seed 是压缩后要落盘的消息序列（通常为 [summary user 消息]）。
 	Segment func(seed []*messages.Message) error
+
+	// Emit 是事件出口（ADR-037 扩展）：中间件在阻塞调用（如 Summarize）前向
+	// UI 推送事件——agent.Run 的 emit 闭包够不到中间件内部，须 per-call 注入。
+	// Controller.Run 注入 c.onEvent（与 rc.Approver 同模式）；nil = 不发出
+	// （非交互场景；现有测试 rc 未注入，天然兼容）。
+	Emit func(events.Event)
 
 	attrs map[string]any
 }
