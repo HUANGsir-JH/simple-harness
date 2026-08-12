@@ -32,6 +32,12 @@ AgentState——这些细节都经测试锁定，质量在线。
 | 08 | 压缩成功但随后采样失败时不发 EventCompacted（压缩其实已生效，UI 只见错误） | 低 | 代码分析 |
 | 09 | 帮助面板缺 /usage /compact；`gofmt -l` 报 agent_test.go | 低 | 实测 |
 
+> **实测补充（见文末）**：用户实测反馈后经真实 API 请求复核，新增 3 项——
+> 10（`AddUsage` 累计 cache_read 虚高，与 ADR-037 勘误自相矛盾，中等）、
+> 11（`LastContextTokens` 含 output 致 footer 非单调"变小"，中等）、
+> 12（thinking 完整回传从未生效：signature 全空，DeepSeek 流式签名走
+> `signature_delta` 事件而代码未处理，严重）。
+
 ---
 
 ## 已验证缺陷
@@ -176,3 +182,54 @@ state 已更新），但 TUI 只显示错误，用户不知道压缩成功了；
   已在 conversation，下轮重试；配合"失败不重写"，历史零丢失，设计自洽。
 - 建议在修复缺陷 01/02 后补两条回归（采样请求内容断言 + Summarizer 模型优先），
   并考虑 06/07 的记账与去重（若用户在意计费与 token 成本）。
+
+---
+
+## 实测补充（2026-08-12 用户实测反馈后验证）
+
+用户实测发现两个用量显示问题后，用**真实 API 请求**（从 transcript 重建
+conversation 发给 DeepSeek 实测）复核，另发现一个阶段 B 的功能失效。以下
+结论全部经真实请求/原始 SSE 证实（探针跑完即删）。
+
+### 10. `AddUsage` 累计 cache_read 造成 /usage 虚高（中等，与 ADR 自相矛盾）
+
+现场 state：`usage.cache_read_input_tokens = 6,294,400`（6.3M）。实测证实
+DeepSeek 热缓存下每轮 `cache_read ≈ 当前历史全量`（R3 重复请求 cache_read=
+20992/总 21004，turn2 轮 cache_read=123008/总 123064）——它是"当前上下文占用"
+而非增量。`AddUsage` 把它跨轮相加 50+ 次，虚高到"好多 M 的错觉"。
+
+**ADR-037 勘误自己写了"累计值不能相加（跨轮重复累加会虚高）"，但勘误只修了
+`LastContextTokens` 口径，`AddUsage` 仍在累加 cache_read**——实现与决策矛盾。
+且缓存命中不计费，累计它既无账单意义也无上下文意义（上下文占用另有
+`LastContextTokens`）。修复方向：`AddUsage` 不累计 `CacheReadInputTokens`
+（或 /usage 只展示最近一轮 cache_read）。
+
+### 11. `LastContextTokens` 含 output 导致 footer "多跑一轮反而变小"（中等）
+
+实测：153k 显示轮 = 大 thinking 轮（input+cache≈90k + 单轮 thinking 输出
+47.6K 字符 ≈62k tokens）；下一轮 input+cache=123k（上下文实际**变大**）但
+output≈0.2k → 显示 123k。footer 值 = input+cache+**output**（ADR-037 勘误的
+opencode tokens.total 口径），随单轮输出长短大幅波动、非单调，给用户
+"上下文变小"的错觉；且与压缩触发/估算兜底（`EstimateTokens` 只算输入侧）
+口径不一致。
+
+修复方向：`SetLastContextTokens` 去掉 output（= input + cache_read +
+cache_creation），显示单调且与压缩判定统一。注意：`LastContextTokens` 本身
+实测与真实请求吻合（123235 vs 123064，差值仅系统提示/tool schema 计法），
+该值用于触发压缩是可靠的。
+
+### 12. thinking 完整回传从未生效——signature 全空（严重，阶段 B 功能失效）
+
+现场 transcript 90/90 条 thinking 行 `signature` 全空。原始 SSE 实测证实
+根因：DeepSeek **流式**响应中 `content_block_start` 的 thinking 块 signature
+是**空串**（`"signature":""`），签名经独立的 **`signature_delta`** 事件下发
+（`{"type":"signature_delta","signature":"<id>"}`）；而
+`anthropic_stream.go` 只在 `content_block_start` 读 `cb.Signature`，**没有
+`signature_delta` 分支** → 签名全部丢弃 → thinking 只存不重放（实际行为退回
+ADR-025 原设计"存但不重放"）。
+
+影响：thinking 完整回传（ADR-025 修订 / ADR-037 第二段）交付的功能实际未生效；
+摘要请求同样看不到 thinking。这**不影响** usage 显示的正确性（usage 反映真实
+请求），但 `EstimateTokens` 按"含 thinking 回传"估算会高估。修复方向：
+`anthropic_stream.go` 补 `signature_delta` 分支（SDK delta union 含
+`SignatureDelta` 变体），在 content_block_stop 前把 signature 挂到 pendingBlock。
