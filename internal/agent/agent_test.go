@@ -492,12 +492,13 @@ func TestRunRepairsDanglingToolUse(t *testing.T) {
 }
 
 // TestRunThinkingDelta 验证 thinking/text 增量透传事件（渲染），且块完成
-// 事件（thinking_done/text_done）驱动 assistant 消息的 Content/Thinking 组装（ADR-025）。
+// 事件（thinking_done/text_done）驱动 assistant 消息的 Content/Thinking 组装
+// （ADR-025），thinking 签名随块捕获存 Message.ThinkingSignature（ADR-025 修订）。
 func TestRunThinkingDelta(t *testing.T) {
 	fc := &provider.FakeClient{StreamFn: func(ctx context.Context, req provider.Request) (provider.EventStream, error) {
 		return provider.NewFakeStream([]provider.Event{
 			{Type: provider.EventThinkingDelta, Text: "Let me think"},
-			{Type: provider.EventThinkingDone, Text: "Let me think"},
+			{Type: provider.EventThinkingDone, Text: "Let me think", Signature: "sig_t"},
 			{Type: provider.EventTextDelta, Text: "answer"},
 			{Type: provider.EventTextDone, Text: "answer"},
 			{Type: provider.EventDone},
@@ -509,14 +510,16 @@ func TestRunThinkingDelta(t *testing.T) {
 	if err := a.Run(context.Background(), rcFor(conv), rec.on); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	// 块完成事件透传（持久化订阅用）。
+	// 块完成事件透传（持久化订阅用），签名随 thinking_done 透传。
 	gotThinkingDone, gotTextDone := false, false
+	sigOK := false
 	for _, e := range rec.events {
 		if e.Type == events.EventThinkingDelta && e.Text == "Let me think" {
 			gotThinkingDone = true
 		}
 		if e.Type == events.EventThinkingDone && e.Text == "Let me think" {
 			gotThinkingDone = true
+			sigOK = e.Signature == "sig_t"
 		}
 		if e.Type == events.EventTextDone && e.Text == "answer" {
 			gotTextDone = true
@@ -525,10 +528,13 @@ func TestRunThinkingDelta(t *testing.T) {
 	if !gotThinkingDone {
 		t.Errorf("thinking_done 事件缺失: %v", rec.types())
 	}
+	if !sigOK {
+		t.Errorf("thinking_done 应透传签名 sig_t: %v", rec.events)
+	}
 	if !gotTextDone {
 		t.Errorf("text_done 事件缺失: %v", rec.types())
 	}
-	// assistant 消息组装：Content=text、Thinking=thinking（存审计，重放剥离）。
+	// assistant 消息组装：Content=text、Thinking=thinking（完整回传，存签名）。
 	var asst *messages.Message
 	for _, m := range conv.Messages {
 		if m.Role == messages.RoleAssistant {
@@ -540,6 +546,9 @@ func TestRunThinkingDelta(t *testing.T) {
 	}
 	if asst.Content != "answer" || asst.Thinking != "Let me think" {
 		t.Errorf("assistant 组装: content=%q thinking=%q", asst.Content, asst.Thinking)
+	}
+	if asst.ThinkingSignature != "sig_t" {
+		t.Errorf("assistant ThinkingSignature = %q, want sig_t", asst.ThinkingSignature)
 	}
 }
 

@@ -28,11 +28,12 @@ func toAnthropicMessages(msgs []*messages.Message) []anthropic.MessageParam {
 				Content: []anthropic.ContentBlockParamUnion{{OfText: &anthropic.TextBlockParam{Text: m.Content}}},
 			})
 		case messages.RoleAssistant:
-			// thinking-only 的 assistant（content 空且无 tool_calls）：剥离 thinking
-			// 后（ADR-025）无任何内容，anthropic 不接受空 assistant 消息 → 跳过，
-			// 前后 user 消息自然相邻（连续 user 是合法格式，tool_result 即以 user
-			// 发送）。模型看到"两个 user 之间无回复"，语义准确且零污染。
-			if m.Content == "" && len(m.ToolCalls) == 0 {
+			// thinking-only 的 assistant（content 空且无 tool_calls）：若有可重放的
+			// thinking（带签名，ADR-025 修订完整回传）则重放；否则（无 thinking，或
+			// thinking 无签名无法重放）为空消息，anthropic 不接受空 assistant 消息 →
+			// 跳过，前后 user 消息自然相邻（连续 user 是合法格式，tool_result 即以
+			// user 发送）。模型看到"两个 user 之间无回复"，语义准确且零污染。
+			if m.Content == "" && len(m.ToolCalls) == 0 && m.ThinkingSignature == "" {
 				continue
 			}
 			out = append(out, toAnthropicAssistantMessage(m))
@@ -44,9 +45,19 @@ func toAnthropicMessages(msgs []*messages.Message) []anthropic.MessageParam {
 }
 
 func toAnthropicAssistantMessage(m *messages.Message) anthropic.MessageParam {
-	// 注意：m.Thinking（推理文本）不重放——每次采样请求重放历史时都剥离
-	// thinking（ADR-025：thinking 仅审计，不进模型上下文、免格式适配）。
-	blocks := make([]anthropic.ContentBlockParamUnion, 0, len(m.ToolCalls)+1)
+	// ADR-025 修订：thinking 完整回传。ThinkingSignature 非空时重放 thinking 块
+	// （DeepSeek 兼容端点恒返回签名；实测回传 200 且计入 input_tokens）。签名是
+	// 标准 anthropic 协议的重放凭据——严格端点校验签名，无签名回传会 400；
+	// 故仅签名非空才重放，其余端点 thinking 仍只存不重放（免格式适配）。
+	blocks := make([]anthropic.ContentBlockParamUnion, 0, len(m.ToolCalls)+2)
+	if m.ThinkingSignature != "" {
+		blocks = append(blocks, anthropic.ContentBlockParamUnion{
+			OfThinking: &anthropic.ThinkingBlockParam{
+				Signature: m.ThinkingSignature,
+				Thinking:  m.Thinking,
+			},
+		})
+	}
 	if m.Content != "" {
 		blocks = append(blocks, anthropic.ContentBlockParamUnion{OfText: &anthropic.TextBlockParam{Text: m.Content}})
 	}

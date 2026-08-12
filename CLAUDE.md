@@ -63,7 +63,7 @@ internal/
 4. **错误二分类 + 审批拒绝**：工具错误 `RespondToModel`（结果回填、循环继续）/ `Fatal`（终止 turn）。**审批拒绝 = 独立 `middleware.DeniedError`**（非工具错误）：agent 调用层捕获后作为失败结果回填、**不取消整批**、循环继续（ADR-029，拒绝 ≠ Fatal）。
 5. **并行工具**：errgroup 并发执行全部 tool_call，结果按 call_id 合并成**一条** tool_result 消息回填（anthropic 紧邻要求，ADR-024）。
 6. **会话双轨**（ADR-025 项目分桶）：`~/.harness/workspaces/<项目转义>/<session-id>/{historys, agentstate.json, plans, evictions}`；transcript = **块级事件 + 异步 writer**（单 goroutine FIFO + ordinal，压缩切新文件 `NewSegment`）；AgentState = todo/权限/plan 指针/摘要（含 `CWD` = **会话启动目录**，ADR-028）；evictions/ = 超长工具结果落盘（模型 read_file/grep 读全量）。resume 只读最大序号文件。
-7. **thinking 存但不重放**（ADR-025）：`Message.Thinking` 存审计，provider 重放 assistant 时忽略（免 anthropic 格式适配）。
+7. **thinking 完整回传**（ADR-025 修订，2026-08-12）：`Message.Thinking` + `Message.ThinkingSignature`（数字签名）存审计；provider 重放 assistant 时**仅签名非空才重放** `ThinkingBlockParam`（严格端点校验签名；DeepSeek 兼容端点恒返回签名，实测回传 200）。thinking-only assistant 带签名不再跳过。
 8. **UI 抽象**：`output` 接口（text 渲染器 + `--json` JSONL 事件）；事件回调双转发（渲染 + session 落盘）。
 9. **子 agent = 独立 session**（远期）：fork 只继承 user 消息 + 最终答案。并行已由无状态 agent + 共享 chain 并发安全支撑（ADR-026）。
 10. **无状态 agent + 运行时切换**（ADR-026）：agent 不持有会话，`Run(ctx, rc, onEvent)` 消息序列经 `rc.Messages`；**每 Run 新建 rc**，切换会话 = 换 active（REPL `/switch`）、并行 = 每 goroutine 一个 rc（共享 agent/chain 并发安全）。模型/thinking 档位 per-call 经 `Request.Model/ThinkingEnabled/ThinkingEffort` 覆盖（nil/空 = client 默认），会话级持久化在 AgentState（resume 恢复）；`/model`、`/effort` 运行时切换。配置统一 `app.Load()` 惰性单例（`config.LoadConfig` + `config.Resolve` → `app.App{Config, Provider}`；agent 经 `agent.Build(res, mode)` 装配）。

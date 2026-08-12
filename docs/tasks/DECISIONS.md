@@ -193,6 +193,7 @@
 - **理由**：项目分桶贴合"我在哪个项目用 harness"（resume 从 cwd 定位，FindProject 逐级向上）；块级事件流使中断零丢失、resume 渲染逐块回放；AgentState 独立包解循环依赖；todo 挂 state 是 AgentScope tasksContext 对位，为 todo 工具铺路。
 - **影响 ADR**：ADR-023 的 `sessions/` 扁平布局以本文为准；ADR-021 第 3 点"JSONL + AgentState 快照"细化为块级 transcript + 注入机制。
 - **修订（2026-08-09）**：`FindProject` 由"逐级向上匹配已存在桶"改为**精确匹配启动目录（pwd 结果）**。原因：项目根桶先存在时，子目录任务（如 `just-for-test/case03`）被归并进根桶，与"每个启动目录独立记录"的预期不符（实测 case03 会话落进 `D__agent-project_harness` 桶）。桶 = `<workspaces>/<EscapePath(cwd)>/<session-id>`，与 state.CWD 一致；`store_test.go` TestFindProject 相应更新。
+- **修订（2026-08-12，ADR-037 第二段：thinking 完整回传）**：第 3 点"thinking **存但不重放**"改为**完整回传**（存且重放）。原因：DeepSeek anthropic 兼容端点实测（Python 原始 HTTP）——返回 thinking 块含 signature；**thinking 块（含 signature）回传 → 200** 且计入 `input_tokens`（99→136）；不带 signature 也 200（DeepSeek 宽松）。1M context_window 足够容纳大 thinking（可达 1.6万~3万字符/轮）。实现：`anthropic_stream` 在 content_block_start 捕获 thinking 块 `Signature`（SDK union `ContentBlockStartEventContentBlockUnion` 已含，v1.61.0）→ `Message.ThinkingSignature` + transcript `Line.Signature`（resume 恢复）→ `toAnthropicAssistantMessage` 首块插入 `ThinkingBlockParam{Signature, Thinking}`；**仅签名非空时重放**（严格端点校验签名，无签名回传 400；DeepSeek 恒返回）；thinking-only assistant（content 空 + 无 tool_calls）由"跳过"改为"带签名则重放"（`toAnthropicMessages` 跳过条件 = content 空 + 无 tool_calls + ThinkingSignature 空）。估算镜像随之纳入 thinking 文本/签名（`internal/compact.EstimateTokens`，阶段 C 兜底）。
 
 ## ADR-026：无状态 agent 架构 + 运行时切换（会话/模型/推理强度）（2026-08-08）
 

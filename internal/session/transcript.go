@@ -52,6 +52,9 @@ type Line struct {
 	Success   *bool           `json:"success,omitempty"`
 	Content   string          `json:"content,omitempty"`
 	Text      string          `json:"text,omitempty"`
+	// Signature 是 thinking 行的数字签名（ADR-025 修订完整回传）：块级落盘，
+	// resume 恢复回 Message.ThinkingSignature（重放 thinking 块的凭据）。
+	Signature string          `json:"signature,omitempty"`
 	Sync      chan struct{}   `json:"-"` // 内部 flush 确认（不序列化）
 }
 
@@ -152,7 +155,7 @@ func (w *TranscriptWriter) OnAgentEvent(ev events.Event) {
 		w.turn++
 		line = Line{Type: LineTypeTurnStart, Turn: w.turn}
 	case events.EventThinkingDone:
-		line = Line{Type: LineTypeThinking, MsgID: ev.MsgID, Text: ev.Text, Turn: w.turn}
+		line = Line{Type: LineTypeThinking, MsgID: ev.MsgID, Text: ev.Text, Signature: ev.Signature, Turn: w.turn}
 	case events.EventTextDone:
 		line = Line{Type: LineTypeText, MsgID: ev.MsgID, Text: ev.Text, Turn: w.turn}
 	case events.EventToolCall:

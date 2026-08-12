@@ -1,5 +1,16 @@
 ## 2026-08-12
 
+### 阶段 B：thinking 完整回传 ✅ 版本 0.7.2（ADR-025 修订 + ADR-037 第二段）
+
+- **背景**：阶段 A 完成后接续。ADR-025 原定"thinking 存但不重放"（免格式适配）；DeepSeek anthropic 端点实测推翻该约束——thinking 块含 signature，回传 200 且计入 input_tokens（99→136），1M 窗口容纳大 thinking。用户拍板**完整回传**（这是阶段 C 压缩的上下文基线：摘要请求经 toAnthropicMessages 完整重放 thinking，模型看到的上下文才与正常采样一致）。
+- **交付**：
+  - **捕获**：`anthropicStream` content_block_start 对 `cb.Type == "thinking"` 记 `pb.signature = cb.Signature`（SDK union `ContentBlockStartEventContentBlockUnion` 已含 Signature，v1.61.0）；content_block_stop thinking 分支 `EventThinkingDone` 带 Signature。`provider.Event` 加 `Signature` 字段。
+  - **存储**：`Message.ThinkingSignature`（json `thinking_signature,omitempty`）；`events.Event.Signature`；transcript `Line.Signature`（thinking 行），`loadHistoryFile` resume 恢复；`agent.sample` EventThinkingDone 捕获签名 → assistant 消息。
+  - **重放**：`toAnthropicAssistantMessage` 首块插入 `ThinkingBlockParam{Signature, Thinking}`（**仅 `ThinkingSignature != ""` 时重放**——严格端点校验签名，无签名回传 400；DeepSeek 恒返回）；thinking-only assistant（content 空 + 无 tool_calls）跳过条件从"content 空 + 无 tool_calls"改为"+ ThinkingSignature 空"——带签名则重放（`TestToAnthropicMessagesReplaysThinkingOnly`）。
+  - **估算镜像**：新建 `internal/compact/EstimateTokens`（bytes/4，**含 thinking 文本/签名 + 工具参数/结果**，镜像实际发送）——阶段 C 压缩触发的估算兜底。
+- **测试**：stream signature 捕获（`TestAnthropicStreamThinkingDelta` 扩展）+ anthropic_messages 重放 3 例（无签名剥离/有签名首块顺序/thinking-only 重放）+ agent 端到端 signature（`TestRunThinkingDelta` 扩展）+ session resume 恢复 signature（`TestSessionCreateResume` 扩展）+ compact 估算 3 例（含 thinking/普通/nil 安全）。`go build/vet/test ./...` + `-race` 重点包全绿；e2e 全过。
+- **下一步**：阶段 C（LLM 摘要式压缩，ADR-037 第三段）——`internal/compact` 补 ShouldCompact/Summarizer/Run + `RuntimeContext.Segment` 钩子 + CompactMiddleware + /compact 手动。
+
 ### 阶段 A：用量展示 ✅ 版本 0.7.1（ADR-037）
 
 - **背景**：阶段 4 剩余起步（用量展示 + 上下文压缩）。规划期与用户逐点确认：展示位置（footer 实时 ctx + /usage 累计）、压缩触发（85% 硬编码 + 实际 usage 驱动）、thinking 回传（完整回传，实测 DeepSeek 可行）、压缩直接 LLM 摘要式（不做 v1 TokenBudget）、摘要失败跳过+终止 run、全程不加配置。分三阶段：A 用量展示 → B thinking 回传 → C 压缩。

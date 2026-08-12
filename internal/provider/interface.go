@@ -73,6 +73,10 @@ type Event struct {
 	Type     EventType
 	Text     string
 	ToolCall *messages.ToolCall
+	// Signature 是 thinking 块的数字签名（仅 EventThinkingDone 携带；ADR-025 修订
+	// 完整回传时重放 thinking 块的凭据）。anthropic 端点 content_block_start 的
+	// thinking 块自带；DeepSeek 兼容端点恒返回。
+	Signature string
 	// Usage 是本次采样的 token 用量（仅 EventDone 携带；nil = 未捕获）。
 	// anthropic wire 从 message_start（input/cache）+ 最后一个 message_delta
 	// （累计 output_tokens）合成（ADR-037 用量展示）。

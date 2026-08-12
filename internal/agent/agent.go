@@ -148,6 +148,9 @@ func (a *Agent) sample(ctx context.Context, rc *middleware.RuntimeContext, in mi
 	var sb strings.Builder
 	var tb strings.Builder
 	var calls []*messages.ToolCall
+	// thinkingSig 是本次采样 thinking 块的数字签名（ADR-025 修订完整回传）；
+	// 空 = 无 thinking 或端点未返回签名（此时 thinking 存审计不重放）。
+	var thinkingSig string
 
 	// per-call 覆盖（ADR-026）：rc.Model / rc.ThinkingEnabled / rc.ThinkingEffort
 	// 优先，未设置则用 agent/client 默认。
@@ -194,7 +197,10 @@ func (a *Agent) sample(ctx context.Context, rc *middleware.RuntimeContext, in mi
 				emit(events.Event{Type: events.EventThinkingDelta, Text: ev.Text})
 			case provider.EventThinkingDone:
 				tb.WriteString(ev.Text)
-				emit(events.Event{Type: events.EventThinkingDone, Text: ev.Text, MsgID: msgID})
+				// 捕获 thinking 块签名（ADR-025 修订完整回传）：随 assistant 消息
+				// 存储，provider 重放 thinking 块时作为凭据。
+				thinkingSig = ev.Signature
+				emit(events.Event{Type: events.EventThinkingDone, Text: ev.Text, Signature: ev.Signature, MsgID: msgID})
 			case provider.EventToolCall:
 				calls = append(calls, ev.ToolCall)
 				emit(events.Event{Type: events.EventToolCall, ToolCall: ev.ToolCall, MsgID: msgID})
@@ -220,11 +226,12 @@ func (a *Agent) sample(ctx context.Context, rc *middleware.RuntimeContext, in mi
 		toolCallValues = append(toolCallValues, *c)
 	}
 	assistant := &messages.Message{
-		ID:        msgID,
-		Role:      messages.RoleAssistant,
-		Content:   sb.String(),
-		Thinking:  tb.String(),
-		ToolCalls: toolCallValues,
+		ID:                msgID,
+		Role:              messages.RoleAssistant,
+		Content:           sb.String(),
+		Thinking:          tb.String(),
+		ThinkingSignature: thinkingSig,
+		ToolCalls:         toolCallValues,
 	}
 	return &sampleResult{assistant: assistant, toolCalls: calls, usage: usage}, nil
 }

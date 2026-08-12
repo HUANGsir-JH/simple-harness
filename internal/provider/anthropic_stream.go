@@ -31,6 +31,9 @@ type pendingBlock struct {
 	sb      strings.Builder // 文本 delta；tool_use 的 input_json_delta 分片
 	initial string          // tool_use：content_block_start 时 input（小参数可能带全）
 	call    *messages.ToolCall
+	// signature 是 thinking 块的数字签名（ADR-025 修订完整回传：content_block_start
+	// 捕获，thinking_done 随块发出；重放 thinking 块时作为凭据）。
+	signature string
 }
 
 func newAnthropicStream(stream *ssestream.Stream[anthropic.MessageStreamEventUnion]) *anthropicStream {
@@ -81,6 +84,12 @@ func (s *anthropicStream) Next() bool {
 					}
 				}
 			}
+			if cb.Type == "thinking" {
+				// 捕获 thinking 块签名（ADR-025 修订：完整回传）。SDK union
+				// ContentBlockStartEventContentBlockUnion 的 Signature 字段即来自
+				// ThinkingBlock 变体；DeepSeek 兼容端点恒返回。
+				pb.signature = cb.Signature
+			}
 			s.blocks[ev.Index] = pb
 			continue
 		case "content_block_delta":
@@ -121,7 +130,7 @@ func (s *anthropicStream) Next() bool {
 				s.cur = Event{Type: EventToolCall, ToolCall: pb.call}
 				return true
 			case "thinking":
-				s.cur = Event{Type: EventThinkingDone, Text: pb.sb.String()}
+				s.cur = Event{Type: EventThinkingDone, Text: pb.sb.String(), Signature: pb.signature}
 				return true
 			case "text":
 				s.cur = Event{Type: EventTextDone, Text: pb.sb.String()}

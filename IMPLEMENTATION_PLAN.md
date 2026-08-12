@@ -6,7 +6,7 @@
 
 参照 OpenAI Codex CLI（`../codex/codex-rs`，Rust）+ AgentScope Java v2 的架构，用 Go 构建一个**可真实使用**的极简 agent harness（命令行）。定位为**通用框架**，未来可被 resume-agent 等其它项目引用。
 
-**现状（2026-08-12）**：阶段 1（骨架+消息+provider+最小 loop）→ 阶段 2（工具系统+并发+渲染+middleware 骨架+REPL）→ 阶段 2.5（Workspace+AgentState+会话落盘/resume）→ 架构重构（ADR-026 无状态 agent+运行时切换）→ todo 工具（ADR-027）→ 工具结果截断/用户中断/shell 缓解（ADR-028）→ **阶段 3 审批（ADR-029）✅** → 配置层独立 + 装配根 → **Plan Mode（ADR-036）✅ 2026-08-11** → **Plan Mode 审查修复 ✅ 2026-08-12**（写黑名单反向判定 + 纯 Deny / AgentState 锁下沉 / TUI 待决请求队列，见 DECISIONS.md ADR-036 修订）→ **用量展示（ADR-037 第一段）✅ 2026-08-12**（provider 捕获 usage + AgentState 累计 + footer `/usage`，版本 0.7.1）。待办：阶段 4 剩余（**thinking 完整回传 ADR-025 修订** + **LLM 摘要压缩 ADR-037** + AGENTS.md 注入 + 系统提示词拼接）、阶段 5（子 agent）、阶段 6（可选）。
+**现状（2026-08-12）**：阶段 1（骨架+消息+provider+最小 loop）→ 阶段 2（工具系统+并发+渲染+middleware 骨架+REPL）→ 阶段 2.5（Workspace+AgentState+会话落盘/resume）→ 架构重构（ADR-026 无状态 agent+运行时切换）→ todo 工具（ADR-027）→ 工具结果截断/用户中断/shell 缓解（ADR-028）→ **阶段 3 审批（ADR-029）✅** → 配置层独立 + 装配根 → **Plan Mode（ADR-036）✅ 2026-08-11** → **Plan Mode 审查修复 ✅ 2026-08-12**（写黑名单反向判定 + 纯 Deny / AgentState 锁下沉 / TUI 待决请求队列，见 DECISIONS.md ADR-036 修订）→ **用量展示（ADR-037 第一段）✅ 2026-08-12**（provider 捕获 usage + AgentState 累计 + footer `/usage`，版本 0.7.1）→ **thinking 完整回传（ADR-025 修订，ADR-037 第二段）✅ 2026-08-12**（thinking signature 捕获→存储→重放，版本 0.7.2）。待办：阶段 4 剩余（**LLM 摘要压缩 ADR-037** + AGENTS.md 注入 + 系统提示词拼接）、阶段 5（子 agent）、阶段 6（可选）。
 
 ## 已确认决策（当前生效）
 
@@ -15,7 +15,7 @@
 | 语言 | Go |
 | wire | **单 anthropic Messages wire**（ADR-022）：多后端 = 多 anthropic 兼容端点（base_url 覆盖），DeepSeek 走其 anthropic 兼容端点；不写多 provider 实现 |
 | 事件模型 | **分层**：provider 采样级（text/thinking **delta + 块完成** text_done/thinking_done + tool_call + done/error，无生命周期事件）+ agent 回合级（turn_start/turn_done/tool_call/tool_result/thinking_done/text_done，**带 MsgID** 关联块归属） |
-| 内部消息模型 | **统一 Message**（role/content/**thinking**/tool_calls/**tool_results 多块合并**/is_error），provider 适配转换；thinking 存审计不重放（ADR-025） |
+| 内部消息模型 | **统一 Message**（role/content/**thinking**/tool_calls/**tool_results 多块合并**/is_error），provider 适配转换；thinking **存且重放**（`Message.ThinkingSignature` 非空时重放 `ThinkingBlockParam`，ADR-025 修订 2026-08-12；无签名仍只存不重放） |
 | 扩展机制 | **进程内 middleware**（6 hook：onAgent/onReasoning/onToolCall/onActing/onModelCall onion + onSystemPrompt transformer 链）+ 链机制为核心扩展点；**子进程 hooks 降级远期**（ADR-021） |
 | 权限审批 | **三档**（readonly/acceptedit/bypass）+ shell 黑白名单 + **会话级记忆**（Approved）+ config 播种 + `/permission` 切换（ADR-029）；复杂规则匹配不强做，middleware 扩展点承载。**plan 只读** = 写黑名单反向判定 + 纯 Deny（ADR-036 修订，2026-08-12） |
 | 会话存储 | **双轨**（ADR-025）：消息流 → **块级 transcript**（historys/history-N.jsonl，异步 writer + ordinal，压缩切新文件）；非消息状态 → **AgentState 快照**（模型/档位/todo/权限/CWD/plan/摘要）→ 完整 resume |
@@ -192,9 +192,9 @@ type Tool interface {
 
 ### ⏳ 待办（未完成）
 
-- **阶段 4（剩余）：thinking 回传 + LLM 摘要压缩 + AGENTS.md 注入 + 系统提示词拼接**
+- **阶段 4（剩余）：LLM 摘要压缩 + AGENTS.md 注入 + 系统提示词拼接**
   - **用量展示 ✅ 2026-08-12（ADR-037 第一段）**：provider 捕获 usage → `messages.Usage` → agent `EventUsage` → AgentState `Usage`/`LastContextTokens` → TUI footer `ctx Nk/Mk` + `/usage`。版本 0.7.1。
-  - **thinking 完整回传（ADR-025 修订，ADR-037 第二段）**：捕获 thinking signature → `Message.ThinkingSignature` + transcript Line.Signature → `toAnthropicAssistantMessage` 重放 `ThinkingBlockParam`（仅 signature 非空）；thinking-only assistant 不跳过。DeepSeek 实测通过。
+  - **thinking 完整回传 ✅ 2026-08-12（ADR-025 修订，ADR-037 第二段）**：捕获 thinking signature → `Message.ThinkingSignature` + transcript Line.Signature → `toAnthropicAssistantMessage` 重放 `ThinkingBlockParam`（仅签名非空）；thinking-only assistant 带签名不再跳过；估算镜像 `compact.EstimateTokens` 含 thinking。DeepSeek 实测通过。版本 0.7.2。
   - `compact`（ADR-037 第三段）：**直接 LLM 摘要式**（不做 v1 TokenBudget）——onReasoning 触发，context_window 85% 硬编码阈值，实际 usage 驱动 + 估算兜底；codex 方式发送摘要请求（完整 conversation + 摘要 prompt 尾 user，无工具，max_tokens 4096，opencode 结构化模板 + previous summary 更新式）；压缩后 = 单一 summary user 消息（纯占位）；`RuntimeContext.Segment` 钩子切新段（`NewSegment` + seed）；摘要失败 = 跳过 + 终止 run（Esc 同处理）；自动 + 手动 `/compact`。不做 overflow 安全网。
   - `agentsmd`（onSystemPrompt：项目级 AGENTS.md 向上搜索 + 全局拼接 + 动态系统提示词组装）
   - 注：大工具结果 eviction 已完成（ADR-028），不属于本阶段。

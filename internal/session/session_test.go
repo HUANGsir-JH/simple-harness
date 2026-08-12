@@ -33,10 +33,10 @@ func TestSessionCreateResume(t *testing.T) {
 		t.Errorf("缺 agentstate.json: %v", err)
 	}
 
-	// 写 user + agent 块事件。
+	// 写 user + agent 块事件（thinking 带签名，ADR-025 修订完整回传）。
 	sess.AddUser("hello")
 	sess.OnAgentEvent(events.Event{Type: events.EventTurnStart})
-	sess.OnAgentEvent(events.Event{Type: events.EventThinkingDone, MsgID: "m2", Text: "think"})
+	sess.OnAgentEvent(events.Event{Type: events.EventThinkingDone, MsgID: "m2", Text: "think", Signature: "sig_think"})
 	sess.OnAgentEvent(events.Event{Type: events.EventTextDone, MsgID: "m2", Text: "ans"})
 	sess.OnAgentEvent(events.Event{Type: events.EventToolCall, MsgID: "m2", ToolCall: &messages.ToolCall{ID: "c1", Name: "read_file", Args: json.RawMessage(`{}`)}})
 	sess.OnAgentEvent(events.Event{Type: events.EventToolResult, ToolCall: &messages.ToolCall{ID: "c1"}, ToolResult: &messages.ToolResult{Success: true, Content: "x"}})
@@ -66,6 +66,9 @@ func TestSessionCreateResume(t *testing.T) {
 	a := conv.Messages[1]
 	if a.Role != messages.RoleAssistant || a.Thinking != "think" || a.Content != "ans" || len(a.ToolCalls) != 1 {
 		t.Errorf("assistant 恢复: %+v", a)
+	}
+	if a.ThinkingSignature != "sig_think" {
+		t.Errorf("thinking signature 恢复: got %q want sig_think", a.ThinkingSignature)
 	}
 	if conv.Messages[2].Role != messages.RoleTool || len(conv.Messages[2].ToolResults) != 1 {
 		t.Errorf("tool 恢复: %+v", conv.Messages[2])

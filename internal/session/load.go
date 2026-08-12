@@ -89,6 +89,11 @@ func loadHistoryFile(path string) (*messages.Conversation, int, error) {
 		case LineTypeThinking:
 			cur = ensureAssistant(conv, cur, line.MsgID)
 			cur.Thinking += line.Text
+			// 恢复签名（ADR-025 修订完整回传）：签名随首个 thinking 块写入，
+			// 后续块若再带（实际不会）覆盖；resume 后重放 thinking 块凭据。
+			if line.Signature != "" {
+				cur.ThinkingSignature = line.Signature
+			}
 		case LineTypeText:
 			cur = ensureAssistant(conv, cur, line.MsgID)
 			cur.Content += line.Text

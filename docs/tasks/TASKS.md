@@ -126,6 +126,22 @@
 | A4 | TUI footer ctx + /usage 命令 | ✅ 2026-08-12 |
 | A5 | 测试 + 文档 + 版本 0.7.1 | ✅ 2026-08-12 |
 
+## 阶段 B（ADR-025 修订）：thinking 完整回传 ✅
+
+- **目标**：thinking 由"存审计不重放"改为"完整回传"（DeepSeek anthropic 端点实测可行：thinking 含 signature 回传 200 且计入 input_tokens）。捕获 thinking 块签名 → `Message.ThinkingSignature` + transcript `Line.Signature`（resume 恢复）→ provider 重放 `ThinkingBlockParam{Signature, Thinking}`（仅签名非空）。
+- **成功标准**：长 thinking 会话 resume 后回传不 400；thinking-only assistant 带签名不再跳过；估算镜像含 thinking。
+- **状态**：✅ 已完成（2026-08-12，ADR-025 修订 + ADR-037 第二段，版本 0.7.2）
+- **说明**：阶段 C（LLM 摘要压缩）依赖本阶段——摘要请求经 `toAnthropicMessages` 完整回传 thinking，上下文基线才与正常采样一致。
+
+### 任务单元
+
+| # | 单元 | 状态 |
+|---|---|---|
+| B1 | provider 捕获 thinking signature（content_block_start union + EventThinkingDone.Signature） | ✅ 2026-08-12 |
+| B2 | Message.ThinkingSignature + events.Event.Signature + transcript Line.Signature + resume 恢复 + agent.sample 捕获 | ✅ 2026-08-12 |
+| B3 | toAnthropicAssistantMessage 重放 thinking 块（首块，仅签名非空）+ thinking-only 不跳过 | ✅ 2026-08-12 |
+| B4 | 估算镜像（compact.EstimateTokens 含 thinking）+ 测试 + 文档 + 版本 0.7.2 | ✅ 2026-08-12 |
+
 ## 阶段 6（TUI 后后续可选）：摘要式压缩 / grep 工具 / 双向通信
 
 - **状态**：未开始（TUI 已提前为独立阶段；本阶段为压缩/grep/双向通信剩余项）

@@ -249,7 +249,8 @@ func TestAnthropicStreamThinkingDisabled(t *testing.T) {
 	}
 }
 
-// TestAnthropicStreamThinkingDelta 验证 thinking_delta 流式文本转换为统一事件。
+// TestAnthropicStreamThinkingDelta 验证 thinking_delta 流式文本转换为统一事件，
+// 且 thinking 块签名从 content_block_start 捕获随 thinking_done 发出（ADR-025 修订）。
 func TestAnthropicStreamThinkingDelta(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -273,13 +274,15 @@ func TestAnthropicStreamThinkingDelta(t *testing.T) {
 
 	var thinking strings.Builder
 	var thinkingDone string
+	var sig string
 	for es.Next() {
 		switch ev := es.Current(); ev.Type {
 		case EventThinkingDelta:
 			thinking.WriteString(ev.Text)
 		case EventThinkingDone:
-			// 块完成事件（ADR-025）：完整 thinking 块文本，供持久化订阅。
+			// 块完成事件（ADR-025）：完整 thinking 块文本 + 签名（完整回传凭据）。
 			thinkingDone = ev.Text
+			sig = ev.Signature
 		}
 	}
 	if err := es.Err(); err != nil {
@@ -290,6 +293,9 @@ func TestAnthropicStreamThinkingDelta(t *testing.T) {
 	}
 	if thinkingDone != "Let me think more" {
 		t.Errorf("thinking_done: got %q want %q", thinkingDone, "Let me think more")
+	}
+	if sig != "sig_1" {
+		t.Errorf("thinking_done signature: got %q want sig_1", sig)
 	}
 }
 
@@ -341,17 +347,19 @@ func TestAnthropicRequestOverrides(t *testing.T) {
 	}
 }
 
-// TestToAnthropicMessagesSkipsThinkingOnly 验证 thinking-only 的 assistant 消息
-// 在重放时被跳过（内容为空无法表达为合法 anthropic 消息），前后 user 相邻。
+// TestToAnthropicMessagesSkipsThinkingOnly 验证 thinking-only 且无签名的 assistant
+// 消息在重放时被跳过（thinking 无签名无法重放，内容为空无法表达为合法 anthropic
+// 消息），前后 user 相邻。带签名则重放（见 anthropic_messages_test 的
+// TestToAnthropicMessagesReplaysThinkingOnly，ADR-025 修订完整回传）。
 func TestToAnthropicMessagesSkipsThinkingOnly(t *testing.T) {
 	msgs := []*messages.Message{
 		NewTestUserMsg("hi"),
-		{Role: messages.RoleAssistant, Thinking: "deep", Content: ""}, // thinking-only，无 text 无 tool_calls
+		{Role: messages.RoleAssistant, Thinking: "deep", Content: ""}, // thinking-only 无签名
 		NewTestUserMsg("继续"),
 	}
 	out := toAnthropicMessages(msgs)
 	if len(out) != 2 {
-		t.Fatalf("应跳过空 assistant，got %d", len(out))
+		t.Fatalf("应跳过无签名的空 assistant，got %d", len(out))
 	}
 	for i, pm := range out {
 		if string(pm.Role) != "user" {
