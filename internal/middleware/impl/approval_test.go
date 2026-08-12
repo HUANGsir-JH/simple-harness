@@ -3,6 +3,7 @@ package impl
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 
 	"github.com/agent-project/harness/internal/agentstate"
@@ -88,8 +89,9 @@ func TestOnActingAskSession(t *testing.T) {
 		t.Fatalf("ask+session: err=%v executed=%v", err, executed)
 	}
 	// 记忆 key = 规范化命令前缀。
-	if rc.State.Permission == nil || len(rc.State.Permission.Approved) != 1 || rc.State.Permission.Approved[0] != "git push" {
-		t.Errorf("session: approved = %+v", rc.State.Permission)
+	ap := rc.State.Approved()
+	if len(ap) != 1 || ap[0] != "git push" {
+		t.Errorf("session: approved = %+v", ap)
 	}
 }
 
@@ -138,7 +140,7 @@ func TestOnActingSessionModeOverride(t *testing.T) {
 	mw := ApprovalMiddleware{DefaultMode: ModeAcceptEdits}
 	appr := &mockApprover{decision: middleware.DecisionAllow}
 	rc := newRC(t, appr)
-	rc.State.Permission = &agentstate.PermissionState{Mode: ModeReadonly}
+	rc.State.SetPermissionMode(ModeReadonly)
 	executed := false
 	core := func(context.Context, *middleware.RuntimeContext, middleware.ActingInput) error {
 		executed = true
@@ -182,5 +184,25 @@ func TestDeniedErrorViaChain(t *testing.T) {
 	var de *middleware.DeniedError
 	if !errors.As(err, &de) {
 		t.Fatalf("via chain: want DeniedError, got %v", err)
+	}
+}
+
+// TestRememberApprovedConcurrent 验证审批记忆并发写（ADR-036 修订锁下沉：
+// 多工具 goroutine 同批获批时写 Permission.Approved 无 data race，-race 必跑）。
+func TestRememberApprovedConcurrent(t *testing.T) {
+	rc := newRC(t, nil)
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		key := "git command " + string(rune('a'+i))
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			rememberApproved(rc, []string{key})
+		}()
+	}
+	wg.Wait()
+	ap := rc.State.Approved()
+	if len(ap) != 8 {
+		t.Errorf("approved 应含 8 个去重 key，got %d: %+v", len(ap), ap)
 	}
 }

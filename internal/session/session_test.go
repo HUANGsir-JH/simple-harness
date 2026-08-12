@@ -163,17 +163,17 @@ func TestCreatePermissionMode(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 	defer sess.Close()
-	if sess.state.Permission == nil || sess.state.Permission.Mode != "readonly" {
-		t.Errorf("Create 应固化 mode=readonly: %+v", sess.state.Permission)
+	if sess.state.PermissionMode() != "readonly" {
+		t.Errorf("Create 应固化 mode=readonly: %q", sess.state.PermissionMode())
 	}
 	// RuntimeContext 反映固化值（ApprovalMiddleware 经 rc.State 读模式）。
-	if rc := sess.RuntimeContext(); rc.State.Permission == nil || rc.State.Permission.Mode != "readonly" {
-		t.Errorf("RuntimeContext 未反映固化 mode: %+v", rc.State.Permission)
+	if rc := sess.RuntimeContext(); rc.State.PermissionMode() != "readonly" {
+		t.Errorf("RuntimeContext 未反映固化 mode: %q", rc.State.PermissionMode())
 	}
 	// 重新加载验证已落盘。
 	st, err := agentstate.LoadFile(sess.statePath)
-	if err != nil || st.Permission == nil || st.Permission.Mode != "readonly" {
-		t.Errorf("落盘 state permission: %+v err=%v", st.Permission, err)
+	if err != nil || st.PermissionMode() != "readonly" {
+		t.Errorf("落盘 state permission: %q err=%v", st.PermissionMode(), err)
 	}
 
 	// 空 mode → 不固化。
@@ -182,8 +182,8 @@ func TestCreatePermissionMode(t *testing.T) {
 		t.Fatalf("Create empty mode: %v", err)
 	}
 	defer sess2.Close()
-	if sess2.state.Permission != nil {
-		t.Errorf("空 mode 不应固化 Permission: %+v", sess2.state.Permission)
+	if sess2.state.PermissionMode() != "" {
+		t.Errorf("空 mode 不应固化 Permission: %q", sess2.state.PermissionMode())
 	}
 }
 
@@ -201,12 +201,12 @@ func TestSetPermissionMode(t *testing.T) {
 	if err := sess.SetPermissionMode("bypass"); err != nil {
 		t.Fatalf("SetPermissionMode: %v", err)
 	}
-	if rc := sess.RuntimeContext(); rc.State.Permission == nil || rc.State.Permission.Mode != "bypass" {
-		t.Errorf("RuntimeContext: %+v", rc.State.Permission)
+	if rc := sess.RuntimeContext(); rc.State.PermissionMode() != "bypass" {
+		t.Errorf("RuntimeContext: %q", rc.State.PermissionMode())
 	}
 	st, err := agentstate.LoadFile(sess.statePath)
-	if err != nil || st.Permission == nil || st.Permission.Mode != "bypass" {
-		t.Errorf("落盘: %+v err=%v", st.Permission, err)
+	if err != nil || st.PermissionMode() != "bypass" {
+		t.Errorf("落盘: %q err=%v", st.PermissionMode(), err)
 	}
 }
 

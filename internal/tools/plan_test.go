@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/agent-project/harness/internal/agentstate"
@@ -76,7 +77,7 @@ func TestPlanEnterApproved(t *testing.T) {
 	if !ok {
 		t.Fatalf("进入规划应成功")
 	}
-	if !rc.State.PlanMode {
+	if !rc.State.IsPlanMode() {
 		t.Error("批准后 PlanMode 应为 true")
 	}
 	if !strings.HasPrefix(content, "【系统指令 · Plan 模式已激活】") {
@@ -95,7 +96,7 @@ func TestPlanEnterDenied(t *testing.T) {
 		return middleware.AskResult{Selection: []string{"不需要"}}
 	}}
 	ok, content := callPlan(t, "plan_enter", rc, `{}`)
-	if !ok || rc.State.PlanMode {
+	if !ok || rc.State.IsPlanMode() {
 		t.Errorf("拒绝后应保持非 plan 模式，ok=%v", ok)
 	}
 	if !strings.Contains(content, "不进入 plan 模式") {
@@ -109,7 +110,7 @@ func TestPlanEnterCustomFeedback(t *testing.T) {
 		return middleware.AskResult{Custom: "先别进，解释下"}
 	}}
 	ok, content := callPlan(t, "plan_enter", rc, `{}`)
-	if !ok || rc.State.PlanMode {
+	if !ok || rc.State.IsPlanMode() {
 		t.Errorf("自定义反馈应保持非 plan 模式")
 	}
 	if !strings.Contains(content, "先别进，解释下") {
@@ -119,7 +120,7 @@ func TestPlanEnterCustomFeedback(t *testing.T) {
 
 func TestPlanEnterAlreadyInPlan(t *testing.T) {
 	rc := newPlanRC(t)
-	rc.State.PlanMode = true
+	rc.State.SetPlanMode(true)
 	rc.Approver = stubApprover{}
 	ok, msg := callPlan(t, "plan_enter", rc, `{}`)
 	if ok || !strings.Contains(msg, "已在 plan 模式") {
@@ -139,7 +140,7 @@ func TestPlanEnterNoApprover(t *testing.T) {
 
 func TestWritePlanWritesFile(t *testing.T) {
 	rc := newPlanRC(t)
-	rc.State.PlanMode = true
+	rc.State.SetPlanMode(true)
 	content := "## 计划\n1. 改 a.go\n2. 加测试"
 	ok, out := callPlan(t, "write_plan", rc, `{"content":"`+strings.ReplaceAll(content, "\n", `\n`)+`"}`)
 	if !ok {
@@ -147,8 +148,8 @@ func TestWritePlanWritesFile(t *testing.T) {
 	}
 	// 文件写入 plans/plan.md。
 	want := filepath.Join(filepath.Dir(rc.StatePath), "plans", "plan.md")
-	if rc.State.Plan == nil || rc.State.Plan.Path != want {
-		t.Errorf("Plan.Path = %+v, want %s", rc.State.Plan, want)
+	if rc.State.PlanPath() != want {
+		t.Errorf("Plan.Path = %q, want %s", rc.State.PlanPath(), want)
 	}
 	got, err := os.ReadFile(want)
 	if err != nil || string(got) != content {
@@ -166,9 +167,9 @@ func TestWritePlanWritesFile(t *testing.T) {
 
 func TestWritePlanReusesPath(t *testing.T) {
 	rc := newPlanRC(t)
-	rc.State.PlanMode = true
+	rc.State.SetPlanMode(true)
 	custom := filepath.Join(t.TempDir(), "my-plan.md")
-	rc.State.Plan = &agentstate.PlanState{Path: custom}
+	rc.State.SetPlanPath(custom)
 	ok, _ := callPlan(t, "write_plan", rc, `{"content":"x"}`)
 	if !ok {
 		t.Fatal("write_plan 应成功")
@@ -188,7 +189,7 @@ func TestWritePlanNotInPlan(t *testing.T) {
 
 func TestWritePlanEmptyContent(t *testing.T) {
 	rc := newPlanRC(t)
-	rc.State.PlanMode = true
+	rc.State.SetPlanMode(true)
 	ok, msg := callPlan(t, "write_plan", rc, `{"content":""}`)
 	if ok || !strings.Contains(msg, "content 不能为空") {
 		t.Errorf("空 content 应拒绝，ok=%v msg=%s", ok, msg)
@@ -199,7 +200,7 @@ func TestWritePlanEmptyContent(t *testing.T) {
 
 func TestPlanDoneApproved(t *testing.T) {
 	rc := newPlanRC(t)
-	rc.State.PlanMode = true
+	rc.State.SetPlanMode(true)
 	rc.Approver = stubApprover{askFn: func(middleware.AskRequest) middleware.AskResult {
 		return middleware.AskResult{Selection: []string{"批准执行"}}
 	}}
@@ -207,7 +208,7 @@ func TestPlanDoneApproved(t *testing.T) {
 	if !ok {
 		t.Fatal("批准执行应成功")
 	}
-	if rc.State.PlanMode {
+	if rc.State.IsPlanMode() {
 		t.Error("批准后 PlanMode 应为 false")
 	}
 	if !strings.Contains(content, "已批准") || !strings.Contains(content, "现在开始执行") {
@@ -221,13 +222,13 @@ func TestPlanDoneApproved(t *testing.T) {
 
 func TestPlanDoneContinue(t *testing.T) {
 	rc := newPlanRC(t)
-	rc.State.PlanMode = true
+	rc.State.SetPlanMode(true)
 	rc.Approver = stubApprover{askFn: func(middleware.AskRequest) middleware.AskResult {
 		return middleware.AskResult{Selection: []string{"继续规划"}}
 	}}
 	ok, content := callPlan(t, "plan_done", rc, `{}`)
-	if !ok || !rc.State.PlanMode {
-		t.Errorf("继续规划应保持 plan 模式，ok=%v plan=%v", ok, rc.State.PlanMode)
+	if !ok || !rc.State.IsPlanMode() {
+		t.Errorf("继续规划应保持 plan 模式，ok=%v plan=%v", ok, rc.State.IsPlanMode())
 	}
 	if !strings.Contains(content, "继续规划") {
 		t.Errorf("内容: %s", content)
@@ -236,13 +237,13 @@ func TestPlanDoneContinue(t *testing.T) {
 
 func TestPlanDoneCustomRejectFeedback(t *testing.T) {
 	rc := newPlanRC(t)
-	rc.State.PlanMode = true
+	rc.State.SetPlanMode(true)
 	rc.Approver = stubApprover{askFn: func(middleware.AskRequest) middleware.AskResult {
 		return middleware.AskResult{Custom: "方案 A 更好，重写计划"}
 	}}
 	ok, content := callPlan(t, "plan_done", rc, `{}`)
-	if !ok || !rc.State.PlanMode {
-		t.Errorf("Other 反馈应保持 plan 模式（拒绝语义），ok=%v plan=%v", ok, rc.State.PlanMode)
+	if !ok || !rc.State.IsPlanMode() {
+		t.Errorf("Other 反馈应保持 plan 模式（拒绝语义），ok=%v plan=%v", ok, rc.State.IsPlanMode())
 	}
 	if !strings.Contains(content, "未批准") || !strings.Contains(content, "方案 A 更好") {
 		t.Errorf("应回填用户反馈，got: %s", content)
@@ -259,7 +260,7 @@ func TestPlanDoneNotInPlan(t *testing.T) {
 
 func TestPlanDoneNoApprover(t *testing.T) {
 	rc := newPlanRC(t)
-	rc.State.PlanMode = true
+	rc.State.SetPlanMode(true)
 	ok, msg := callPlan(t, "plan_done", rc, `{}`)
 	if ok || !strings.Contains(msg, "无法向用户确认") {
 		t.Errorf("无 approver 应拒绝，ok=%v msg=%s", ok, msg)
@@ -268,13 +269,47 @@ func TestPlanDoneNoApprover(t *testing.T) {
 
 func TestPlanDoneCancelled(t *testing.T) {
 	rc := newPlanRC(t)
-	rc.State.PlanMode = true
+	rc.State.SetPlanMode(true)
 	rc.Approver = stubApprover{} // 空 AskResult（用户取消）
 	ok, content := callPlan(t, "plan_done", rc, `{}`)
-	if !ok || !rc.State.PlanMode {
+	if !ok || !rc.State.IsPlanMode() {
 		t.Errorf("取消应保持 plan 模式，ok=%v", ok)
 	}
 	if !strings.Contains(content, "取消了确认") {
 		t.Errorf("内容: %s", content)
 	}
+}
+
+// TestPlanTodoConcurrentState 验证锁下沉（ADR-036 修订，缺陷 04）：同批并发
+// update_todo（写 Todos + 整体 Marshal 落盘）与 write_plan（写 Plan + 整体
+// Marshal）与 AddApproved（写 Permission）与 RenderTodos（读 Todos）共享同一
+// *AgentState，-race 下必须无竞态。修复前 planMu/todoMu 分离会触发
+// Marshal vs ReplaceTodos 的 data race。
+func TestPlanTodoConcurrentState(t *testing.T) {
+	rc := newPlanRC(t)
+	rc.State.SetPlanMode(true)
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = UpdateTodoTool{}.Handle(context.Background(), rc, "c", json.RawMessage(`{"todos":[{"position":1,"description":"x","status":"pending"}]}`))
+		}()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = WritePlanTool{}.Handle(context.Background(), rc, "c", json.RawMessage(`{"content":"plan"}`))
+		}()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			rc.State.AddApproved([]string{"git push"})
+		}()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = rc.State.RenderTodos()
+		}()
+	}
+	wg.Wait()
 }

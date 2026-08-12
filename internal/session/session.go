@@ -118,8 +118,10 @@ func (s *Session) Model() string { return s.state.Model }
 func (s *Session) Name() string { return s.state.Name }
 
 // SetName 更新会话名并立即落盘（/rename；首消息自动命名也走这里）。
+// 写字段经 AgentState 带锁方法，落盘经 SaveFile（内部 Marshal 加锁）——
+// 顺序加锁不嵌套（锁下沉，ADR-036 修订）。
 func (s *Session) SetName(name string) error {
-	s.state.Name = name
+	s.state.SetName(name)
 	return agentstate.SaveFile(s.statePath, s.state)
 }
 
@@ -143,35 +145,27 @@ func (s *Session) RuntimeContext() *middleware.RuntimeContext {
 
 // SetModel 更新会话模型并立即落盘（/model 运行时切换）。
 func (s *Session) SetModel(model string) error {
-	s.state.Model = model
+	s.state.SetModel(model)
 	return agentstate.SaveFile(s.statePath, s.state)
 }
 
 // SetThinkingEnabled 更新 thinking 开关并立即落盘（--thinking/--no-thinking、
 // 运行时切换）。nil 表示恢复继承 client 默认。
 func (s *Session) SetThinkingEnabled(enabled *bool) error {
-	if enabled != nil {
-		v := *enabled
-		s.state.ThinkingEnabled = &v
-	} else {
-		s.state.ThinkingEnabled = nil
-	}
+	s.state.SetThinkingEnabled(enabled)
 	return agentstate.SaveFile(s.statePath, s.state)
 }
 
 // SetThinkingEffort 更新推理档位并立即落盘（/effort 运行时切换）。
 func (s *Session) SetThinkingEffort(effort string) error {
-	s.state.ThinkingEffort = effort
+	s.state.SetThinkingEffort(effort)
 	return agentstate.SaveFile(s.statePath, s.state)
 }
 
 // SetPermissionMode 更新会话审批模式并立即落盘（/permission 运行时切换，
 // ADR-029）。切换后下一轮 Run 生效（ApprovalMiddleware 从 rc.State 读模式）。
 func (s *Session) SetPermissionMode(mode string) error {
-	if s.state.Permission == nil {
-		s.state.Permission = &agentstate.PermissionState{}
-	}
-	s.state.Permission.Mode = mode
+	s.state.SetPermissionMode(mode)
 	return agentstate.SaveFile(s.statePath, s.state)
 }
 
@@ -179,15 +173,15 @@ func (s *Session) SetPermissionMode(mode string) error {
 // plan_done 工具也直接改 rc.State.PlanMode，ADR-036）。切换后下一轮采样生效
 // （ApprovalMiddleware 从 rc.State 读 plan 分支；plan 指令注入在进入点单独处理）。
 func (s *Session) SetPlanMode(on bool) error {
-	s.state.PlanMode = on
+	s.state.SetPlanMode(on)
 	return agentstate.SaveFile(s.statePath, s.state)
 }
 
 // PlanFile 返回计划文件路径（state.Plan.Path 优先，否则 <会话>/plans/plan.md，
 // ADR-036）。/plan view 与 write_plan 同源。
 func (s *Session) PlanFile() string {
-	if s.state.Plan != nil && s.state.Plan.Path != "" {
-		return s.state.Plan.Path
+	if p := s.state.PlanPath(); p != "" {
+		return p
 	}
 	return filepath.Join(s.dir, DirPlans, "plan.md")
 }

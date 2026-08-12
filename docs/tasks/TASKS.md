@@ -107,6 +107,7 @@
 | P1 | 核心闭环：AgentState.PlanMode + Approver.Ask 契约 + 4 工具 + Decide plan 分支 + isPlanReadonlyShell + 注册 + 单测 | ✅ 2026-08-11 |
 | P2 | TUI：/plan 切换 + /plan view + 状态栏 [PLAN] + ask 弹窗（选项/Other/单选多选）+ ChannelApprover.Ask + 单测 | ✅ 2026-08-11 |
 | P3 | 集成 + e2e（plan 模式闭环）+ 版本 0.7.0 + 文档（ADR-036 修订/IMPLEMENTATION_PLAN/TASKS/PROGRESS） | ✅ 2026-08-11 |
+| P4 | 审查修复（plan-mode-review-2026-08-12）：写黑名单反向判定 + 纯 Deny（缺陷 01/02）/ AgentState 锁下沉（缺陷 04）/ TUI 待决请求队列 + AllowCustom（缺陷 03）+ 并发回归测试 + 文档 | ✅ 2026-08-12 |
 
 ## 阶段 6（TUI 后后续可选）：摘要式压缩 / grep 工具 / 双向通信
 

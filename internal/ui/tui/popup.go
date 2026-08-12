@@ -128,8 +128,8 @@ func (m Model) runCommand(cmd command) (tea.Model, tea.Cmd) {
 			return m.sysOK("Permission set to " + cmd.arg), nil
 		}
 		current := ""
-		if state := m.c.ActiveState(); state != nil && state.Permission != nil {
-			current = state.Permission.Mode
+		if state := m.c.ActiveState(); state != nil {
+			current = state.PermissionMode()
 		}
 		return m.openPopup(popupPermission, "PERMISSION", permissionItems(m.c.PermissionModes()), current), nil
 	case "thinking":
@@ -167,7 +167,7 @@ func (m Model) runCommand(cmd command) (tea.Model, tea.Cmd) {
 		}
 		current := false
 		if st := m.c.ActiveState(); st != nil {
-			current = st.PlanMode
+			current = st.IsPlanMode()
 		}
 		on := !current
 		if cmd.arg == "on" {
@@ -279,6 +279,7 @@ func (m *Model) reloadSession() {
 	m.stream = nil
 	m.queue = nil
 	m.ovl = nil
+	m.pending = nil // 切换会话：丢弃旧会话的待决请求（其 goroutine 随对应 run 的 ctx 释放）
 	loadSessionHistory(m, m.c.active)
 	m.autoScroll = true
 	m.refresh(true)

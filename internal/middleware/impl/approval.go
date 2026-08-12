@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/agent-project/harness/internal/agentstate"
 	"github.com/agent-project/harness/internal/messages"
 	"github.com/agent-project/harness/internal/middleware"
 )
@@ -74,8 +73,8 @@ func (m ApprovalMiddleware) mode(rc *middleware.RuntimeContext) string {
 	if mode == "" {
 		mode = DefaultMode
 	}
-	if rc != nil && rc.State != nil && rc.State.Permission != nil && rc.State.Permission.Mode != "" {
-		mode = rc.State.Permission.Mode
+	if rc != nil && rc.State != nil && rc.State.PermissionMode() != "" {
+		mode = rc.State.PermissionMode()
 	}
 	return mode
 }
@@ -88,10 +87,10 @@ func approverOf(rc *middleware.RuntimeContext) middleware.Approver {
 }
 
 func approvedOf(rc *middleware.RuntimeContext) []string {
-	if rc == nil || rc.State == nil || rc.State.Permission == nil {
+	if rc == nil || rc.State == nil {
 		return nil
 	}
-	return rc.State.Permission.Approved
+	return rc.State.Approved() // 防御性拷贝（AgentState 锁下沉，ADR-036 修订）
 }
 
 // planModeOf 读取当前是否 plan 模式（ADR-036）。plan 分支强只读优先于权限模式。
@@ -99,7 +98,7 @@ func planModeOf(rc *middleware.RuntimeContext) bool {
 	if rc == nil || rc.State == nil {
 		return false
 	}
-	return rc.State.PlanMode
+	return rc.State.IsPlanMode()
 }
 
 // workspaceOf 取审批判定的 workspace 根：rc.State.CWD（会话启动目录，ADR-028）
@@ -112,31 +111,15 @@ func workspaceOf(rc *middleware.RuntimeContext) string {
 	return ""
 }
 
-// rememberApproved 把审批 key 记入会话级记忆（去重），随 AgentState 落盘
-// （SessionMiddleware after），resume 后模型可见（ADR-029）。文件工具传入
-// 多 key（每个目标路径一条，Bug03：批准一次 apply_patch 记住其每个文件）。
+// rememberApproved 把审批 key 记入会话级记忆（去重，逻辑已下沉到
+// AgentState.AddApproved），随 AgentState 落盘（SessionMiddleware after），
+// resume 后模型可见（ADR-029）。文件工具传入多 key（每个目标路径一条，
+// Bug03：批准一次 apply_patch 记住其每个文件）。
 func rememberApproved(rc *middleware.RuntimeContext, keys []string) {
-	if rc == nil || rc.State == nil || len(keys) == 0 {
+	if rc == nil || rc.State == nil {
 		return
 	}
-	if rc.State.Permission == nil {
-		rc.State.Permission = &agentstate.PermissionState{}
-	}
-	for _, key := range keys {
-		if key == "" {
-			continue
-		}
-		dup := false
-		for _, k := range rc.State.Permission.Approved {
-			if k == key {
-				dup = true
-				break
-			}
-		}
-		if !dup {
-			rc.State.Permission.Approved = append(rc.State.Permission.Approved, key)
-		}
-	}
+	rc.State.AddApproved(keys)
 }
 
 // SummaryOf 生成工具调用的人类可读摘要（审批 UI 展示）：

@@ -157,7 +157,7 @@ func (c *Controller) SetPlanMode(on bool) error {
 	if err := c.ensureActive(); err != nil {
 		return err
 	}
-	wasOn := c.active.State().PlanMode
+	wasOn := c.active.State().IsPlanMode()
 	if err := c.active.SetPlanMode(on); err != nil {
 		return err
 	}

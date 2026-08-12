@@ -131,6 +131,21 @@ func (m Model) openOverlay(o *overlay) (Model, bool) {
 	return m, true
 }
 
+// closeOverlay 关闭当前覆盖层并恢复焦点；若有待决请求（并发审批/ask 排队，
+// 缺陷 03）自动弹出下一个并保持失焦（Blur，等待用户输入）。全部弹窗关闭点
+// 共用，保证排队请求不被静默丢弃（审批不丢 = 安全机制不失效）。
+func (m Model) closeOverlay() (Model, tea.Cmd) {
+	m.ovl = nil
+	m.restoreFocus()
+	if len(m.pending) > 0 {
+		m.ovl = m.pending[0]
+		m.pending = m.pending[1:]
+		m.input.Blur()
+	}
+	m.refresh(false)
+	return m, nil
+}
+
 func overlayName(k overlayKind) string {
 	switch k {
 	case overlayApproval:
@@ -171,6 +186,7 @@ type Model struct {
 
 	status       StatusBar
 	ovl          *overlay
+	pending      []*overlay // 待决请求（FIFO）：当前弹窗关闭后自动弹出下一个（ADR-036 修订，缺陷 03）
 	toast        string
 	showThinking bool
 
@@ -238,16 +254,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case agentEventMsg:
 		return m.handleAgentEvent(msg.ev)
 	case approvalRequestMsg:
-		m.ovl = &overlay{kind: overlayApproval, appr: &approvalPopup{req: msg.req, respCh: msg.respCh}}
+		ovl := &overlay{kind: overlayApproval, appr: &approvalPopup{req: msg.req, respCh: msg.respCh}}
+		var ok bool
+		m, ok = m.openOverlay(ovl)
+		if !ok {
+			// 已有覆盖层未决（并发审批/ask 到达，缺陷 03）：入队等待，不静默丢弃。
+			// openOverlay 守卫拒绝了叠开，但审批请求不能丢——排队等当前弹窗关闭。
+			m.pending = append(m.pending, ovl)
+			m.toast = "审批请求已排队（等待当前弹窗关闭）"
+			m.refresh(false)
+			return m, nil
+		}
 		m.input.Blur()
 		m.refresh(false)
 		return m, nil
 	case askRequestMsg:
-		m.ovl = &overlay{kind: overlayAsk, ask: &askPopup{
+		ovl := &overlay{kind: overlayAsk, ask: &askPopup{
 			req:      msg.req,
 			respCh:   msg.respCh,
 			selected: make([]bool, len(msg.req.Options)),
 		}}
+		var ok bool
+		m, ok = m.openOverlay(ovl)
+		if !ok {
+			m.pending = append(m.pending, ovl)
+			m.toast = "提问已排队（等待当前弹窗关闭）"
+			m.refresh(false)
+			return m, nil
+		}
 		m.input.Blur()
 		m.refresh(false)
 		return m, nil
@@ -276,9 +310,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.handleAskKey(msg)
 		case overlayHelp:
 			if msg.String() == "esc" || msg.String() == "enter" || msg.String() == "/" {
-				m.ovl = nil
-				m.restoreFocus()
-				m.refresh(false)
+				return m.closeOverlay()
 			}
 			return m, nil
 		}
@@ -464,10 +496,7 @@ func (m Model) handleApprovalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.ovl.appr.respCh <- decision
-	m.ovl = nil
-	m.restoreFocus()
-	m.refresh(false)
-	return m, nil
+	return m.closeOverlay()
 }
 
 // handleAskKey 处理 ask 弹窗按键（ADR-036）：
@@ -493,10 +522,7 @@ func (m Model) handleAskKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.finishAsk(ask)
 	case "esc":
 		ask.respCh <- middleware.AskResult{} // 取消 = 空回答
-		m.ovl = nil
-		m.restoreFocus()
-		m.refresh(false)
-		return m, nil
+		return m.closeOverlay()
 	case "backspace":
 		if r := []rune(ask.custom); len(r) > 0 {
 			ask.custom = string(r[:len(r)-1])
@@ -504,6 +530,9 @@ func (m Model) handleAskKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "tab", "shift+enter", "alt+enter", "ctrl+c", "pgup", "pgdown", "home", "end":
 		// 忽略（防误触全局快捷键）
 	default:
+		if !ask.req.AllowCustom {
+			return m, nil // 不允许自定义时不接收打字（ADR-036 修订；对齐 run 模式 ParseAskAnswer）
+		}
 		if len(msg.Runes) > 0 {
 			ask.custom += string(msg.Runes) // 可打印字符 → Other 自定义输入
 		}
@@ -515,12 +544,9 @@ func (m Model) handleAskKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // finishAsk 提交 ask 回答并关闭弹窗：自定义文本非空 → Custom；否则单选提交
 // 当前高亮 / 多选提交全部勾选项。
 func (m Model) finishAsk(ask *askPopup) (tea.Model, tea.Cmd) {
-	if custom := strings.TrimSpace(ask.custom); custom != "" {
+	if custom := strings.TrimSpace(ask.custom); custom != "" && ask.req.AllowCustom {
 		ask.respCh <- middleware.AskResult{Custom: custom}
-		m.ovl = nil
-		m.restoreFocus()
-		m.refresh(false)
-		return m, nil
+		return m.closeOverlay()
 	}
 	var selection []string
 	if ask.req.Multiple {
@@ -533,10 +559,7 @@ func (m Model) finishAsk(ask *askPopup) (tea.Model, tea.Cmd) {
 		selection = []string{ask.req.Options[ask.cursor].Label}
 	}
 	ask.respCh <- middleware.AskResult{Selection: selection}
-	m.ovl = nil
-	m.restoreFocus()
-	m.refresh(false)
-	return m, nil
+	return m.closeOverlay()
 }
 
 func (m Model) handlePopupKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -552,15 +575,13 @@ func (m Model) handlePopupKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "enter":
 		message, err := m.confirmPopup()
-		m.ovl = nil
-		m.restoreFocus()
+		m, _ = m.closeOverlay()
 		if err != nil {
 			return m.sysErr(err), nil
 		}
 		return m.sysOK(message), nil
 	case "esc":
-		m.ovl = nil
-		m.restoreFocus()
+		return m.closeOverlay()
 	}
 	m.refresh(false)
 	return m, nil
@@ -664,6 +685,7 @@ func (m Model) handleRunDone(err error) (tea.Model, tea.Cmd) {
 		if !m.interrupted {
 			m.appendSystem("Turn interrupted", false)
 		}
+		m.pending = nil // 兜底（requestInterrupt 已清；幂等），排队孤儿请求随 ctx 释放
 		// 中断提示在 Run 返回后 AddUser（Bug10，2026-08-11）：此前在
 		// requestInterrupt 立即 AddUser，与 Run goroutine 并发写 conversation，
 		// 且在 runToolBatch 补全 tool_result 之前插入 user 消息——tool_use 与
@@ -791,14 +813,11 @@ func (m *Model) refreshStatus() {
 		m.status.Todos = nil
 		return
 	}
-	m.status.Permission = ""
-	if st.Permission != nil {
-		m.status.Permission = st.Permission.Mode
-	}
-	m.status.ThinkingEffort = st.ThinkingEffort
-	m.status.PlanMode = st.PlanMode
-	m.status.TodoCount = len(st.Todos)
-	m.status.Todos = sortTodos(st.Todos)
+	m.status.Permission = st.PermissionMode()
+	m.status.ThinkingEffort = st.ThinkingEffort // /effort 命令路径写，不与 run 并发
+	m.status.PlanMode = st.IsPlanMode()
+	m.status.TodoCount = st.TodoCount()
+	m.status.Todos = sortTodos(st.TodoItems())
 }
 
 func (m *Model) toggleFocus() {
@@ -845,6 +864,10 @@ func (m *Model) requestInterrupt() {
 		return
 	}
 	m.interrupted = true
+	// ctx cancel 后所有阻塞的 tuiApprover.Request/Ask goroutine 走 ctx.Done 分支
+	// 释放；pending 里的请求成孤儿（respCh 无消费者），必须清空，否则 closeOverlay
+	// 会弹出"无人等待"的弹窗（缺陷 03）。
+	m.pending = nil
 	m.c.cancelRun()
 	m.appendSystem("Interrupt requested", false)
 	m.toast = "Interrupting current turn"

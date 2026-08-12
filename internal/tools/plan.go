@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 
 	"github.com/agent-project/harness/internal/agentstate"
 	"github.com/agent-project/harness/internal/messages"
@@ -29,16 +28,12 @@ const PlanInstructions = `【系统指令 · Plan 模式已激活】
   4. 完成：计划决策完整后调用 plan_done 请求用户批准执行
 - 计划要求：具体到步骤/涉及文件/改动内容，决策完整（实施者无需再做决定）。`
 
-// planMu 保护 plan 文件写与 rc.State.Plan/PlanMode 的并发（并行工具架构
-// ADR-024 下同轮多个 plan 工具 goroutine 并发 Handle）。
-var planMu sync.Mutex
-
 // planPath 解析计划文件路径：AgentState.Plan.Path 优先（resume 恢复），否则
 // 会话目录（agentstate.json 父目录）下 plans/plan.md（plans/ 由 session 创建
 // 时建好，ADR-025）。rc/StatePath 为空（非会话测试）时退回进程 cwd 下 plans/。
 func planPath(rc *middleware.RuntimeContext) string {
-	if rc != nil && rc.State != nil && rc.State.Plan != nil && rc.State.Plan.Path != "" {
-		return rc.State.Plan.Path
+	if rc != nil && rc.State != nil && rc.State.PlanPath() != "" {
+		return rc.State.PlanPath()
 	}
 	if rc != nil && rc.StatePath != "" {
 		return filepath.Join(filepath.Dir(rc.StatePath), "plans", "plan.md")
@@ -77,7 +72,7 @@ func (PlanEnterTool) Handle(ctx context.Context, rc *middleware.RuntimeContext, 
 	if rc == nil || rc.State == nil {
 		return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: "plan_enter: 无会话状态"}
 	}
-	if rc.State.PlanMode {
+	if rc.State.IsPlanMode() {
 		return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: "plan_enter: 已在 plan 模式，无需再次进入"}
 	}
 	if rc.Approver == nil {
@@ -96,10 +91,8 @@ func (PlanEnterTool) Handle(ctx context.Context, rc *middleware.RuntimeContext, 
 		return messages.ToolResult{}, err // ctx canceled（Esc 中断）→ Fatal
 	}
 	if res.HasSelection("进入规划") {
-		planMu.Lock()
-		rc.State.PlanMode = true
+		rc.State.SetPlanMode(true)
 		err = savePlanState(rc)
-		planMu.Unlock()
 		if err != nil {
 			return messages.ToolResult{}, &ToolError{Message: "plan_enter: 落盘失败: " + err.Error()}
 		}
@@ -138,7 +131,7 @@ func (WritePlanTool) Handle(_ context.Context, rc *middleware.RuntimeContext, _ 
 	if rc == nil || rc.State == nil {
 		return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: "write_plan: 无会话状态"}
 	}
-	if !rc.State.PlanMode {
+	if !rc.State.IsPlanMode() {
 		return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: "write_plan 仅在 plan 模式下可用"}
 	}
 	p, err := parseArgs[writePlanArgs]("write_plan", args)
@@ -149,8 +142,6 @@ func (WritePlanTool) Handle(_ context.Context, rc *middleware.RuntimeContext, _ 
 		return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: "write_plan: content 不能为空"}
 	}
 
-	planMu.Lock()
-	defer planMu.Unlock()
 	path := planPath(rc)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return messages.ToolResult{}, &ToolError{Message: "write_plan: 创建目录失败: " + err.Error()}
@@ -158,10 +149,7 @@ func (WritePlanTool) Handle(_ context.Context, rc *middleware.RuntimeContext, _ 
 	if err := os.WriteFile(path, []byte(p.Content), 0o644); err != nil {
 		return messages.ToolResult{}, &ToolError{Message: "write_plan: 写入失败: " + err.Error()}
 	}
-	if rc.State.Plan == nil {
-		rc.State.Plan = &agentstate.PlanState{}
-	}
-	rc.State.Plan.Path = path
+	rc.State.SetPlanPath(path)
 	if err := savePlanState(rc); err != nil {
 		return messages.ToolResult{}, &ToolError{Message: "write_plan: 落盘失败: " + err.Error()}
 	}
@@ -193,7 +181,7 @@ func (PlanDoneTool) Handle(ctx context.Context, rc *middleware.RuntimeContext, _
 	if rc == nil || rc.State == nil {
 		return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: "plan_done: 无会话状态"}
 	}
-	if !rc.State.PlanMode {
+	if !rc.State.IsPlanMode() {
 		return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: "plan_done 仅在 plan 模式下可用"}
 	}
 	if rc.Approver == nil {
@@ -212,10 +200,8 @@ func (PlanDoneTool) Handle(ctx context.Context, rc *middleware.RuntimeContext, _
 		return messages.ToolResult{}, err // ctx canceled（Esc 中断）→ Fatal
 	}
 	if res.HasSelection("批准执行") {
-		planMu.Lock()
-		rc.State.PlanMode = false
+		rc.State.SetPlanMode(false)
 		err = savePlanState(rc)
-		planMu.Unlock()
 		if err != nil {
 			return messages.ToolResult{}, &ToolError{Message: "plan_done: 落盘失败: " + err.Error()}
 		}

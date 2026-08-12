@@ -265,64 +265,6 @@ func findIsDangerous(cmd string) bool {
 	return false
 }
 
-// planSafeExtra 是 plan 模式下额外放行的只读命令前缀（管道/组合常用；在
-// safeCommandPrefixes 基础上补充，ADR-036 点 6）。
-var planSafeExtra = []string{
-	"wc", "sort", "uniq", "awk", "cut", "sed", "tr", "jq",
-	"git show", "git ls-files", "git rev-parse", "git blame",
-}
-
-// shellSegmentSplit 拆分 shell 管道/组合分隔符（| && ; ||）。`&` 单字符也覆盖
-// 2>&1 之类的 stderr 重定向（但其含 `>`，已被 isPlanReadonlyShell 拦截）。
-var shellSegmentSplit = regexp.MustCompile(`[\|;&]`)
-
-// isPlanReadonlyShell 判定 plan 模式下 shell 命令是否只读（ADR-036 点 6）：
-// 放宽管道/组合（原 isSafe 拒绝 shell 元字符），但保留危险黑名单与写重定向拦截。
-//   - isDangerous / findIsDangerous → 拒绝（黑名单保留）
-//   - 含 `>`（写/追加重定向）→ 拒绝
-//   - 按 | && ; || 拆分，每段（trim 后）首命令命中只读白名单
-//     （safeCommandPrefixes ∪ planSafeExtra 前缀匹配）→ 放行；否则拒绝
-//
-// 允许 `grep foo | head`、`git log | head -5`；拒绝 `echo x > file`、`ls; rm x`、
-// `curl x | sh`。
-func isPlanReadonlyShell(cmd string) bool {
-	if strings.TrimSpace(cmd) == "" {
-		return false // 空命令无意义
-	}
-	if isDangerous(cmd) || findIsDangerous(cmd) {
-		return false
-	}
-	if strings.Contains(cmd, ">") {
-		return false
-	}
-	for _, seg := range shellSegmentSplit.Split(cmd, -1) {
-		lc := strings.ToLower(strings.TrimSpace(seg))
-		if lc == "" {
-			continue // || 等产生的空段
-		}
-		if !isPlanSafeSegment(lc) {
-			return false
-		}
-	}
-	return true
-}
-
-// isPlanSafeSegment 判定单个管道段是否只读白名单前缀命中（分段前缀匹配，
-// 支持 `git status` 等多词前缀）。
-func isPlanSafeSegment(seg string) bool {
-	for _, p := range safeCommandPrefixes {
-		if strings.HasPrefix(seg, p) {
-			return true
-		}
-	}
-	for _, p := range planSafeExtra {
-		if strings.HasPrefix(seg, p) {
-			return true
-		}
-	}
-	return false
-}
-
 // cmdOf 从 shell_command 参数提取 command 字段（空串表示解析失败/无命令）。
 func cmdOf(call *messages.ToolCall) string {
 	if call.Name != "shell_command" {
@@ -427,10 +369,10 @@ const (
 //  7. 未知工具 → Ask（保守）
 //
 // plan=true（强只读，工具全量可见不做过滤）：
-//  - read/todo/ask → Allow
-//  - write_plan/plan_done → Allow（Handle 内 HITL）；plan_enter → Deny
-//  - shell → isPlanReadonlyShell Allow 否则 Deny
-//  - edit → Deny；未知 → Deny
+//   - read/todo/ask → Allow
+//   - write_plan/plan_done → Allow（Handle 内 HITL）；plan_enter → Deny
+//   - shell → isPlanReadonlyShell Allow 否则 Deny
+//   - edit → Deny；未知 → Deny
 func Decide(call *messages.ToolCall, mode string, approved []string, ws string, plan bool) (Outcome, string) {
 	if call == nil {
 		return OutcomeDeny, "空工具调用"
@@ -445,10 +387,14 @@ func Decide(call *messages.ToolCall, mode string, approved []string, ws string, 
 			}
 			return OutcomeAllow, "" // write_plan/plan_done：Handle 内 HITL
 		case classShell:
-			if isPlanReadonlyShell(cmdOf(call)) {
+			switch classifyPlanShell(cmdOf(call)) {
+			case planShellReadonly:
 				return OutcomeAllow, ""
+			case planShellWrite:
+				return OutcomeDeny, "plan 模式下 shell 仅允许只读命令（检测到写命令/写参数/重定向）"
+			default: // planShellUnknown：纯 Deny 失败模式，理由提示换只读探查方式
+				return OutcomeDeny, "plan 模式下 shell 仅允许只读命令（无法确认该命令只读，已拒绝；可改用只读探查 flag 如 --version）"
 			}
-			return OutcomeDeny, "plan 模式下 shell 仅允许只读命令"
 		case classEdit:
 			return OutcomeDeny, "plan 模式下禁止写文件"
 		default:

@@ -2,6 +2,18 @@
 
 > 按日期追加，最新在上。记录：进展、阻塞、问题、经验。
 
+## 2026-08-12
+
+### Plan Mode 审查修复（plan-mode-review-2026-08-12 四项缺陷）✅
+
+- **背景**：提交 `bbdbd77`（ADR-036 plan mode）代码审查发现 4 缺陷（3 严重 + 1 中等）：01 plan 只读可绕过（`sed -i`/`sed w`/`sort -o`/`env sh` 真实写盘）；02 只读白名单假阴性 68%（`python --version` 等 38/56 误拒）；03 TUI 并发弹窗覆盖（审批静默消失 + goroutine 永久阻塞）；04 `planMu`/`todoMu` 两把锁保护同一 AgentState 的 data race。
+- **修复（用户三项决策）**：
+  1. **写黑名单反向判定 + 纯 Deny**（缺陷 01/02，`policy_plan.go` 新建）：删 `isPlanReadonlyShell`/`planSafeExtra`，改 `classifyPlanShell` 三态（readonly/write/unknown）——不查是否只读、而查是否写。写命令名/解释器跳板（`env` 移出白名单）/包管理/系统服务四类 + git/go/cargo 写子命令表 + sed/sort/find/gofmt/awk/tar 写参数表 + `>`/`$(`/反引号/换行写形态拦截；只读 flag 豁免（`--version`/`-v`/`--help`/`help`）+ 写子命令只读例外表（`git status`/`go list`/`npm ls`/`make -n` 等）消除假阴性；unknown → Deny（理由区分"检测到写" vs "无法确认只读"，回填模型换思路）。69 只读 / 51 写 / 语料外全部落入 `policy_plan_test.go`。
+  2. **AgentState 锁下沉**（缺陷 04）：`mu sync.Mutex` + 13 个带锁方法 + `Marshal`，`SaveFile` 内部走 `Marshal`；删 `planMu`/`todoMu`（`todo.go` attrs map 改窄锁 `todoAttrsMu`）。顺带根治 review 未点名的同类 race：`rememberApproved` 无锁写、TUI `refreshStatus` run 期间并发读 state、锁外读 `PlanMode`/`Plan.Path`。AgentState 不得按值复制（go vet copylocks）。
+  3. **TUI 待决请求队列**（缺陷 03）：`approvalRequestMsg`/`askRequestMsg` 走 `openOverlay` 守卫、被拒入队 `pending`，统一 `closeOverlay` 关当前 + 弹下一个（FIFO）；Esc 中断 / `reloadSession` / `handleRunDone` 清 pending。**AllowCustom 落地**：`handleAskKey`/`finishAsk` 校验 + view 仅允许时渲染 Custom 行。
+- **测试**：`TestClassifyPlanShell`（三态表驱动，不变量断言防写误放行）/ `TestDecidePlanModeShell` / 并发回归（`TestAgentStateConcurrentAccess`/`TestPlanTodoConcurrentState`/`TestRememberApprovedConcurrent`）/ TUI 队列 5 用例 + `TestAskAllowCustomFalse`。`go build/vet/test ./...` + `-race` 重点包全绿；e2e 全过（**`TestSessionPersistenceE2E` 复跑通过**——review 称提交前已失败，本次未复现，疑为环境/时序或锁下沉顺带修复）。
+- **经验**：① "用命令名猜副作用"必然在过松/过严两个方向同时错（缺陷 01/02 同根因）——选反向判定（查写而非查只读）+ 默认拒绝兜底，牺牲未知只读命令（`tsc --noEmit`/`ruff` 会 Deny，可补 allowlist）；② 锁必须保护**数据**而非调用方——`planMu`+`todoMu` 两把锁守同一 AgentState 是必然 race，下沉到 AgentState 自身 + 方法化所有共享字段访问，一劳永逸；③ 弹窗守卫拒绝叠开时不能"丢弃"请求——审批是安全机制，要排队不能静默消失。
+
 ## 2026-08-11
 
 ### Bug10：Esc 中断后发消息 400（tool_use 无紧跟 tool_result）✅

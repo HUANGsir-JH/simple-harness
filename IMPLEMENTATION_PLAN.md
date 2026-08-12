@@ -6,7 +6,7 @@
 
 参照 OpenAI Codex CLI（`../codex/codex-rs`，Rust）+ AgentScope Java v2 的架构，用 Go 构建一个**可真实使用**的极简 agent harness（命令行）。定位为**通用框架**，未来可被 resume-agent 等其它项目引用。
 
-**现状（2026-08-11）**：阶段 1（骨架+消息+provider+最小 loop）→ 阶段 2（工具系统+并发+渲染+middleware 骨架+REPL）→ 阶段 2.5（Workspace+AgentState+会话落盘/resume）→ 架构重构（ADR-026 无状态 agent+运行时切换）→ todo 工具（ADR-027）→ 工具结果截断/用户中断/shell 缓解（ADR-028）→ **阶段 3 审批（ADR-029）✅** → 配置层独立 + 装配根 → **Plan Mode（ADR-036）✅ 2026-08-11**。待办：阶段 4 剩余（AGENTS.md 注入 + 系统提示词拼接 + 上下文压缩）、阶段 5（子 agent）、阶段 6（可选）。
+**现状（2026-08-12）**：阶段 1（骨架+消息+provider+最小 loop）→ 阶段 2（工具系统+并发+渲染+middleware 骨架+REPL）→ 阶段 2.5（Workspace+AgentState+会话落盘/resume）→ 架构重构（ADR-026 无状态 agent+运行时切换）→ todo 工具（ADR-027）→ 工具结果截断/用户中断/shell 缓解（ADR-028）→ **阶段 3 审批（ADR-029）✅** → 配置层独立 + 装配根 → **Plan Mode（ADR-036）✅ 2026-08-11** → **Plan Mode 审查修复 ✅ 2026-08-12**（写黑名单反向判定 + 纯 Deny / AgentState 锁下沉 / TUI 待决请求队列，见 DECISIONS.md ADR-036 修订）。待办：阶段 4 剩余（AGENTS.md 注入 + 系统提示词拼接 + 上下文压缩）、阶段 5（子 agent）、阶段 6（可选）。
 
 ## 已确认决策（当前生效）
 
@@ -17,7 +17,7 @@
 | 事件模型 | **分层**：provider 采样级（text/thinking **delta + 块完成** text_done/thinking_done + tool_call + done/error，无生命周期事件）+ agent 回合级（turn_start/turn_done/tool_call/tool_result/thinking_done/text_done，**带 MsgID** 关联块归属） |
 | 内部消息模型 | **统一 Message**（role/content/**thinking**/tool_calls/**tool_results 多块合并**/is_error），provider 适配转换；thinking 存审计不重放（ADR-025） |
 | 扩展机制 | **进程内 middleware**（6 hook：onAgent/onReasoning/onToolCall/onActing/onModelCall onion + onSystemPrompt transformer 链）+ 链机制为核心扩展点；**子进程 hooks 降级远期**（ADR-021） |
-| 权限审批 | **三档**（readonly/acceptedit/bypass）+ shell 黑白名单 + **会话级记忆**（Approved）+ config 播种 + `/permission` 切换（ADR-029）；复杂规则匹配不强做，middleware 扩展点承载 |
+| 权限审批 | **三档**（readonly/acceptedit/bypass）+ shell 黑白名单 + **会话级记忆**（Approved）+ config 播种 + `/permission` 切换（ADR-029）；复杂规则匹配不强做，middleware 扩展点承载。**plan 只读** = 写黑名单反向判定 + 纯 Deny（ADR-036 修订，2026-08-12） |
 | 会话存储 | **双轨**（ADR-025）：消息流 → **块级 transcript**（historys/history-N.jsonl，异步 writer + ordinal，压缩切新文件）；非消息状态 → **AgentState 快照**（模型/档位/todo/权限/CWD/plan/摘要）→ 完整 resume |
 | Workspace | **~/.harness/ 项目分桶**（ADR-025）：workspaces/&lt;项目转义&gt;/&lt;session&gt;/{historys, plans, agentstate.json, evictions} + 全局 config.yaml；evictions/ = 超长工具结果落盘（模型 read_file 读全量，ADR-028） |
 | 工具执行 | **并发执行**全部 tool_call（errgroup），结果按 call_id 合并成**一条** tool_result 消息回填（anthropic 紧邻要求，ADR-024） |
@@ -26,7 +26,7 @@
 | todo 工具 | **update_todo**（ADR-027）：全量替换 + 跨轮偏离提醒（TodoReminderMiddleware） |
 | 配置 | YAML（~/.harness/config.yaml + 项目级 config.local.yaml），加载/校验统一在 **internal/config** 包；`app.Load()` 惰性单例（ADR-026，2026-08-09 配置层独立） |
 | thinking | **默认开启**（ADR-034，2026-08-10 删 enabled 配置项）；模型配置只留 efforts（档位集）+ CLI `--effort/--thinking/--no-thinking` 覆盖 + TUI `/thinking` 会话切换（持久化 AgentState，nil = 默认开启）；按 anthropic 标准参数传递 |
-| 内置工具 | 7 个：read_file / list_dir / glob / write_file / shell_command / apply_patch / update_todo |
+| 内置工具 | 11 个：read_file / list_dir / glob / write_file / shell_command / apply_patch / update_todo + plan 4 个（plan_enter / write_plan / plan_done / ask_user，ADR-036） |
 | 压缩 / 子 agent / AGENTS.md / TUI / Hooks | **规划中（未实现）**，见"待办阶段" |
 
 ## 架构总览（当前实际目录）

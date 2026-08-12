@@ -358,3 +358,10 @@
   7. **`isPlanReadonlyShell`**：plan 模式 shell 放宽管道（原 isSafe 拒绝元字符，不适用规划期只读管道如 `grep foo | head`）；保留危险黑名单 + 拒绝 `>` 写重定向，按 `| && ;` 拆段逐段校验只读白名单。
   8. **plan 文件感知**：write_plan/plan_done 工具结果显式携带绝对路径 + 全文。
   9. **`/plan` 纯切换**（非弹窗）+ **`/plan view`** 查看计划文件。
+
+- **修订（2026-08-12，审查报告 plan-mode-review-2026-08-12 四项缺陷修复）**：
+  1. **只读强制 = 写黑名单反向判定 + 纯 Deny 失败模式**（替代点 7 的 `isPlanReadonlyShell` 只读白名单前缀匹配）。同根因缺陷 01/02：前缀匹配猜只读既过松（`sed -i`/`sort -o`/`env sh` 真实写盘）又过严（`python --version` 等 38/56 误拒）。改为**不查是否只读、而查是否写**（三个参考源都不用命令白名单）：命中写黑名单（写命令名/解释器跳板/包管理/系统服务 + git/go/cargo 写子命令 + sed/sort/find/gofmt/awk/tar 写参数 + `>`/`$(`/反引号/换行写形态）→ **Deny**；只读 flag 豁免（`--version`/`-v`/`--help` 等纯探查）+ 写子命令只读例外表（`git status`/`go list`/`npm ls`/`make -n` 等）→ **Allow**；未命中写黑名单也非明确只读（unknown）→ **Deny**（纯 Deny 失败模式，理由区分"检测到写"与"无法确认只读"，回填模型换思路；**不做 review 建议的 Ask 降级**——plan = 整轮强只读，不打断用户）。`isPlanReadonlyShell`/`planSafeExtra` 删除，`isDangerous`/`isSafe` 等非 plan 判定不受影响。
+  2. **AgentState 锁下沉**（替代 tools 包 `planMu`/`todoMu` 两把锁保护同一数据）：AgentState 内置 `mu sync.Mutex`（`json:"-"`）+ 带锁方法（`SetPlanMode`/`SetPlanPath`/`SetPermissionMode`/`AddApproved`/`ReplaceTodos`/`RenderTodos`/`Marshal` 等），`SaveFile` 内部经 `Marshal` 加锁。覆盖缺陷 04 + review 未点名的同类 race（`rememberApproved` 无锁写、`refreshStatus` run 期间并发读、`todo.go` attrs map 并发读写）。AgentState **不得按值复制**（go vet copylocks 抓）。
+  3. **TUI 待决请求队列**（缺陷 03）：`approvalRequestMsg`/`askRequestMsg` 走 `openOverlay` 守卫，已有覆盖层未决时**入队**而非静默覆盖（原直接赋值 `m.ovl` 导致并发请求互相覆盖 → 审批静默消失 + 工具 goroutine 永久阻塞）；统一 `closeOverlay` 关当前 + 自动弹出下一个（FIFO）；Esc 中断/`reloadSession` 清空 pending（ctx cancel 释放阻塞 goroutine）。
+  4. **AllowCustom 在 TUI 侧落地**：`handleAskKey`/`finishAsk` 校验 `AllowCustom`（对齐 run 模式 `ParseAskAnswer`），view 仅在允许时渲染 Custom 输入行。
+  - **已知局限（纯 Deny 的代价，接受）**：未知只读命令（`jq`/`yq`/`bat`/`exa` 等已入 allowlist；`tsc --noEmit`/`ruff`/`mypy`/`shellcheck` 有写模式未入）会 Deny，可继续补 `planReadonlyCommands`；无 shell 语法解析（引号内 `;`/`>` 误判，与旧实现一致）；`git config <key>` 单 key 读会误判 write（`--get`/`--list` 已覆盖主流）。

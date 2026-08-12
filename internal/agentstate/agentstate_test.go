@@ -3,6 +3,7 @@ package agentstate
 import (
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -108,4 +109,32 @@ func TestReservedFieldsOptional(t *testing.T) {
 		t.Errorf("预留字段应缺省: %+v", got)
 	}
 	_ = data
+}
+
+// TestAgentStateConcurrentAccess 验证锁下沉（ADR-036 修订）：混合并发读写与
+// 序列化不 panic、无 data race（-race 必跑）。修复前 planMu/todoMu 分离时，
+// 并发 ReplaceTodos 与 Marshal 会竞态。
+func TestAgentStateConcurrentAccess(t *testing.T) {
+	a := New("s1", "m", ".")
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			a.ReplaceTodos([]TodoItem{{Position: 1, Description: "x", Status: TodoPending}})
+			_ = a.RenderTodos()
+			_ = a.TodoCount()
+			_ = a.TodoItems()
+			a.AddApproved([]string{"git push", "write_file:/ws/a.txt"})
+			_ = a.Approved()
+			a.SetPlanMode(true)
+			_ = a.IsPlanMode()
+			a.SetPlanPath("/tmp/plan.md")
+			_ = a.PlanPath()
+			a.SetPermissionMode("readonly")
+			_ = a.PermissionMode()
+			_, _ = a.Marshal()
+		}()
+	}
+	wg.Wait()
 }

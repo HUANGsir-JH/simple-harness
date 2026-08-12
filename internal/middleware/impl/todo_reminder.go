@@ -37,7 +37,7 @@ func (m TodoReminderMiddleware) OnReasoning(ctx context.Context, rc *middleware.
 	cnt++
 	rc.Set("todo_sample_count", cnt)
 
-	if rc.State != nil && len(rc.State.Todos) > 0 {
+	if rc.State != nil && rc.State.TodoCount() > 0 {
 		last := 0
 		if v, ok := rc.Get("todo_last_activity").(int); ok {
 			last = v

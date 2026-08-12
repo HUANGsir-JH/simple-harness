@@ -50,7 +50,7 @@ func TestRunPlanModeClosedLoop(t *testing.T) {
 	rc := rcFor(conv)
 	rc.State = agentstate.New("s1", "m", dir)
 	rc.StatePath = filepath.Join(dir, "agentstate.json")
-	rc.State.PlanMode = true // 模拟 /plan on（指令注入由 TUI/进入点负责，这里只测策略+工具）
+	rc.State.SetPlanMode(true) // 模拟 /plan on（指令注入由 TUI/进入点负责，这里只测策略+工具）
 	rc.Approver = allowApprover{}
 	rec := &eventRecorder{}
 	if err := a.Run(context.Background(), rc, rec.on); err != nil {
@@ -88,15 +88,15 @@ func TestRunPlanModeClosedLoop(t *testing.T) {
 
 	// plan 文件已写入（write_plan 落盘）。
 	planFile := filepath.Join(dir, "plans", "plan.md")
-	if rc.State.Plan == nil || rc.State.Plan.Path != planFile {
-		t.Errorf("Plan.Path = %+v, want %s", rc.State.Plan, planFile)
+	if rc.State.PlanPath() != planFile {
+		t.Errorf("Plan.Path = %q, want %s", rc.State.PlanPath(), planFile)
 	}
 	if b, err := os.ReadFile(planFile); err != nil || !strings.Contains(string(b), "改 a.txt") {
 		t.Errorf("plan 文件: err=%v\n%s", err, b)
 	}
 
 	// 批准后退出 plan 模式（立即落盘）。
-	if rc.State.PlanMode {
+	if rc.State.IsPlanMode() {
 		t.Error("批准执行后 PlanMode 应为 false")
 	}
 	if st, err := agentstate.LoadFile(rc.StatePath); err != nil || st.PlanMode {

@@ -12,10 +12,10 @@ import (
 	"github.com/agent-project/harness/internal/provider"
 )
 
-// todoMu 保护 rc.State.Todos 的并发读写。并行工具架构（ADR-024）下同一轮
-// 多个工具 goroutine 并发 Handle；update_todo 是首个写 AgentState 的工具，
-// 加锁消除同轮并发 update_todo（或与未来读 state 的工具）的 data race。
-var todoMu sync.Mutex
+// todoAttrsMu 保护 rc.attrs 的并发读写（todo_sample_count / todo_last_activity
+// 键）。AgentState.Todos 的并发已由 AgentState 自身锁保证（ADR-036 修订锁下沉）；
+// rc.attrs 是 RuntimeContext 的共享 map，同轮并发 update_todo 写它仍须串行。
+var todoAttrsMu sync.Mutex
 
 // UpdateTodoTool 全量替换当前会话的待办清单（AgentScope tasksContext 对位，
 // 参考 codex update_plan / opencode todowrite，ADR-027）。
@@ -80,16 +80,16 @@ func (UpdateTodoTool) Handle(_ context.Context, rc *middleware.RuntimeContext, _
 		items = append(items, agentstate.TodoItem{Position: t.Position, Description: t.Description, Status: t.Status})
 	}
 
-	// 写 Todos、读渲染、写提醒基准全部放锁内：并行工具（ADR-024）下同轮多个
-	// update_todo 并发，Todos 与 rc.attrs 的 todo 计数键都须串行。
-	todoMu.Lock()
+	// Todos 与 attrs 分别加锁：AgentState 的 ReplaceTodos/RenderTodos 自身带锁
+	// （锁下沉）；attrs map 并发读写用窄锁。不再用大锁包住整个块。
 	rc.State.ReplaceTodos(items)
 	// 记录活动基准：模型已更新 todo，提醒 idle 计数从此清零重计。
+	todoAttrsMu.Lock()
 	if v, ok := rc.Get("todo_sample_count").(int); ok {
 		rc.Set("todo_last_activity", v)
 	}
+	todoAttrsMu.Unlock()
 	content := rc.State.RenderTodos()
-	todoMu.Unlock()
 
 	return messages.ToolResult{Success: true, Content: content}, nil
 }

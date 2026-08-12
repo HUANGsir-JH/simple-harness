@@ -46,13 +46,13 @@ func TestUpdateTodoFullReplace(t *testing.T) {
 	if !ok {
 		t.Fatal("第二次调用应成功")
 	}
-	if len(rc.State.Todos) != 1 || rc.State.Todos[0].Description != "b" {
-		t.Errorf("全量替换失败: %+v", rc.State.Todos)
+	if len(rc.State.TodoItems()) != 1 || rc.State.TodoItems()[0].Description != "b" {
+		t.Errorf("全量替换失败: %+v", rc.State.TodoItems())
 	}
 	// 空列表清空。
 	callTodo(t, rc, `{"todos":[]}`)
-	if len(rc.State.Todos) != 0 {
-		t.Errorf("空列表应清空: %+v", rc.State.Todos)
+	if len(rc.State.TodoItems()) != 0 {
+		t.Errorf("空列表应清空: %+v", rc.State.TodoItems())
 	}
 }
 
@@ -69,8 +69,8 @@ func TestUpdateTodoSortsByPosition(t *testing.T) {
 	}
 	want := []string{"a", "b", "b2", "c"}
 	for i, w := range want {
-		if rc.State.Todos[i].Description != w {
-			t.Errorf("顺序[%d]: got %s want %s（全: %+v）", i, rc.State.Todos[i].Description, w, rc.State.Todos)
+		if rc.State.TodoItems()[i].Description != w {
+			t.Errorf("顺序[%d]: got %s want %s（全: %+v）", i, rc.State.TodoItems()[i].Description, w, rc.State.TodoItems())
 		}
 	}
 }
@@ -88,8 +88,8 @@ func TestUpdateTodoInvalidStatus(t *testing.T) {
 		t.Errorf("错误消息应指明非法状态: %s", msg)
 	}
 	// state 未被破坏。
-	if len(rc.State.Todos) != 1 || rc.State.Todos[0].Description != "keep" {
-		t.Errorf("非法调用不应改 state: %+v", rc.State.Todos)
+	if len(rc.State.TodoItems()) != 1 || rc.State.TodoItems()[0].Description != "keep" {
+		t.Errorf("非法调用不应改 state: %+v", rc.State.TodoItems())
 	}
 }
 
@@ -158,7 +158,7 @@ func TestUpdateTodoConcurrent(t *testing.T) {
 	}
 	wg.Wait()
 	// 只需不 panic/不 race；最终状态由最后一次胜出。
-	if len(rc.State.Todos) != 1 {
-		t.Errorf("并发后应剩 1 项: %+v", rc.State.Todos)
+	if len(rc.State.TodoItems()) != 1 {
+		t.Errorf("并发后应剩 1 项: %+v", rc.State.TodoItems())
 	}
 }

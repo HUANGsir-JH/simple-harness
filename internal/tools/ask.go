@@ -20,10 +20,10 @@ func (AskUserTool) Name() string { return "ask_user" }
 
 // askUserArgs 是 ask_user 的参数形状。
 type askUserArgs struct {
-	Question string       `json:"question" jsonschema:"description=完整问题（向用户展示）"`
-	Header   string       `json:"header,omitempty" jsonschema:"description=弹窗短标题（可选，≤30 字符）"`
-	Options  []askOption  `json:"options,omitempty" jsonschema:"description=选项列表（可选；空 = 纯自由文本提问）"`
-	Multiple bool         `json:"multiple,omitempty" jsonschema:"description=允许多选（默认单选）"`
+	Question string      `json:"question" jsonschema:"description=完整问题（向用户展示）"`
+	Header   string      `json:"header,omitempty" jsonschema:"description=弹窗短标题（可选，≤30 字符）"`
+	Options  []askOption `json:"options,omitempty" jsonschema:"description=选项列表（可选；空 = 纯自由文本提问）"`
+	Multiple bool        `json:"multiple,omitempty" jsonschema:"description=允许多选（默认单选）"`
 }
 
 // askOption 是单个选项（label + 可选说明）。

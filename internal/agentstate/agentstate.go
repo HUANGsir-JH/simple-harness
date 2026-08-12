@@ -16,11 +16,23 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
 // AgentState 是会话的运行时状态快照。
+//
+// 并发安全（ADR-036 修订，2026-08-12）：内置互斥锁，全部共享字段的写、整体
+// 序列化、关键读都经带锁方法——tools 包（update_todo/write_plan）与
+// middleware（审批记忆）在并行工具批（ADR-024）内共享同一 *AgentState 指针，
+// 锁下沉到数据自身避免 planMu/todoMu 两把锁保护同一份数据的 data race
+// （plan-mode-review-2026-08-12 缺陷 04）。
+//
+// ⚠️ 含 sync.Mutex，不得按值复制 AgentState（go vet copylocks 会抓）；全仓库
+// 只以指针使用（New/LoadFile/rc.State）。
 type AgentState struct {
+	mu sync.Mutex `json:"-"` // 不序列化；New/LoadFile 反序列化后零值即可用
+
 	SessionID       string           `json:"session_id"`
 	Name            string           `json:"name,omitempty"`             // 会话名（首消息自动命名或 /rename；空 = 未命名）
 	Model           string           `json:"model,omitempty"`            // 会话使用的模型（resume 恢复）
@@ -81,6 +93,8 @@ func New(sessionID, model, cwd string) *AgentState {
 // 升序稳定排序（重复 position 保持传入顺序），模型传什么存什么，不做任何
 // 归一化（ADR-027：one in_progress 靠 prompt 约束）。
 func (a *AgentState) ReplaceTodos(items []TodoItem) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	sorted := make([]TodoItem, len(items))
 	copy(sorted, items)
 	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Position < sorted[j].Position })
@@ -102,6 +116,13 @@ func statusMark(status string) string {
 // RenderTodos 将 todo 列表渲染为 markdown 有序列表（重新编号 1..n）。工具
 // 结果回填与偏离提醒共用（ADR-027）。
 func (a *AgentState) RenderTodos() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.renderTodosLocked()
+}
+
+// renderTodosLocked 是 RenderTodos 的持锁内部实现（方法内不调用其它带锁方法）。
+func (a *AgentState) renderTodosLocked() string {
 	if len(a.Todos) == 0 {
 		return "（当前无待办）"
 	}
@@ -112,13 +133,174 @@ func (a *AgentState) RenderTodos() string {
 	return strings.TrimRight(sb.String(), "\n")
 }
 
-// SaveFile 将 state 整体 JSON 写入 path（原子写：进程唯一临时文件 + fsync +
-// rename，避免半截文件与断电丢内容）。同时刷新 UpdatedAt。
-func SaveFile(path string, a *AgentState) error {
+// --- 带锁访问方法（ADR-036 修订：并行工具批共享同一 *AgentState，全部共享
+// 字段读写经方法加锁，替代 tools 包的 planMu/todoMu 分离锁）----
+
+// SetPlanMode 设置 plan 模式开关（/plan、plan_enter/plan_done，ADR-036）。
+func (a *AgentState) SetPlanMode(on bool) {
+	a.mu.Lock()
+	a.PlanMode = on
+	a.mu.Unlock()
+}
+
+// SetPlanPath 设置计划文件路径（write_plan；Plan 为 nil 时先建）。
+func (a *AgentState) SetPlanPath(path string) {
+	a.mu.Lock()
+	if a.Plan == nil {
+		a.Plan = &PlanState{}
+	}
+	a.Plan.Path = path
+	a.mu.Unlock()
+}
+
+// SetName 设置会话名（/rename；首消息自动命名）。
+func (a *AgentState) SetName(name string) {
+	a.mu.Lock()
+	a.Name = name
+	a.mu.Unlock()
+}
+
+// SetModel 设置会话模型（/model 运行时切换）。
+func (a *AgentState) SetModel(model string) {
+	a.mu.Lock()
+	a.Model = model
+	a.mu.Unlock()
+}
+
+// SetThinkingEnabled 设置 thinking 开关（--thinking/--no-thinking；nil = 默认
+// 开启）。拷贝指针值，避免调用方后续改 *enabled 影响已存状态。
+func (a *AgentState) SetThinkingEnabled(enabled *bool) {
+	a.mu.Lock()
+	if enabled != nil {
+		v := *enabled
+		a.ThinkingEnabled = &v
+	} else {
+		a.ThinkingEnabled = nil
+	}
+	a.mu.Unlock()
+}
+
+// SetThinkingEffort 设置推理档位（/effort 运行时切换）。
+func (a *AgentState) SetThinkingEffort(effort string) {
+	a.mu.Lock()
+	a.ThinkingEffort = effort
+	a.mu.Unlock()
+}
+
+// SetPermissionMode 设置审批模式（/permission、config 播种；Permission 为 nil
+// 时先建，ADR-029）。
+func (a *AgentState) SetPermissionMode(mode string) {
+	a.mu.Lock()
+	if a.Permission == nil {
+		a.Permission = &PermissionState{}
+	}
+	a.Permission.Mode = mode
+	a.mu.Unlock()
+}
+
+// AddApproved 把审批 key 记入会话级记忆（去重，原 impl.rememberApproved 逻辑
+// 下沉；ADR-029）。Permission 为 nil 时先建。
+func (a *AgentState) AddApproved(keys []string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(keys) == 0 {
+		return
+	}
+	if a.Permission == nil {
+		a.Permission = &PermissionState{}
+	}
+	for _, key := range keys {
+		if key == "" {
+			continue
+		}
+		dup := false
+		for _, k := range a.Permission.Approved {
+			if k == key {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			a.Permission.Approved = append(a.Permission.Approved, key)
+		}
+	}
+}
+
+// IsPlanMode 读取 plan 模式开关（方法名避开字段 PlanMode，Go 不允许同名）。
+func (a *AgentState) IsPlanMode() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.PlanMode
+}
+
+// PlanPath 读取计划文件路径（无 Plan 返回 ""）。
+func (a *AgentState) PlanPath() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.Plan == nil {
+		return ""
+	}
+	return a.Plan.Path
+}
+
+// PermissionMode 读取审批模式（无 Permission 返回 ""）。
+func (a *AgentState) PermissionMode() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.Permission == nil {
+		return ""
+	}
+	return a.Permission.Mode
+}
+
+// Approved 返回审批记忆的防御性拷贝（调用方可安全遍历，不受并发写影响）。
+func (a *AgentState) Approved() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.Permission == nil {
+		return nil
+	}
+	out := make([]string, len(a.Permission.Approved))
+	copy(out, a.Permission.Approved)
+	return out
+}
+
+// TodoCount 返回 todo 条数（避免整体拷贝的读路径）。
+func (a *AgentState) TodoCount() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return len(a.Todos)
+}
+
+// TodoItems 返回 todo 列表的防御性拷贝（方法名避开字段 Todos）。
+func (a *AgentState) TodoItems() []TodoItem {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	out := make([]TodoItem, len(a.Todos))
+	copy(out, a.Todos)
+	return out
+}
+
+// Marshal 序列化 state（加锁 + 刷新 UpdatedAt）。SaveFile 与任何需要整体编码
+// 的调用都经它，保证并发落盘不与其他字段读写竞态。
+func (a *AgentState) Marshal() ([]byte, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	a.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	data, err := json.MarshalIndent(a, "", "  ")
 	if err != nil {
-		return fmt.Errorf("agentstate: marshal: %w", err)
+		return nil, fmt.Errorf("agentstate: marshal: %w", err)
+	}
+	return data, nil
+}
+
+// SaveFile 将 state 整体 JSON 写入 path（原子写：进程唯一临时文件 + fsync +
+// rename，避免半截文件与断电丢内容）。序列化经 a.Marshal()（加锁刷新
+// UpdatedAt），落盘本身跨进程互踩由 pid 临时名防。
+func SaveFile(path string, a *AgentState) error {
+	data, err := a.Marshal()
+	if err != nil {
+		return err
 	}
 	// 临时名带 pid（C1，2026-08-10）：固定 path+".tmp" 会被两个并发进程
 	// （resume 同一会话）互踩；写后 fsync 再 rename，断电不丢内容。

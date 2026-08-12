@@ -327,14 +327,17 @@ func renderAsk(ask *askPopup, width int) string {
 	if ask.req.AllowCustom {
 		hint += "   type = custom"
 	}
-	customLine := "Custom: " + ask.custom + "_"
 	content := styleRunning.Render(header) + "\n\n" +
 		styleText.Render(question)
 	if len(rows) > 0 {
 		content += "\n\n" + strings.Join(rows, "\n")
 	}
-	content += "\n\n" + styleMuted.Render(ansi.Truncate(customLine, maxInt(1, bodyWidth), "...")) + "\n" +
-		styleMuted.Render(hint)
+	if ask.req.AllowCustom {
+		// Custom 输入行仅在允许自定义时渲染（ADR-036 修订：AllowCustom 约束对齐
+		// run 模式 ParseAskAnswer，禁止自定义时不诱导输入）。
+		content += "\n\n" + styleMuted.Render(ansi.Truncate("Custom: "+ask.custom+"_", maxInt(1, bodyWidth), "..."))
+	}
+	content += "\n" + styleMuted.Render(hint)
 	return modalStyle(panelWidth).Render(content)
 }
 
