@@ -204,6 +204,18 @@ func (c *Controller) WaitRuns() {
 	}
 }
 
+// SaveActiveState 兜底写回 active 会话的 AgentState（进程退出前调用，
+// ADR-038 退出 pre-kill：用户补充需求）。正常路径由 SessionMiddleware 每
+// 回合进出保存，此处只兜底退出瞬间未落盘的增量（/model 等状态变更即时
+// 落盘、回合内变更随回合结束落盘——退出时兜底是廉价保险）。无 active
+// （懒加载未触发）no-op。
+func (c *Controller) SaveActiveState() error {
+	if c.active == nil {
+		return nil
+	}
+	return agentstate.SaveFile(c.active.StatePath(), c.active.State())
+}
+
 // RunCompact 手动压缩当前会话（/compact，ADR-037）。tea.Cmd 内构造 rc 跑
 // compactor.Run(force=true)（含 LLM 摘要调用，避免阻塞 UI；toast"压缩中…"）。
 // 返回 compactDoneMsg 标记完成。压缩成功重写 rc.Messages = [summary user]（指向

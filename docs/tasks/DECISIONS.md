@@ -391,3 +391,17 @@
   10. **杂项**：help 面板补 /usage /compact /thinking /rename；gofmt 全绿（含 CRLF 行尾规范化）。
   **11（footer 非单调）待实测**：12 修复后 thinking 完整回传、上一轮输出计入下一轮输入，footer 应恢复单调；实测确认后再定是否改 `LastContextTokens` 口径（去掉 output）。
 - **影响 ADR**：ADR-025——thinking"存且重放"修订 + `AgentState.Usage/LastContextTokens` + transcript Line.Signature；ADR-021——onReasoning 挂载点新增 UsageMiddleware（用量覆盖写）+ CompactMiddleware（压缩）；ADR-026——无状态 agent 下用量覆盖/压缩经 rc 与 rc.Segment 钩子，agent 不碰 state。
+
+## ADR-038：shell 进程树生命周期——Job Object 杀树 + background/kill_pid + 退出 pre-kill（2026-08-13）
+
+- **背景**：用户实测（case07 会话）两个痛点——① 模型用 shell_command 前台启动后端服务，同步阻塞卡死整个会话（Windows 上超时后 PowerShell 本体被杀但子进程残留——`killProcessGroup` 为 no-op，Bug06(b)；且孙进程继承管道句柄导致 `cmd.Run()` 可能永不返回）；② Esc 中断回合但 shell 进程树仍在执行。用户补充需求：harness 退出时 pre-kill 清理（杀全部 background 进程 + 兜底写回 agentstate）。
+- **决策（用户逐点拍板）**：
+  1. **Windows 杀树 = Job Object**（x/sys/windows v0.38.0 封装，提为直接依赖）：每次 shell 调用创建匿名 job，只设 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`（不设 CPU/内存/UI 限制，不干扰服务进程）；进程 Start 后 `AssignProcessToJobObject`，job 内进程新建的子进程自动归属同一 job → `TerminateJobObject` 原子杀全树。**内核兜底**：句柄关闭即杀树——harness 被 SIGKILL/crash（无任何 defer）时进程销毁 → 句柄内核关闭 → 树死。降级：harness 自身在父 job（CI/IDE 启动器）且 Assign 失败 → 句柄记 0，杀树走 `taskkill /T /F` 尽力（KILL_ON_JOB_CLOSE 兜底失效、Wait 卡住风险复现——已知边界）。POSIX 保持 `Setpgid + kill(-pid, SIGKILL)`（killProcessTree 防御 pid<=0：kill(-0) 会杀 harness 自身进程组）。
+  2. **前台 Esc/超时杀树时机 = ctx 取消瞬间**（`context.AfterFunc`），不等 `Wait` 返回——旧实现杀树在 Run 返回后的超时分支，而 Run 可能因孙进程继承管道句柄永不返回（"卡住 → 杀不到"死锁）；杀树成功后树内进程全亡、管道写端随进程终止关闭 → Wait 必返回。Esc 回填"命令已被中断（Esc），进程树已终止"（模型可见，opencode "User aborted the command" 同款）；超时消息加"进程树已终止"。成功路径 `stop()` 防 PID 复用误杀。
+  3. **background 参数 + kill_pid 参数**（长任务/服务启动的结构化解）：`background: true` → 工具用 **Go 直接启动**（exec.Command + 文件重定向，不用 &/nohup/Start-Process 等 shell 语法——跨平台统一且模型手写易出错）；日志目录 `<会话>/background/<pid>.log`（工具惰性建，仿 evictions 模式；StatePath 空退化 os.TempDir；rename 失败保留临时名、结果显式返回实际路径）；立即返回 PID+日志路径，模型用 read_file/grep 轮询。`kill_pid` 终止：**仅接受进程级注册表内 PID**（防误杀系统进程的安全边界；进程级 `sync.Map`，与无状态 agent ADR-026 兼容——工具实例无状态、注册表是进程级全局并发安全）。**Esc 语义区分**：Esc 只杀前台进程树（"正在执行的工具调用"）；background 进程不绑定回合 ctx、不受 Esc 影响（会话级资源），仅由 kill_pid 与退出清理终止。
+  4. **退出 pre-kill**：`cmd/harness run()` defer `tools.CleanupBackground()`（run/resume/TUI 全部子命令统一覆盖）——background 进程生命周期 ≤ harness 进程寿命（用户拍板：不提供"退出后存活"语义）；TUI `RunTUI` 在 CloseAll 前兜底 `SaveActiveState`（agentstate 写回，正常路径由 SessionMiddleware 每回合保存，兜底是廉价保险）。清理顺序：WaitRuns → SaveActiveState → CloseAll（transcript flush）→ CleanupBackground。
+  5. **审批适配**：`ApprovalKey` kill 模式显式派生 `"kill <pid>"`——command 为空时 `NormalizeCommand("")=""` 空 key 若被记住会命中任意空命令调用（放行风险）；`SummaryOf` kill 模式显示 "shell_command: kill <pid>"；`Decide` 不改（空命令 → Ask，杀进程需审批；bypass 放行）；plan 模式空命令 classifyPlanShell → unknown → Deny（强只读语义正确：plan 不该杀进程）。
+  6. **schema 与提示词**：`command` 从 required 改 omitempty（kill_pid 模式可省略），Handle 校验二者至少其一；`shellLongTaskGuidance` 改写为显式 background/kill_pid 引导（"不要用 shell 语法自己放后台——工具不追踪，超时/Esc/退出都无法正确终止"）；TUI 工具块：kill 模式块头拼 PID、background 成功结果原文展示（不拼 "exit 0" 前缀——background 返回的是 PID+日志路径而非命令完成态）。
+  7. 默认超时保持 30s；不做输出流式化（阶段 3，可选后续）。
+- **边界（风险记录）**：job 嵌套降级路径（KILL_ON_JOB_CLOSE 失效）；Attach 竞态窗口（Start 与 Assign 间微秒级，PowerShell 解释执行需数百 ms，实际无孙进程逃逸）；POSIX PID 复用（kill 前可探测，Windows job 句柄精确定位无此风险）；注册表条目进程自然退出后残留至 kill/退出清理（开销可忽略）。
+- **影响 ADR**：ADR-028——shell 长任务缓解从"提示词引导手写后台语法"升级为工具参数化（background/kill_pid）+ Esc/超时杀树；ADR-021——工具层职责（非 middleware：进程树管理是 shell 工具自身生命周期，非链式切面）；ADR-026——注册表进程级全局与无状态 agent 兼容。

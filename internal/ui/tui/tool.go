@@ -41,9 +41,11 @@ func (t *ToolStatus) Expandable() bool {
 // toolCallSummary 按工具提取块头摘要（只含关键参数，body 参数不展示）。
 func toolCallSummary(name string, args []byte) string {
 	var p struct {
-		Path    string `json:"path"`
-		Pattern string `json:"pattern"`
-		Command string `json:"command"`
+		Path       string `json:"path"`
+		Pattern    string `json:"pattern"`
+		Command    string `json:"command"`
+		KillPID    int    `json:"kill_pid"`
+		Background bool   `json:"background"`
 	}
 	_ = json.Unmarshal(args, &p)
 	switch name {
@@ -52,6 +54,13 @@ func toolCallSummary(name string, args []byte) string {
 	case "glob":
 		return name + " " + p.Pattern
 	case "shell_command":
+		// kill 模式（ADR-038）：command 为空，显示杀的目标 PID。
+		if p.KillPID > 0 {
+			return fmt.Sprintf("shell_command: kill %d", p.KillPID)
+		}
+		if p.Background {
+			return "shell_command: " + p.Command + " &"
+		}
 		return "shell_command: " + p.Command
 	case "update_todo":
 		return "update_todo"
@@ -60,6 +69,15 @@ func toolCallSummary(name string, args []byte) string {
 	default:
 		return name + " " + truncate(string(args), 60)
 	}
+}
+
+// toolBackground 判断 shell_command 调用是否 background 模式（ADR-038：
+// 结果展示与正常命令区分——background 返回 PID+日志路径而非命令输出）。
+func toolBackground(args []byte) bool {
+	var p struct {
+		Background bool `json:"background"`
+	}
+	return json.Unmarshal(args, &p) == nil && p.Background
 }
 
 // prepareTool 在 ToolCall 时预处理（write_file 覆盖 diff 需执行前读旧文件）。
@@ -116,6 +134,13 @@ func applyToolResult(ts *ToolStatus, res *messages.ToolResult) {
 		ts.Content = res.Content // 完整 checklist
 		ts.Full = res.Content
 	case "shell_command":
+		// background 模式（ADR-038）：结果是"已后台启动 PID xxx"，不是命令
+		// 输出——原文展示，不拼 "exit 0" 前缀（会误导为命令已完成）。
+		if toolBackground(ts.Args) {
+			ts.Content = res.Content
+			ts.Full = res.Content
+			break
+		}
 		ts.Content = "exit 0" + headLines(res.Content, 5)
 		ts.Full = res.Content
 	default:

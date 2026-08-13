@@ -123,11 +123,16 @@ func rememberApproved(rc *middleware.RuntimeContext, keys []string) {
 }
 
 // SummaryOf 生成工具调用的人类可读摘要（审批 UI 展示）：
-// shell → 命令原文；write_file → 写入路径；apply_patch → 补丁首行；
-// 其它 → 参数 JSON 前 80 字符。
+// shell → 命令原文 / kill 模式显式展示；write_file → 写入路径；
+// apply_patch → 补丁首行；其它 → 参数 JSON 前 80 字符。
 func SummaryOf(call *messages.ToolCall) string {
 	switch call.Name {
 	case "shell_command":
+		// kill 模式（ADR-038）：command 为空，直接返回 cmdOf 会得到空摘要
+		// （TUI 兜底显示工具名，信息不足），显式展示杀的目标 PID。
+		if pid := killPIDOf(call); pid > 0 {
+			return fmt.Sprintf("shell_command: kill %d", pid)
+		}
 		return cmdOf(call)
 	case "write_file":
 		var p struct {

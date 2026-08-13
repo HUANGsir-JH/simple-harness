@@ -19,6 +19,7 @@ package impl
 import (
 	"encoding/json"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/agent-project/harness/internal/messages"
@@ -279,11 +280,30 @@ func cmdOf(call *messages.ToolCall) string {
 	return p.Command
 }
 
+// killPIDOf 提取 shell_command 的 kill_pid 参数（>0 = kill 模式，ADR-038）。
+func killPIDOf(call *messages.ToolCall) int {
+	if call.Name != "shell_command" {
+		return 0
+	}
+	var p struct {
+		KillPID int `json:"kill_pid"`
+	}
+	if err := json.Unmarshal(call.Args, &p); err != nil {
+		return 0
+	}
+	return p.KillPID
+}
+
 // ApprovalKey 返回工具调用的单 key 审批记忆 key（shell → 规范化命令前缀；
 // 其它工具 → 工具名）。文件工具不再用它——多路径粒度见 approvalKeys
 // （Bug03：批准一次 write_file 记住整个工具会让后续任何路径免审）。
+// kill 模式（ADR-038）显式派生 "kill <pid>"：command 为空时
+// NormalizeCommand("")="" 空 key 若被记住会命中任意空命令调用，且无语义。
 func ApprovalKey(call *messages.ToolCall) string {
 	if call.Name == "shell_command" {
+		if pid := killPIDOf(call); pid > 0 {
+			return "kill " + strconv.Itoa(pid)
+		}
 		return NormalizeCommand(cmdOf(call))
 	}
 	return call.Name

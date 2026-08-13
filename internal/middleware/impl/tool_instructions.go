@@ -45,16 +45,17 @@ const todoGuidance = `# 任务管理
 - 每次调用传完整列表，用 position 维护顺序`
 
 // shellLongTaskGuidance 是 shell_command 长耗时任务的引导（注入系统提示）。
-// 缓解模型卡在同步阻塞的慢命令上（ADR-028）：引导放后台 + 轮询日志，而非
-// 盲目加大 timeout 干等或重试。参照 opencode shell prompt 的 guidance 风格。
+// 缓解模型卡在同步阻塞的慢命令上（ADR-028 → ADR-038 升级：从"教模型手写
+// 后台语法"升级为显式 background/kill_pid 工具参数）。参照 opencode shell
+// prompt 的 guidance 风格。
 const shellLongTaskGuidance = `# 长耗时命令
-shell_command 是同步阻塞的：命令运行期间模型无法做任何事，超过 timeout_ms 会超时返回。遇到预计耗时较长的命令（构建、测试、下载、网络调用、服务启动等）：
-- 优先放后台执行并重定向输出到日志文件：
-  - bash:  command > log.txt 2>&1 &   （注意加 2>&1 把 stderr 也写进日志）
-  - PowerShell:  Start-Process 或 Start-Job，输出重定向到文件（如 Start-Process -FilePath cmd -ArgumentList '/c','command > log.txt 2>&1' -WindowStyle Hidden）
-- 然后立即返回（不要 sleep 等待），用 read_file / grep 轮询日志文件判断完成与结果
-- 需要终止后台进程时：bash 用 kill <pid>，PowerShell 用 Stop-Process
-- 不要盲目重试已超时的命令——超时时已收集的输出已保存到 evictions/ 目录（错误信息含完整路径），先用 read_file 读它了解进度与卡点，再决定下一步`
+shell_command 默认同步阻塞：命令运行期间模型无法做任何事，超过 timeout_ms 会超时（Esc 中断与超时都会终止整个进程树）。遇到预计耗时较长的命令（构建、测试、下载、网络调用、服务启动等）：
+- 用 background 参数后台启动：{"command": "...", "background": true}
+  → 立即返回 PID 与日志路径，命令输出写入日志文件
+- 用 read_file / grep 轮询返回的日志路径判断进度与完成情况
+- 需要终止后台进程：{"kill_pid": <background 返回的 PID>}
+- 不要用 shell 语法（&、nohup、Start-Process）自己放后台——工具不追踪这类进程，超时/Esc/退出都无法正确终止；统一用 background 参数
+- 不要盲目重试已超时的命令——超时/中断时已收集的输出已保存到 evictions/ 目录（错误信息含完整路径），先用 read_file 读它了解进度与卡点，再决定下一步`
 
 // ToolInstructionsMiddleware 是 onSystemPrompt middleware：在基础指令后追加
 // 工具列表、apply_patch 语法说明与任务管理引导（阶段二系统提示动态拼接的

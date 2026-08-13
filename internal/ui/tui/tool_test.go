@@ -112,6 +112,31 @@ func TestToolListDir(t *testing.T) {
 	}
 }
 
+// TestToolCallSummaryKillAndBackground 验证 shell 块头对 kill/background 模式
+// 的展示（ADR-038）：kill 显示目标 PID，background 加 & 后缀。
+func TestToolCallSummaryKillAndBackground(t *testing.T) {
+	if got := toolCallSummary("shell_command", []byte(`{"kill_pid":123}`)); got != "shell_command: kill 123" {
+		t.Errorf("kill summary = %q", got)
+	}
+	if got := toolCallSummary("shell_command", []byte(`{"command":"python server.py","background":true}`)); got != "shell_command: python server.py &" {
+		t.Errorf("background summary = %q", got)
+	}
+}
+
+// TestToolBackgroundResult 验证 background 成功结果原文展示（不拼 "exit 0"——
+// background 返回的是 PID+日志路径，不是命令输出完成态）。
+func TestToolBackgroundResult(t *testing.T) {
+	ts := &ToolStatus{Name: "shell_command", Args: []byte(`{"command":"sleep 5","background":true}`), Collapsed: true}
+	res := &messages.ToolResult{Success: true, Content: "已后台启动 PID 42，日志：x.log"}
+	applyToolResult(ts, res)
+	if strings.Contains(ts.Content, "exit 0") {
+		t.Fatalf("background 结果不应拼 exit 0: %q", ts.Content)
+	}
+	if !strings.Contains(ts.Content, "已后台启动 PID 42") {
+		t.Fatalf("应原文展示: %q", ts.Content)
+	}
+}
+
 // TestToolFailed 失败态：红 [ERR] + 错误信息。
 func TestToolFailed(t *testing.T) {
 	ts := &ToolStatus{Name: "shell_command", Args: []byte(`{"command":"rm -rf x"}`), Collapsed: true}

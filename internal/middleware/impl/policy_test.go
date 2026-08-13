@@ -185,10 +185,14 @@ func TestNormalizeCommand(t *testing.T) {
 	}
 }
 
-// TestApprovalKey 验证审批记忆 key：shell → 规范化命令；其它 → 工具名。
+// TestApprovalKey 验证审批记忆 key：shell → 规范化命令；kill 模式 → 显式
+// "kill <pid>"（ADR-038：防空 key 放行风险）；其它 → 工具名。
 func TestApprovalKey(t *testing.T) {
 	if got := ApprovalKey(shellCall("git status --porcelain")); got != "git status" {
 		t.Errorf("shell key: got %q", got)
+	}
+	if got := ApprovalKey(toolCall("shell_command", map[string]any{"kill_pid": 123})); got != "kill 123" {
+		t.Errorf("kill key: got %q, want kill 123（空 command 不应产生空 key）", got)
 	}
 	if got := ApprovalKey(toolCall("write_file", map[string]any{"path": "a.txt"})); got != "write_file" {
 		t.Errorf("write key: got %q", got)
@@ -199,6 +203,9 @@ func TestApprovalKey(t *testing.T) {
 func TestSummaryOf(t *testing.T) {
 	if got := SummaryOf(shellCall("git push origin main")); got != "git push origin main" {
 		t.Errorf("shell summary: got %q", got)
+	}
+	if got := SummaryOf(toolCall("shell_command", map[string]any{"kill_pid": 123})); got != "shell_command: kill 123" {
+		t.Errorf("kill summary: got %q", got)
 	}
 	if got := SummaryOf(toolCall("write_file", map[string]any{"path": "src/a.go", "content": "x"})); got != "写入文件: src/a.go" {
 		t.Errorf("write summary: got %q", got)

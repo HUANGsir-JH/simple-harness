@@ -45,7 +45,8 @@ func TestBuiltinSchemasValid(t *testing.T) {
 		{"list_dir", ListDirTool{}, nil},
 		{"glob", GlobTool{}, []string{"pattern"}},
 		{"apply_patch", ApplyPatchTool{}, []string{"patch"}},
-		{"shell_command", ShellCommandTool{}, []string{"command"}},
+		// command 为 omitempty（ADR-038）：kill_pid 模式无需 command，无 required。
+		{"shell_command", ShellCommandTool{}, nil},
 		{"update_todo", UpdateTodoTool{}, []string{"todos"}},
 	}
 	for _, c := range cases {

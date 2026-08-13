@@ -179,6 +179,23 @@
 | R8 | 09：help 补 /usage /compact /thinking /rename + 全 gofmt | ✅ 2026-08-13 |
 | R9 | 文档（DECISIONS ADR-037 勘误/TASKS/PROGRESS/review 更新）+ 全量测试与 -race | ✅ 2026-08-13 |
 
+## 阶段 shell 进程树生命周期（ADR-038）✅
+
+- **目标**：修复 shell 工具两个实测痛点——前台服务命令卡死会话（超时后 Windows 子进程残留 + 管道句柄继承卡 Wait）、Esc 中断不杀进程树；加 background/kill_pid 参数（长任务结构化解）+ 退出 pre-kill 清理。
+- **成功标准**：Windows job 杀树测试全绿（孙进程断言死）；Esc/超时回填中断/超时语义；background 立即返回 PID+日志、kill_pid 杀树、退出清理全杀；审批 key/摘要/TUI/提示词适配；版本 0.9.0。
+- **状态**：✅ 已完成（2026-08-13，ADR-038）
+- **说明**：决策逐点经用户拍板（阶段 1+2 / background+kill_pid 配套 / 30s 超时不变 / Esc 杀树+回填 / 退出 pre-kill）。Esc 只杀前台进程树；background 进程不绑定回合（会话级资源，仅 kill_pid 与退出清理终止）。
+
+### 任务单元
+
+| # | 单元 | 状态 |
+|---|---|---|
+| S1 | 平台杀树层：background_windows.go（x/sys/windows Job Object 四函数 + taskkill 降级）/ background_unix.go（进程组 + pid<=0 防御）+ 前台 AfterFunc 杀树重构 + Esc/超时回填语义 | ✅ 2026-08-13 |
+| S2 | background/kill_pid：注册表 sync.Map + startBackground（Go 直接启动 + 日志重定向 + <pid>.log）+ handleKill（仅注册表 PID）+ CleanupBackground + main.go defer | ✅ 2026-08-13 |
+| S3 | 审批/schema/TUI/提示词适配：ApprovalKey kill 派生 + SummaryOf + toolCallSummary/applyToolResult + shellLongTaskGuidance 改写 + command 改 omitempty | ✅ 2026-08-13 |
+| S4 | 退出兜底（SaveActiveState）+ ADR-038 + 文档 + 版本 0.9.0 + go mod tidy | ✅ 2026-08-13 |
+| S5 | 全量验证 + e2e + 真实场景手动验证 + 提交 | ✅ 2026-08-13 |
+
 ## 阶段 6（TUI 后后续可选）：摘要式压缩 / grep 工具 / 双向通信
 
 - **状态**：未开始（TUI 已提前为独立阶段；本阶段为压缩/grep/双向通信剩余项）

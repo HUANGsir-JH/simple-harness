@@ -42,6 +42,19 @@
 
 ## 2026-08-13
 
+### shell 进程树生命周期（ADR-038）✅ 版本 0.9.0
+
+- **背景**：case07 会话实测两个痛点——① 模型前台 `python server.py` 启动后端服务，同步阻塞卡死会话（Windows 上超时后 PowerShell 本体被杀但服务子进程残留——`killProcessGroup` 为 no-op；孙进程继承管道句柄导致 `cmd.Run()` 可能永不返回）；② Esc 中断回合但 shell 进程树仍在执行。用户逐点拍板：阶段 1+2（杀树 + background/kill_pid + 退出 pre-kill，不做流式输出）、默认超时保持 30s、Esc 杀树+回填提示、harness 退出时杀全部 background 进程 + 兜底写回 agentstate。
+- **交付**：
+  - **Windows 杀树 = Job Object**（x/sys/windows v0.38.0，提为直接依赖）：`background_windows.go` 四函数——createProcessTree（CreateJobObject + KILL_ON_JOB_CLOSE）/attachProcessTree（OpenProcess + Assign）/killProcessTree（TerminateJobObject 原子杀全树；h==0 降级 taskkill /T /F）/closeProcessTree；job 内进程新建子进程自动归属同 job。**内核兜底**：句柄关闭即杀树，harness 被 SIGKILL/crash 也清树。POSIX 保持 Setpgid + kill(-pid)（killProcessTree 防御 pid<=0）。
+  - **前台重构**：`newShellCmd`（无 ctx）抽取 + `startForeground`（AfterFunc 在 **ctx 取消瞬间杀树**——绕开"Run 卡住 → 杀树分支永远执行不到"死锁；杀树后管道写端全关 → Wait 必返回）。Esc 分支（新）："命令已被中断（Esc），进程树已终止"；超时消息加"进程树已终止"。删 shell_process_windows.go 两个 no-op。
+  - **background/kill_pid**（background.go）：进程级注册表 sync.Map（与无状态 agent ADR-026 兼容）；startBackground 用 Go 直接启动（不用 &/nohup/Start-Process）、日志 `<会话>/background/<pid>.log`（惰性建、rename 失败降级临时名、结果显式返回路径）、go cmd.Wait 回收；handleKill 仅注册表内 PID（安全边界）；CleanupBackground 遍历杀全部。**Esc 语义区分**：Esc 只杀前台进程树；background 不绑定回合 ctx（会话级资源，仅 kill_pid/退出清理终止）。
+  - **退出 pre-kill**（用户补充需求）：main.go `run()` defer CleanupBackground（全子命令覆盖）+ TUI RunTUI 在 CloseAll 前 `SaveActiveState` 兜底写回 agentstate。清理顺序：WaitRuns → SaveActiveState → CloseAll → CleanupBackground。
+  - **适配**：schema command 改 omitempty（kill_pid 模式可省）+ Handle 校验二者至少其一；`ApprovalKey` kill 派生 "kill <pid>"（防空 key 放行风险）；`SummaryOf` "shell_command: kill <pid>"；TUI 块头 kill 拼 PID / background 加 "&" 后缀 / 成功结果原文展示（不拼 "exit 0"）；shellLongTaskGuidance 改写为显式 background/kill_pid 引导（"不要用 shell 语法自己放后台——工具不追踪，超时/Esc/退出都无法正确终止"）。plan 模式 kill_pid → classifyPlanShell("")=unknown → Deny（强只读语义正确）。
+- **测试**：Windows 杀树 3 例（job 直测孙进程死 / 超时杀树回归 / Esc 杀树回归，tasklist 断言）+ background 6 例（空参数/未知 PID/立即返回+日志路径/日志轮询/kill 后进程死+二次 kill 未找到/CleanupBackground 全杀）+ Esc 回填语义 + 审批 key/摘要 + TUI 摘要/结果分派；args_test required 锁更新。`go build/vet/test ./...` 全绿，e2e 全过。
+- **踩坑**：① `kill(-0)=kill(0)` 会杀 harness 自身进程组——killProcessTree 必须防御 pid<=0；② Windows 编译期 `syscall.Kill` 不存在——进程存活探测按 build-tag 拆文件；③ 跨平台零值句柄（struct{} vs Handle）不能赋 0——createProcessTree 失败时各平台已返回零值，无需显式降级赋值。
+- **下一步**：阶段 4 剩余（agentsmd：AGENTS.md 注入 + 系统提示词拼接）；阶段 5（子 agent）。
+
 ### 用量 + 压缩审查修复（usage-compact-review-2026-08-12 十二项缺陷）✅
 
 - **背景**：`f2cda04` 起的用量展示/thinking 回传/压缩五个提交经代码审查 + 真实 API 探针复核，报告 12 项缺陷（2 严重 + 3 中等 + 7 低），逐点决策后修复 11 项（11 待实测）。全部结论先在代码复核证实，修复后回归测试锁定。

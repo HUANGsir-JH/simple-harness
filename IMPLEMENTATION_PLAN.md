@@ -6,7 +6,7 @@
 
 参照 OpenAI Codex CLI（`../codex/codex-rs`，Rust）+ AgentScope Java v2 的架构，用 Go 构建一个**可真实使用**的极简 agent harness（命令行）。定位为**通用框架**，未来可被 resume-agent 等其它项目引用。
 
-**现状（2026-08-12）**：阶段 1（骨架+消息+provider+最小 loop）→ 阶段 2（工具系统+并发+渲染+middleware 骨架+REPL）→ 阶段 2.5（Workspace+AgentState+会话落盘/resume）→ 架构重构（ADR-026 无状态 agent+运行时切换）→ todo 工具（ADR-027）→ 工具结果截断/用户中断/shell 缓解（ADR-028）→ **阶段 3 审批（ADR-029）✅** → 配置层独立 + 装配根 → **Plan Mode（ADR-036）✅ 2026-08-11** → **Plan Mode 审查修复 ✅ 2026-08-12**（写黑名单反向判定 + 纯 Deny / AgentState 锁下沉 / TUI 待决请求队列，见 DECISIONS.md ADR-036 修订）→ **用量展示（ADR-037 第一段）✅ 2026-08-12**（provider 捕获 usage + AgentState 累计 + footer `/usage`，版本 0.7.1）→ **thinking 完整回传（ADR-025 修订，ADR-037 第二段）✅ 2026-08-12**（thinking signature 捕获→存储→重放，版本 0.7.2）→ **LLM 摘要压缩（ADR-037 第三段）✅ 2026-08-12**（compact 包 + Segment 钩子 + CompactMiddleware + /compact，版本 0.8.0）。待办：阶段 4 剩余（**AGENTS.md 注入** + 系统提示词拼接）、阶段 5（子 agent）、阶段 6（可选）。
+**现状（2026-08-13）**：阶段 1（骨架+消息+provider+最小 loop）→ 阶段 2（工具系统+并发+渲染+middleware 骨架+REPL）→ 阶段 2.5（Workspace+AgentState+会话落盘/resume）→ 架构重构（ADR-026 无状态 agent+运行时切换）→ todo 工具（ADR-027）→ 工具结果截断/用户中断/shell 缓解（ADR-028）→ **阶段 3 审批（ADR-029）✅** → 配置层独立 + 装配根 → **Plan Mode（ADR-036）✅ 2026-08-11** → **Plan Mode 审查修复 ✅ 2026-08-12**（写黑名单反向判定 + 纯 Deny / AgentState 锁下沉 / TUI 待决请求队列，见 DECISIONS.md ADR-036 修订）→ **用量展示（ADR-037 第一段）✅ 2026-08-12**（provider 捕获 usage + AgentState 累计 + footer `/usage`，版本 0.7.1）→ **thinking 完整回传（ADR-025 修订，ADR-037 第二段）✅ 2026-08-12**（thinking signature 捕获→存储→重放，版本 0.7.2）→ **LLM 摘要压缩（ADR-037 第三段）✅ 2026-08-12**（compact 包 + Segment 钩子 + CompactMiddleware + /compact，版本 0.8.0）→ **用量+压缩审查修复 ✅ 2026-08-13**（signature_delta 捕获 / 压缩后采样上下文 / Usage 覆盖语义等 11 项，版本 0.8.1）→ **shell 进程树生命周期（ADR-038）✅ 2026-08-13**（Job Object 杀树 + background/kill_pid + 退出 pre-kill，版本 0.9.0）。待办：阶段 4 剩余（**AGENTS.md 注入** + 系统提示词拼接）、阶段 5（子 agent）、阶段 6（可选）。
 
 ## 已确认决策（当前生效）
 
@@ -190,6 +190,7 @@ type Tool interface {
 - **阶段 3：审批**（2026-08-09，ADR-029）：approval 包三层设计 + ApprovalMiddleware + DeniedError + 会话级记忆 + config 播种 + `/permission` + channelApprover 协调；e2e 真实 TTY 审批交互。**错误重试非本阶段交付**（429 由 SDK 承担 ADR-012；流中断恢复独立待办）。
 - **配置层独立 + 装配根**（2026-08-09）：配置域从 provider 拆出为 `internal/config`（类型 + 加载 + 解析 + 校验），provider 回归单 wire；`internal/app` 进程级装配根（`App{Config, Provider}` 惰性单例，替代 cmd defaultApp）；`agent.Build(res, mode)` 装配工厂（buildAgent 从 cmd 下沉）；cmd 薄化为 `app.Load() + agent.Build()`。为 subagent 提供不同装配铺路。
 - **Plan Mode（规划模式）**（2026-08-11，ADR-036）：会话级 `PlanMode` 标记 + 4 工具（plan_enter 自主进 / write_plan 写计划文件 / plan_done 弹 HITL 交接 / ask_user 通用提问）+ `Approver` 增 `Ask` 方法（选项单选/多选 + Other 自定义，复用 rc.Approver）+ `Decide` plan 分支（可见但拒绝，不做工具过滤）+ `isPlanReadonlyShell`（plan 模式 shell 放宽管道）+ plan 指令进入点持久化单次注入 + TUI `/plan` 切换 / `/plan view` / 状态栏 `[PLAN]` / ask 弹窗；版本 0.7.0。plan_done 的 Other = 拒绝 + 反馈回填模型修订计划。
+- **shell 进程树生命周期**（2026-08-13，ADR-038）：Windows Job Object（KILL_ON_JOB_CLOSE）杀树 + POSIX 进程组——Esc/超时在 ctx 取消瞬间杀全树（绕开管道句柄继承卡 Wait 死锁）+ 回填"命令已被中断"；`background`/`kill_pid` 参数（Go 直接启动 + 日志重定向 + 进程级注册表 + kill 仅限注册表 PID）；退出 pre-kill（`CleanupBackground` defer + TUI `SaveActiveState` 兜底 + 内核句柄兜底）；审批 key/摘要/TUI 工具块/系统提示适配。版本 0.9.0。
 
 ### ⏳ 待办（未完成）
 

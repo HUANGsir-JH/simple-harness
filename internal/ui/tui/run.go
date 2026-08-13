@@ -37,6 +37,11 @@ func RunTUI(a *agent.Agent, project *session.Project, cfg config.Config, sess *s
 	// SIGTERM（tea.WithContext）→ program.Run 返回，但 run goroutine 可能仍在
 	// emit；先等其退出再关 writer（Bug09 治因），writer closed 兜底（Bug06(a)）。
 	controller.WaitRuns()
+	// 退出前兜底把 active session 的 AgentState 写回（ADR-038 退出 pre-kill：
+	// SessionMiddleware 每回合保存已覆盖正常路径，此处是进程退出时刻的廉价
+	// 保险，在 CloseAll 前执行——flush transcript 与写 state 互不干扰）。
+	// 落盘失败忽略：兜底是保险，正常路径已保存，不阻塞退出流程。
+	_ = controller.SaveActiveState()
 	defer controller.CloseAll()
 	if runErr != nil {
 		if errors.Is(ctx.Err(), context.Canceled) {
