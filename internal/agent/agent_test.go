@@ -145,6 +145,53 @@ func TestRunSingleTurn(t *testing.T) {
 	}
 }
 
+// suffixMiddleware 是测试用 onSystemPrompt 中间件（尾部追加标记，验证正序流水线）。
+type suffixMiddleware struct {
+	middleware.Base
+	text string
+}
+
+func (m suffixMiddleware) OnSystemPrompt(_ context.Context, _ *middleware.RuntimeContext, current string) (string, error) {
+	return current + m.text, nil
+}
+
+// TestRunSystemPromptCompose 验证系统提示组合（ADR-037 修订 2026-08-13）：
+// 起点 = rc.SystemPrompt（调用方 per-call 贡献）经 onSystemPrompt 管道组合
+// （基础提示词由链首 BaseInstructionsMiddleware 注入，agent 不携带提示词文本），
+// 组合结果回写 rc.SystemPrompt（compact 兜底估算读此值）并经
+// provider.Request.Instructions 发送（wire 不变）。
+func TestRunSystemPromptCompose(t *testing.T) {
+	fc := &provider.FakeClient{StreamFn: func(ctx context.Context, req provider.Request) (provider.EventStream, error) {
+		return textStream("ok"), nil
+	}}
+	a := noToolsAgent(fc)
+	a.SetMiddleware(middleware.NewChain(
+		impl.BaseInstructionsMiddleware{Text: impl.DefaultBaseInstructions},
+		suffixMiddleware{text: "SUFFIX"},
+	))
+	rc := rcFor(newConversation())
+	rc.SystemPrompt = "override"
+
+	if err := a.Run(context.Background(), rc, func(events.Event) {}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	want := impl.DefaultBaseInstructions + "\n\n" + "override" + "SUFFIX"
+	if fc.LastReq == nil || fc.LastReq.Instructions != want {
+		t.Errorf("请求系统提示: got %q want %q", fc.LastReq.Instructions, want)
+	}
+	if rc.SystemPrompt != want {
+		t.Errorf("回写: got %q want %q", rc.SystemPrompt, want)
+	}
+	// 空起点：基础提示词由链首中间件注入，组合结果不含空段。
+	rc2 := rcFor(newConversation())
+	if err := a.Run(context.Background(), rc2, func(events.Event) {}); err != nil {
+		t.Fatalf("Run(empty): %v", err)
+	}
+	if rc2.SystemPrompt != impl.DefaultBaseInstructions+"SUFFIX" {
+		t.Errorf("空起点组合: got %q", rc2.SystemPrompt)
+	}
+}
+
 // TestRunToolLoop 验证工具闭环：首轮 tool_call → 执行回填 → 次轮文本 → turn_done。
 func TestRunToolLoop(t *testing.T) {
 	fc := &provider.FakeClient{StreamFn: func(ctx context.Context, req provider.Request) (provider.EventStream, error) {

@@ -16,21 +16,21 @@ import (
 // --- 纯函数 ---------------------------------------------------------------
 
 // TestShouldCompact 验证 85% 阈值判定（ADR-037）：实际 usage（LastContextTokens）
-// 优先；真实值缺省时估算兜底。
+// 优先；真实值缺省时估算兜底。tools 仅兜底分支使用，usage 路径传 nil 不影响。
 func TestShouldCompact(t *testing.T) {
 	opts := Options{ContextWindow: 1_000_000}
 	// 真实 usage 驱动。
 	rc := testRC(overThresholdRC(850_000))
-	if !ShouldCompact(rc, opts) {
+	if !ShouldCompact(rc, nil, opts) {
 		t.Error("850k >= 85%*1M 应触发")
 	}
 	rc = testRC(overThresholdRC(849_999))
-	if ShouldCompact(rc, opts) {
+	if ShouldCompact(rc, nil, opts) {
 		t.Error("849999 < 85%*1M 不应触发")
 	}
 	rc = testRC(overThresholdRC(850_000))
 	opts.ContextWindow = 0
-	if ShouldCompact(rc, opts) {
+	if ShouldCompact(rc, nil, opts) {
 		t.Error("无 context_window 不应触发")
 	}
 }
@@ -43,30 +43,44 @@ func TestShouldCompactEstimateFallback(t *testing.T) {
 	big := strings.Repeat("x", 13_600)
 	rc := middleware.NewRuntimeContext()
 	rc.Messages = &messages.Conversation{Messages: []*messages.Message{{Role: messages.RoleUser, Content: big}}}
-	if !ShouldCompact(rc, opts) {
+	if !ShouldCompact(rc, nil, opts) {
 		t.Error("估算 3400 tokens 应触发（无真实 usage）")
 	}
 	// 小消息不触发。
 	rc.Messages = &messages.Conversation{Messages: []*messages.Message{{Role: messages.RoleUser, Content: "hi"}}}
-	if ShouldCompact(rc, opts) {
+	if ShouldCompact(rc, nil, opts) {
 		t.Error("小上下文不应触发")
 	}
 }
 
-// TestShouldCompactEstimateIncludesFixedOverhead 验证估算兜底计入固定开销
-// （review 04）：系统提示 + 工具 schema 随每次请求发送，SystemPromptTokens
-// 一并计入——否则首轮触发点系统性偏晚（注释曾称"更早触发"，方向相反）。
+// TestShouldCompactEstimateIncludesFixedOverhead 验证估算兜底计入另外两个
+// 请求通道（ADR-037 修订 2026-08-13）：系统提示（rc.SystemPrompt，组合后回写）
+// 与工具 schema（判定时实时传入的 in.Tools）——二者不进 messages，缺失任一项
+// 触发点都会系统性偏晚。
 func TestShouldCompactEstimateIncludesFixedOverhead(t *testing.T) {
-	// 85% * 4000 = 3400；消息估算 2500 tokens（10000 字节）+ 固定开销 1000 = 3500 → 触发。
-	// 无固定开销时 2500 < 3400 不触发——验证该缺口被补齐。
-	msg := strings.Repeat("x", 10_000)
+	// 85% * 4000 = 3400。消息 2000 tokens（8000 字节）+ 系统提示 1000（4000 字节）
+	// + 工具 schema 1000（4000 字节）= 4000 ≥ 3400 → 触发；缺任一固定开销不触发。
+	msg := strings.Repeat("x", 8_000)
+	sys := strings.Repeat("y", 4_000)
+	tools := []provider.ToolSpec{{Name: "t", Description: strings.Repeat("z", 4_000)}}
+
 	rc := middleware.NewRuntimeContext()
 	rc.Messages = &messages.Conversation{Messages: []*messages.Message{{Role: messages.RoleUser, Content: msg}}}
-	if ShouldCompact(rc, Options{ContextWindow: 4_000}) {
-		t.Error("无固定开销时 2500 < 3400 不应触发")
+	rc.SystemPrompt = sys
+
+	// 无 tools：2000 + 1000 = 3000 < 3400 不触发。
+	if ShouldCompact(rc, nil, Options{ContextWindow: 4_000}) {
+		t.Error("缺工具 schema 时 3000 < 3400 不应触发")
 	}
-	if !ShouldCompact(rc, Options{ContextWindow: 4_000, SystemPromptTokens: 1_000}) {
-		t.Error("计入固定开销 3500 >= 3400 应触发")
+	// 无系统提示：2000 + 1000 = 3000 < 3400 不触发。
+	rc.SystemPrompt = ""
+	if ShouldCompact(rc, tools, Options{ContextWindow: 4_000}) {
+		t.Error("缺系统提示时 3000 < 3400 不应触发")
+	}
+	rc.SystemPrompt = sys
+	// 全量：4000 >= 3400 触发。
+	if !ShouldCompact(rc, tools, Options{ContextWindow: 4_000}) {
+		t.Error("计入 系统提示 + 工具 schema 后 4000 >= 3400 应触发")
 	}
 }
 
@@ -191,9 +205,34 @@ func TestSummarizeStreamError(t *testing.T) {
 
 // --- Runner ----------------------------------------------------------------
 
-// TestRunnerRunCompacts 验证全链路：超阈值 → 摘要 → 先 Segment 落盘、后重写
-// conversation 为单一 summary user（review 03 顺序：落盘失败时内存未动）+ 用量
-// 归零（review 06）+ LastContextTokens 清零 + 置标记。
+// TestRunnerShouldCompact 验证判定委托（ADR-037 修订 2026-08-13）：判定在
+// 调用方（CompactMiddleware 持 in.Tools），Runner.ShouldCompact 委托包级判定，
+// 兜底估算三项全量：消息 + 系统提示 + 工具 schema，逐项加入跨越阈值。
+func TestRunnerShouldCompact(t *testing.T) {
+	opts := Options{ContextWindow: 4_000} // 85% = 3400
+	r := NewRunner(NewSummarizer(nil, opts), opts)
+	// 消息 2000 tokens（8000 字节）< 3400 不触发。
+	msg := strings.Repeat("x", 8_000)
+	rc := middleware.NewRuntimeContext()
+	rc.Messages = &messages.Conversation{Messages: []*messages.Message{{Role: messages.RoleUser, Content: msg}}}
+	if r.ShouldCompact(rc, nil) {
+		t.Error("2000 < 3400 不应触发")
+	}
+	// 加工具 schema ~1000 tokens：3000 < 3400 仍不触发。
+	tools := []provider.ToolSpec{{Name: "t", Description: strings.Repeat("z", 4_000)}}
+	if r.ShouldCompact(rc, tools) {
+		t.Error("2000 + 工具 1000 = 3000 < 3400 不应触发")
+	}
+	// 再加系统提示 1000 tokens：4000 >= 3400 触发。
+	rc.SystemPrompt = strings.Repeat("y", 4_000)
+	if !r.ShouldCompact(rc, tools) {
+		t.Error("三项全量 4000 >= 3400 应触发")
+	}
+}
+
+// TestRunnerRunCompacts 验证全链路：Run 无条件压缩 → 摘要 → 先 Segment 落盘、
+// 后重写 conversation 为单一 summary user（review 03 顺序：落盘失败时内存未动）+
+// 用量归零（review 06）+ LastContextTokens 清零 + 置标记。
 func TestRunnerRunCompacts(t *testing.T) {
 	rc := testRC(overThresholdRC(900_000))
 	rc.State.SetUsage(messages.Usage{InputTokens: 900_000})
@@ -211,12 +250,8 @@ func TestRunnerRunCompacts(t *testing.T) {
 		return summaryStream("压缩后的总结"), nil
 	}}
 	r := NewRunner(NewSummarizer(fc, Options{ContextWindow: 1_000_000}), Options{ContextWindow: 1_000_000})
-	done, err := r.Run(context.Background(), rc, false)
-	if err != nil {
+	if err := r.Run(context.Background(), rc); err != nil {
 		t.Fatalf("Run: %v", err)
-	}
-	if !done {
-		t.Fatal("应压缩")
 	}
 	// conversation = 单一 summary user。
 	if len(rc.Messages.Messages) != 1 || rc.Messages.Messages[0].Role != messages.RoleUser ||
@@ -249,7 +284,7 @@ func TestRunnerRunSegmentFailureKeepsMemory(t *testing.T) {
 		return summaryStream("压缩后的总结"), nil
 	}}
 	r := NewRunner(NewSummarizer(fc, Options{ContextWindow: 1_000_000}), Options{ContextWindow: 1_000_000})
-	if _, err := r.Run(context.Background(), rc, false); err == nil {
+	if err := r.Run(context.Background(), rc); err == nil {
 		t.Fatal("Segment 失败应返回错误")
 	}
 	if len(rc.Messages.Messages) != 2 {
@@ -263,91 +298,37 @@ func TestRunnerRunSegmentFailureKeepsMemory(t *testing.T) {
 	}
 }
 
-// TestRunnerRunNotOverThreshold 验证未超阈值：不透传压缩（不重写、不落盘、无标记）。
-func TestRunnerRunNotOverThreshold(t *testing.T) {
-	rc := testRC(overThresholdRC(100))
-	segmentCalls := 0
-	rc.Segment = func(seed []*messages.Message) error { segmentCalls++; return nil }
-	fc := &provider.FakeClient{StreamFn: func(ctx context.Context, req provider.Request) (provider.EventStream, error) {
-		return summaryStream("不应被调用"), nil
-	}}
-	r := NewRunner(NewSummarizer(fc, Options{ContextWindow: 1_000_000}), Options{ContextWindow: 1_000_000})
-	done, err := r.Run(context.Background(), rc, false)
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if done {
-		t.Fatal("未超阈值不应压缩")
-	}
-	if len(rc.Messages.Messages) != 2 {
-		t.Fatal("未压缩不应重写 conversation")
-	}
-	if segmentCalls != 0 {
-		t.Error("未压缩不应切段")
-	}
-	if rc.Get(middleware.CompactedKey) == true {
-		t.Error("未压缩不应置标记")
-	}
-}
-
-// TestRunnerRunForce 验证手动 /compact（force=true）：未超阈值也压缩。
-func TestRunnerRunForce(t *testing.T) {
-	rc := testRC(overThresholdRC(100))
+// TestRunnerRunUnconditional 验证 Run 无条件压缩（ADR-037 修订 2026-08-13）：
+// 判定由调用方决定，低于阈值也压缩——手动 /compact 语义。
+func TestRunnerRunUnconditional(t *testing.T) {
+	rc := testRC(overThresholdRC(100)) // 远低于阈值
 	fc := &provider.FakeClient{StreamFn: func(ctx context.Context, req provider.Request) (provider.EventStream, error) {
 		return summaryStream("强制总结"), nil
 	}}
 	r := NewRunner(NewSummarizer(fc, Options{ContextWindow: 1_000_000}), Options{ContextWindow: 1_000_000})
-	done, err := r.Run(context.Background(), rc, true)
-	if err != nil {
+	if err := r.Run(context.Background(), rc); err != nil {
 		t.Fatalf("Run: %v", err)
-	}
-	if !done {
-		t.Fatal("force 应强制压缩")
 	}
 	if len(rc.Messages.Messages) != 1 {
 		t.Fatalf("conversation 应重写: %d", len(rc.Messages.Messages))
 	}
 }
 
-// TestRunnerRunEmitStart 验证压缩开始通知（ADR-037 扩展）：真实压缩起点
-// （超阈值 / force）经 rc.Emit 发出 EventCompactStart；未超阈值被门控拦截不发。
+// TestRunnerRunEmitStart 验证压缩开始通知（ADR-037 扩展）：Run（无条件压缩）
+// 在 Summarize 前经 rc.Emit 发出 EventCompactStart。
 func TestRunnerRunEmitStart(t *testing.T) {
 	fc := &provider.FakeClient{StreamFn: func(ctx context.Context, req provider.Request) (provider.EventStream, error) {
 		return summaryStream("压缩后的总结"), nil
 	}}
 	r := NewRunner(NewSummarizer(fc, Options{ContextWindow: 1_000_000}), Options{ContextWindow: 1_000_000})
-
-	// 超阈值：Summarize 前发出 1 次 start。
 	rc := testRC(overThresholdRC(900_000))
 	got := []events.EventType{}
 	rc.Emit = func(e events.Event) { got = append(got, e.Type) }
-	if _, err := r.Run(context.Background(), rc, false); err != nil {
+	if err := r.Run(context.Background(), rc); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if len(got) != 1 || got[0] != events.EventCompactStart {
-		t.Errorf("超阈值应 emit 1 次 EventCompactStart: %v", got)
-	}
-
-	// 未超阈值：门控拦截，不发 start。
-	rc2 := testRC(overThresholdRC(100))
-	got2 := []events.EventType{}
-	rc2.Emit = func(e events.Event) { got2 = append(got2, e.Type) }
-	if _, err := r.Run(context.Background(), rc2, false); err != nil {
-		t.Fatalf("Run (under threshold): %v", err)
-	}
-	if len(got2) != 0 {
-		t.Errorf("未超阈值不应 emit start: %v", got2)
-	}
-
-	// force=true：未超阈值也压缩并发出 start（手动 /compact 同出口）。
-	rc3 := testRC(overThresholdRC(100))
-	got3 := []events.EventType{}
-	rc3.Emit = func(e events.Event) { got3 = append(got3, e.Type) }
-	if _, err := r.Run(context.Background(), rc3, true); err != nil {
-		t.Fatalf("Run (force): %v", err)
-	}
-	if len(got3) != 1 || got3[0] != events.EventCompactStart {
-		t.Errorf("force 应 emit 1 次 EventCompactStart: %v", got3)
+		t.Errorf("应 emit 1 次 EventCompactStart: %v", got)
 	}
 }
 
@@ -362,7 +343,7 @@ func TestRunnerRunFailureKeepsHistory(t *testing.T) {
 		return nil, errors.New("summarize boom")
 	}}
 	r := NewRunner(NewSummarizer(fc, Options{ContextWindow: 1_000_000}), Options{ContextWindow: 1_000_000})
-	if _, err := r.Run(context.Background(), rc, false); err == nil {
+	if err := r.Run(context.Background(), rc); err == nil {
 		t.Fatal("摘要失败应返回错误")
 	}
 	if len(rc.Messages.Messages) != before {
@@ -387,7 +368,7 @@ func TestRunnerRunCancelKeepsHistory(t *testing.T) {
 		return nil, ctx.Err()
 	}}
 	r := NewRunner(NewSummarizer(fc, Options{ContextWindow: 1_000_000}), Options{ContextWindow: 1_000_000})
-	if _, err := r.Run(ctx, rc, false); err == nil {
+	if err := r.Run(ctx, rc); err == nil {
 		t.Fatal("取消应返回错误")
 	}
 	if len(rc.Messages.Messages) != before {

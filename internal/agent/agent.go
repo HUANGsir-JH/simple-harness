@@ -23,12 +23,13 @@ import (
 
 // Agent 驱动一个 conversation 的完整 ReAct loop。仅持有不可变配置；
 // per-call 状态在 *middleware.RuntimeContext 与 conversation 中。
+// 系统提示不挂在 agent（ADR-037 修订 2026-08-13）：基础提示词由标准链的
+// BaseInstructionsMiddleware 提供，调用方 per-call 贡献经 rc.SystemPrompt。
 type Agent struct {
-	client       provider.Client
-	model        string
-	instructions string
-	tools        *tools.Registry
-	mw           *middleware.Chain
+	client provider.Client
+	model  string
+	tools  *tools.Registry
+	mw     *middleware.Chain
 	// compactor 是上下文压缩执行器（ADR-037）：装配时挂载（Build），
 	// CompactMiddleware 自动触发（onReasoning）+ Controller 手动 /compact 复用。
 	compactor *compact.Runner
@@ -37,11 +38,10 @@ type Agent struct {
 // New 创建绑定到 provider 客户端与模型的 Agent。
 func New(client provider.Client, model string) *Agent {
 	return &Agent{
-		client:       client,
-		model:        model,
-		instructions: "You are a helpful coding agent.",
-		tools:        tools.NewRegistry(),
-		mw:           middleware.NewChain(),
+		client: client,
+		model:  model,
+		tools:  tools.NewRegistry(),
+		mw:     middleware.NewChain(),
 	}
 }
 
@@ -64,9 +64,6 @@ func (a *Agent) SetCompactor(r *compact.Runner) { a.compactor = r }
 
 // Compactor 返回上下文压缩执行器（nil = 未装配；手动 /compact 用）。
 func (a *Agent) Compactor() *compact.Runner { return a.compactor }
-
-// SetInstructions 设置基础系统提示（阶段四 AGENTS.md 等动态拼接替换）。
-func (a *Agent) SetInstructions(s string) { a.instructions = s }
 
 // Run 跑一个完整回合：多轮 采样 → 工具执行 → 回填，直到模型不再请求工具。
 // 消息序列从 rc.Messages 读取并在其上追加（assistant/tool_result）——agent 完全
@@ -92,10 +89,14 @@ func (a *Agent) Run(ctx context.Context, rc *middleware.RuntimeContext, onEvent 
 	wrapped := a.mw.WrapAgent(func(ctx context.Context, rc *middleware.RuntimeContext, _ middleware.AgentInput) error {
 		emit(events.Event{Type: events.EventTurnStart})
 
-		sysPrompt, err := a.mw.ComposeSystemPrompt(ctx, rc, a.instructions)
+		sysPrompt, err := a.mw.ComposeSystemPrompt(ctx, rc)
 		if err != nil {
 			return fmt.Errorf("agent: compose system prompt: %w", err)
 		}
+		// 回写组合结果（rc.SystemPrompt = 本次运行的完整系统提示）：compact 兜底
+		// 估算（判定时实时）读此值；base 由链首 BaseInstructionsMiddleware 提供，
+		// 调用方 per-call 贡献在组合前由 rc.SystemPrompt 传入（ADR-037 修订）。
+		rc.SystemPrompt = sysPrompt
 
 		var result sampleResult
 		reasoning := a.mw.WrapReasoning(func(ctx context.Context, rc *middleware.RuntimeContext, in middleware.ReasoningInput) error {

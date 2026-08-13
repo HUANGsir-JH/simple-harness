@@ -197,6 +197,23 @@
 | S5 | 全量验证 + e2e + 真实场景手动验证 + 提交 | ✅ 2026-08-13 |
 | S6 | **超时转后台扩展**（ADR-038 勘误）：前台超时不杀树、自动转后台托管（文件输出 + select 三路 + tree 移交注册表）+ 测试语义反转 + 真实 python 服务验证 | ✅ 2026-08-13 |
 
+## 阶段 系统提示通道重构（ADR-039）✅
+
+- **目标**：消除两个痛点——Agent.instructions 与无状态架构的张力、Build 装配期兜底 token 估算注入（固定值阶段四会失效）。落地内容通道分类原则（对话历史=Messages / 稳定配置=系统提示管道 / 工具定义=toolspec / 即时信号=临时消息副本，对齐 codex/opencode）。
+- **成功标准**：agent 不含提示词文本（rc.SystemPrompt 承载）；Build 无兜底注入；压缩判定时实时三项估算（messages+system+tools）；Runner 纯执行器 `Run(ctx, rc) error`；全量测试 + e2e 绿。
+- **状态**：✅ 已完成（2026-08-13，ADR-039）
+- **说明**：决策逐点经用户拍板（通道分类原则 / base 中间件化 / 判定挪 CompactMiddleware + 去 force / toolspec 保留独立字段——实测 7.3KB ≈ 1.8K token）。
+
+### 任务单元
+
+| # | 单元 | 状态 |
+|---|---|---|
+| T1 | rc.SystemPrompt 字段 + ComposeSystemPrompt 去 base 参数（起点 = rc.SystemPrompt）+ BaseInstructionsMiddleware（DefaultBaseInstructions）| ✅ 2026-08-13 |
+| T2 | agent 删 instructions/SetInstructions + Run 组合回写 rc.SystemPrompt；build.go 删兜底块 + 链首注册 base | ✅ 2026-08-13 |
+| T3 | compact：删 Options.SystemPromptTokens/SetSystemPromptTokens + EstimateSystemPrompt/EstimateTools + ShouldCompact(rc, tools) + Runner.Run error 化 + Runner.ShouldCompact | ✅ 2026-08-13 |
+| T4 | CompactMiddleware 判定（in.Tools）+ Controller.RunCompact 手动路径适配 | ✅ 2026-08-13 |
+| T5 | 测试改写（compact/chain/session）+ 新增（base_instructions/TestRunSystemPromptCompose 回归锚点/TestRunnerShouldCompact）+ 文档 + 全量验证 | ✅ 2026-08-13 |
+
 ## 阶段 6（TUI 后后续可选）：摘要式压缩 / grep 工具 / 双向通信
 
 - **状态**：未开始（TUI 已提前为独立阶段；本阶段为压缩/grep/双向通信剩余项）

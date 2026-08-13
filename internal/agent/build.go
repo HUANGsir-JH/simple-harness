@@ -1,8 +1,6 @@
 package agent
 
 import (
-	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/agent-project/harness/internal/compact"
@@ -34,14 +32,18 @@ func Build(res *config.ProviderConfig, defaultMode string) (*Agent, error) {
 			return nil, err
 		}
 	}
-	// 工具说明注入系统提示（onSystemPrompt middleware；阶段四 AGENTS.md 等在此
-	// 追加）。SessionMiddleware 无状态，从 rc.StatePath 读写 AgentState。
+	// 系统提示组合（内容通道分类原则，ADR-037 修订）：BaseInstructions 在链首
+	// 注入基础提示词（调用方 per-call 贡献经 rc.SystemPrompt，见 agent.Run），
+	// ToolInstructions 追加工具说明（阶段四 AGENTS.md 等在此追加）。两者仅挂
+	// onSystemPrompt，不参与洋葱 hook，不影响下列洋葱顺序逻辑。
+	// SessionMiddleware 无状态，从 rc.StatePath 读写 AgentState。
 	// CompactMiddleware 上下文压缩（onReasoning before，ADR-037）：每轮采样前
-	// 检查 85% 阈值（实际 usage 驱动 + 估算兜底），超则 LLM 摘要压缩。注册在
-	// TodoReminder 之前（onion 外层）——压缩是 conversation 级变换、提醒是请求
-	// 级装饰，外层先压缩重写 in.Messages，内层 TodoReminder 的临时提醒注入才
-	// 不会被覆盖丢弃；同时仍在 UsageMiddleware 之前，保证压缩的 before 先于
-	// 采样、用量的 after 后于采样。
+	// 检查 85% 阈值（实际 usage 驱动 + 估算兜底——兜底由 CompactMiddleware 判定时
+	// 用 rc.SystemPrompt（组合后）+ in.Tools 实时估算，不再装配期注入），超则
+	// LLM 摘要压缩。注册在 TodoReminder 之前（onion 外层）——压缩是 conversation
+	// 级变换、提醒是请求级装饰，外层先压缩重写 in.Messages，内层 TodoReminder
+	// 的临时提醒注入才不会被覆盖丢弃；同时仍在 UsageMiddleware 之前，保证压缩
+	// 的 before 先于采样、用量的 after 后于采样。
 	// TodoReminderMiddleware 在模型连续多轮不更新 todo 时注入偏离提醒。
 	// UsageMiddleware 记录每轮采样 token 用量进 AgentState（ADR-037 用量展示：
 	// /usage 最近一次调用用量 + LastContextTokens 供 footer 与压缩触发）。
@@ -56,6 +58,7 @@ func Build(res *config.ProviderConfig, defaultMode string) (*Agent, error) {
 	}
 	compactor := compact.NewRunner(compact.NewSummarizer(client, opts), opts)
 	mw := middleware.NewChain(
+		impl.BaseInstructionsMiddleware{Text: impl.DefaultBaseInstructions},
 		impl.ToolInstructionsMiddleware{Tools: reg.Specs()},
 		impl.SessionMiddleware{},
 		impl.CompactMiddleware{Runner: compactor},
@@ -69,19 +72,5 @@ func Build(res *config.ProviderConfig, defaultMode string) (*Agent, error) {
 	a.SetTools(reg)
 	a.SetMiddleware(mw)
 	a.SetCompactor(compactor)
-	// 估算兜底固定开销（review 04）：系统提示 + 工具 schema 随每次请求发送，
-	// EstimateTokens 只覆盖 conversation，此处估算一并计入（bytes/4），使
-	// LastContextTokens 未捕获时（首轮/压缩后首轮）的触发判定更接近真实占用。
-	// ComposeSystemPrompt 在装配期安全：onSystemPrompt 中间件不依赖 rc。
-	sys, err := mw.ComposeSystemPrompt(context.Background(), nil, a.instructions)
-	if err != nil {
-		return nil, fmt.Errorf("compose system prompt: %w", err)
-	}
-	var sysTokens int64
-	if b, err := json.Marshal(reg.Specs()); err == nil {
-		sysTokens = int64(len(b) / 4)
-	}
-	sysTokens += int64(len(sys) / 4)
-	compactor.SetSystemPromptTokens(sysTokens)
 	return a, nil
 }

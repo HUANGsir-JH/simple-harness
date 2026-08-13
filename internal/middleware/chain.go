@@ -230,9 +230,14 @@ func (c *Chain) WrapModelCall(core ModelCallHandler) ModelCallHandler {
 //
 //	cur = m1(cur); cur = m2(cur); ...
 //
-// 注册在前的中间件先生效（离 base 提示词更近）。
-func (c *Chain) ComposeSystemPrompt(ctx context.Context, rc *RuntimeContext, base string) (string, error) {
-	cur := base
+// 起点 = rc.SystemPrompt（调用方 per-call 贡献，可为空；基础提示词由链首
+// BaseInstructionsMiddleware 注入，agent 不携带任何提示词文本）；注册在前的
+// 中间件先生效。
+func (c *Chain) ComposeSystemPrompt(ctx context.Context, rc *RuntimeContext) (string, error) {
+	cur := ""
+	if rc != nil {
+		cur = rc.SystemPrompt
+	}
 	for _, m := range c.middlewares {
 		var err error
 		cur, err = m.OnSystemPrompt(ctx, rc, cur)

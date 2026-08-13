@@ -22,6 +22,13 @@ type RuntimeContext struct {
 	// agent.Run 在此读写消息（追加 assistant / tool_result）。
 	Messages *messages.Conversation
 
+	// SystemPrompt 是本次运行的调用方系统提示贡献（可空；subagent 等 per-call
+	// 覆盖用）。agent.Run 经 onSystemPrompt 管道组合后回写为完整系统提示——
+	// compact 兜底估算（判定时实时）读此值。内容通道分类：对话历史 = Messages、
+	// 稳定配置 = 系统提示（onSystemPrompt 管道，基础提示词 = 链首中间件）、
+	// 工具定义 = toolspec 独立字段（ADR-037 修订，2026-08-13）。
+	SystemPrompt string
+
 	// State 是当前会话的 AgentState（注入机制 ADR-025）：
 	// impl.SessionMiddleware 挂 onAgent，before 加载、after 保存；
 	// 工具经 Handle 的 rc 参数读写（如 todo 挂 rc.State.Todos）。

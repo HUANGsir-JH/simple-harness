@@ -42,6 +42,16 @@
 
 ## 2026-08-13
 
+### 系统提示通道重构（ADR-039）✅
+
+- **背景**：用户从 simple-harness 的 `Agent.instructions` + Build 兜底 token 计算出发，探讨"为什么不把系统提示塞进 rc.Messages"。调研 codex（`instructions` 顶层字段，与 input items 分离）/opencode（`system: string[]` 与 `messages` 平行，wire 层按 provider 合并、压缩时 `system: []`）后定案：维持分离，但落一条**内容通道分类原则**——对话历史 = Messages；稳定配置 = 系统提示（onSystemPrompt 管道）；结构化工具定义 = toolspec 独立字段（schema 参数 function calling 必需，实测 7.3KB ≈ 1.8K token）；即时信号 = 临时消息副本（TodoReminder 先例）。
+- **交付**：
+  - **rc.SystemPrompt**：`Agent.instructions`/`SetInstructions` 删除——agent 不含提示词文本；rc.SystemPrompt = 调用方 per-call 贡献（可空），agent.Run 经 `ComposeSystemPrompt(ctx, rc)`（去 base 参数，起点 = rc.SystemPrompt）组合后**回写完整结果**（compact 兜底估算读此值）。
+  - **base 中间件化**：`impl.BaseInstructionsMiddleware{Text}` + `DefaultBaseInstructions`——标准链第一个 onSystemPrompt 中间件，空起点由链首注入；subagent = 换链换 Text。
+  - **压缩判定实时化**：删 `Options.SystemPromptTokens`/`SetSystemPromptTokens`（Build 兜底块整体删除）；兜底 = 判定时实时三项 `EstimateTokens(messages)` + `EstimateSystemPrompt(rc.SystemPrompt)` + `EstimateTools(in.Tools)`；判定挪到 CompactMiddleware（`Runner.ShouldCompact(rc, in.Tools)`——同时持有 rc 与 Tools 的唯一位置）；**Runner 纯执行器** `Run(ctx, rc) error`（去 force/bool，手动 /compact 语义不变）。
+- **测试**：compact 判定三通道逐项跨越阈值（TestShouldCompactEstimateIncludesFixedOverhead 改写 + TestRunnerShouldCompact 新增）；Runner 无条件压缩/失败保历史/取消保历史/EmitStart；删 TestRunnerRunNotOverThreshold（门控移出）；agent 回归锚点 TestRunSystemPromptCompose（base 前置 + 覆盖拼接 + 回写）；base_instructions 表驱动；chain/session 测试适配。全量 `go build/test ./...` + e2e 全绿。
+- **下一步**：阶段 4 剩余 `agentsmd`（AGENTS.md 注入——挂 onSystemPrompt 管道，通道分类原则已定归位）；阶段 5（子 agent——换链换 BaseInstructions.Text）。
+
 ### shell 超时转后台托管（ADR-038 勘误扩展）✅ 版本 0.9.1
 
 - **背景**：0.9.0 中前台命令超时与 Esc 都杀树。用户讨论后拍板：**超时不杀树，自动转后台托管**——起服务（长活）与长构建（>timeout 但会完成）场景下杀树前功尽弃；转后台后模型轮询日志拿结果，kill_pid/退出清理/KILL_ON_JOB_CLOSE 全部自然生效。Esc 语义不变（用户主动说"停"→杀树）。此为超出 opencode/codex 的自创语义。

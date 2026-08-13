@@ -23,10 +23,6 @@ type Options struct {
 	ContextWindow   int64  // 模型 context_window（token；0 = 无法判定阈值 → 不触发）
 	Model           string // 摘要请求模型（正常采样同款；空 = client 默认）
 	MaxOutputTokens int    // 摘要请求最大输出（codex 方式 4096；0 = 用 summaryOutputTokens）
-	// SystemPromptTokens 是估算兜底的固定开销：系统提示 + 工具 schema 随每次
-	// 请求发送（数 KB），EstimateTokens 只覆盖 conversation（review 04 低估修正）。
-	// agent.Build 装配时估算传入（bytes/4）；0 = 不计（仅测试/无装配场景）。
-	SystemPromptTokens int64
 }
 
 // summaryTemplate 是 opencode 的锚定摘要模板（Objective / Important Details /
@@ -75,17 +71,22 @@ func BuildSummaryPrompt() string {
 
 // contextSize 返回当前上下文占用（token）：实际 usage（LastContextTokens =
 // 最近一次请求的完整占用，单轮 input+cache+output，ADR-037 勘误）优先；
-// 未捕获（0）时用估算兜底（EstimateTokens 镜像实际发送，含 thinking 回传 +
-// 系统提示/工具 schema 固定开销）。
+// 未捕获（0）时用估算兜底（判定时实时，镜像实际发送的三通道，ADR-037 修订）：
+// conversation（EstimateTokens）+ 系统提示（组合后的 rc.SystemPrompt）+
+// 工具 schema（本轮采样将发送的 in.Tools）。tools 仅兜底分支使用。
 //
 // 触发滞后说明（review 05，接受设计）：usage 驱动读的是**上一轮**请求的
 // usage，回合间新用户消息与上一轮工具结果不在其中——滞后最多一轮；单轮增长
 // 受 ToolOutput 20K 截断约束，越过 85% 的幅度有界。
-func contextSize(rc *middleware.RuntimeContext, opts Options) int64 {
+func contextSize(rc *middleware.RuntimeContext, tools []provider.ToolSpec) int64 {
 	if rc != nil && rc.State != nil && rc.State.CurrentContextTokens() > 0 {
 		return rc.State.CurrentContextTokens()
 	}
-	return int64(EstimateTokens(messagesOf(rc))) + opts.SystemPromptTokens
+	sys := ""
+	if rc != nil {
+		sys = rc.SystemPrompt
+	}
+	return int64(EstimateTokens(messagesOf(rc))) + EstimateSystemPrompt(sys) + EstimateTools(tools)
 }
 
 func messagesOf(rc *middleware.RuntimeContext) []*messages.Message {
@@ -96,11 +97,13 @@ func messagesOf(rc *middleware.RuntimeContext) []*messages.Message {
 }
 
 // ShouldCompact 判断当前上下文是否超过压缩阈值（85% · ContextWindow）。
-func ShouldCompact(rc *middleware.RuntimeContext, opts Options) bool {
+// tools 是下一轮采样将发送的工具 schema（仅估算兜底分支使用；usage 优先
+// 路径不碰它——API 返回的 input/cache 已含 system+tools+messages 全量）。
+func ShouldCompact(rc *middleware.RuntimeContext, tools []provider.ToolSpec, opts Options) bool {
 	if opts.ContextWindow <= 0 {
 		return false
 	}
-	return contextSize(rc, opts) >= int64(float64(opts.ContextWindow)*ThresholdPercent/100)
+	return contextSize(rc, tools) >= int64(float64(opts.ContextWindow)*ThresholdPercent/100)
 }
 
 // Summarizer 生成压缩摘要：复用 provider.Client 单独采样（codex 方式，ADR-037）——
@@ -183,43 +186,42 @@ func NewRunner(summarizer *Summarizer, opts Options) *Runner {
 	return &Runner{summarizer: summarizer, opts: opts}
 }
 
-// SetSystemPromptTokens 设置估算兜底的固定开销（系统提示 + 工具 schema，
-// bytes/4）。仅装配期调用（agent.Build 装配链后估算传入）；运行期只读、
-// 共享 Runner 并发安全的前提是装配完成后不再写。
-func (r *Runner) SetSystemPromptTokens(n int64) {
+// ShouldCompact 判定当前上下文是否超阈值（85% · ContextWindow）。
+// tools 是下一轮采样将发送的工具 schema（仅估算兜底分支使用）——
+// 由 CompactMiddleware（onReasoning）持 ReasoningInput.Tools 传入；
+// 手动 /compact 不判定（直接 Run），无需 tools。
+func (r *Runner) ShouldCompact(rc *middleware.RuntimeContext, tools []provider.ToolSpec) bool {
 	if r == nil {
-		return
+		return false
 	}
-	r.opts.SystemPromptTokens = n
+	return ShouldCompact(rc, tools, r.opts)
 }
 
-// Run 执行一次压缩：force=false 时先 ShouldCompact（85% 阈值，超才压）；
-// force=true 强制（手动 /compact）。成功返回 true；未超限返回 false, nil。
-// 摘要失败/取消返回错误（调用方终止 Run，ADR-037）；**失败绝不重写 conversation**
-// （不丢历史，下轮可再触发或手动 /compact）。Esc 中断 = ctx 错误原样传播。
-func (r *Runner) Run(ctx context.Context, rc *middleware.RuntimeContext, force bool) (bool, error) {
+// Run 执行一次压缩（无条件——判定由调用方决定：CompactMiddleware 先
+// ShouldCompact 再 Run，手动 /compact 直接 Run，ADR-037 修订 2026-08-13）。
+// 成功返回 nil；摘要失败/取消返回错误（调用方终止 Run）；**失败绝不重写
+// conversation**（不丢历史，下轮可再触发或手动 /compact）。Esc 中断 = ctx
+// 错误原样传播。
+func (r *Runner) Run(ctx context.Context, rc *middleware.RuntimeContext) error {
 	if r == nil || r.summarizer == nil {
-		return false, nil
-	}
-	if !force && !ShouldCompact(rc, r.opts) {
-		return false, nil
+		return nil
 	}
 	if rc == nil || rc.Messages == nil {
-		return false, fmt.Errorf("compact: 无会话上下文")
+		return fmt.Errorf("compact: 无会话上下文")
 	}
 
 	// 压缩开始通知（ADR-037 扩展）：Summarize 阻塞调用前经 rc.Emit 发出
-	// （自动/手动共用此起点；未超阈值已被上面门控拦截，不会误报 start）。
+	// （自动/手动共用此起点；判定已由调用方完成，不会误报 start）。
 	if rc.Emit != nil {
 		rc.Emit(events.Event{Type: events.EventCompactStart})
 	}
 
 	summary, err := r.summarizer.Summarize(ctx, rc)
 	if err != nil {
-		return false, fmt.Errorf("上下文压缩失败: %w", err)
+		return fmt.Errorf("上下文压缩失败: %w", err)
 	}
 	if strings.TrimSpace(summary) == "" {
-		return false, fmt.Errorf("上下文压缩失败: 摘要为空")
+		return fmt.Errorf("上下文压缩失败: 摘要为空")
 	}
 
 	// 重写 conversation = 单一 summary user 消息（纯占位，ADR-037）。"保留最新
@@ -231,7 +233,7 @@ func (r *Runner) Run(ctx context.Context, rc *middleware.RuntimeContext, force b
 	// 的内存操作，顺序安全。
 	if rc.Segment != nil {
 		if err := rc.Segment([]*messages.Message{summaryMsg}); err != nil {
-			return false, fmt.Errorf("上下文压缩落盘失败: %w", err)
+			return fmt.Errorf("上下文压缩落盘失败: %w", err)
 		}
 	}
 	rc.Messages.Messages = []*messages.Message{summaryMsg}
@@ -240,5 +242,5 @@ func (r *Runner) Run(ctx context.Context, rc *middleware.RuntimeContext, force b
 		rc.State.SetUsage(messages.Usage{}) // 压缩后用量归零（/usage 与 footer 对称），下轮采样覆盖恢复
 	}
 	rc.Set(middleware.CompactedKey, true)
-	return true, nil
+	return nil
 }

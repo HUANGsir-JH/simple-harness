@@ -268,8 +268,8 @@ func TestCompactSegmentResume(t *testing.T) {
 		}), nil
 	}}
 	r := compact.NewRunner(compact.NewSummarizer(fc, compact.Options{ContextWindow: 1_000_000}), compact.Options{ContextWindow: 1_000_000})
-	if done, err := r.Run(context.Background(), rc, false); err != nil || !done {
-		t.Fatalf("compact Run: done=%v err=%v", done, err)
+	if err := r.Run(context.Background(), rc); err != nil {
+		t.Fatalf("compact Run: %v", err)
 	}
 	// AgentState 落盘（真实流程：自动压缩由 SessionMiddleware onAgent after 落盘、
 	// 手动 /compact 由 Controller.RunCompact 显式落盘；这里模拟）。

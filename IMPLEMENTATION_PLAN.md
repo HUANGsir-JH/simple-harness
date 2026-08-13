@@ -150,7 +150,7 @@ type Tool interface {
 
 ### 7. 上下文压缩（internal/compact/）✅ 2026-08-12（ADR-037 第三段）
 
-- **实现 = LLM 摘要式**（不做 v1 TokenBudget）：`EstimateTokens`（bytes/4 含 thinking，镜像实际发送，估算兜底）+ `ShouldCompact`（contextSize >= 85%·ContextWindow 硬编码；实际 usage（LastContextTokens）驱动 + 估算兜底）+ `Summarizer`（codex 方式：完整 conversation + 摘要 prompt 尾 user，无工具，max_tokens 4096；opencode 结构化模板 + previous summary 更新式）+ `Runner.Run(ctx, rc, force)`。
+- **实现 = LLM 摘要式**（不做 v1 TokenBudget）：`EstimateTokens`（bytes/4 含 thinking，镜像实际发送，估算兜底）+ `ShouldCompact`（contextSize >= 85%·ContextWindow 硬编码；实际 usage（LastContextTokens）驱动 + 估算兜底）+ `Summarizer`（codex 方式：完整 conversation + 摘要 prompt 尾 user，无工具，max_tokens 4096；opencode 结构化模板 + previous summary 更新式）+ `Runner.Run(ctx, rc)`（纯执行器——判定由调用方 CompactMiddleware 先 `ShouldCompact(rc, in.Tools)`；ADR-039 修订 2026-08-13：兜底 = 判定时实时三项 messages+系统提示+工具 schema，去 force/bool）。
 - 触发：onReasoning **before**（CompactMiddleware，每轮采样前）+ 手动 `/compact`（Controller.RunCompact）。
 - 压缩后：conversation = **单一 summary user 消息（纯占位）**；`RuntimeContext.Segment` 钩子切新文件（`NewSegment` + seed + Flush），resume 从新段重建；`AgentState.Summary` + `SetLastContextTokens(0)` 防重入。
 - 摘要失败/Esc：**跳过 + 终止 run**，绝不重写 conversation。
@@ -198,6 +198,7 @@ type Tool interface {
   - **用量展示 ✅ 2026-08-12（ADR-037 第一段）**：provider 捕获 usage → `messages.Usage` → agent `EventUsage` → AgentState `Usage`/`LastContextTokens` → TUI footer `ctx Nk/Mk` + `/usage`。版本 0.7.1。
   - **thinking 完整回传 ✅ 2026-08-12（ADR-025 修订，ADR-037 第二段）**：捕获 thinking signature → `Message.ThinkingSignature` + transcript Line.Signature → `toAnthropicAssistantMessage` 重放 `ThinkingBlockParam`（仅签名非空）；thinking-only assistant 带签名不再跳过；估算镜像 `compact.EstimateTokens` 含 thinking。DeepSeek 实测通过。版本 0.7.2。
   - **LLM 摘要压缩 ✅ 2026-08-12（ADR-037 第三段）**：`internal/compact`（ShouldCompact 85% 硬编码 + Summarizer codex 方式 + Runner.Run）；`RuntimeContext.Segment` 钩子（NewSegment + seed + Flush）；`impl.CompactMiddleware`（onReasoning before，摘要失败终止 run，Esc 同）；`events.EventCompacted` + `/compact` 手动（Controller.RunCompact 成功显式落盘 AgentState）。版本 0.8.0。
+  - **系统提示通道重构 ✅ 2026-08-13（ADR-039）**：内容通道分类原则（对话历史=Messages / 稳定配置=系统提示管道 / 工具定义=toolspec / 即时信号=临时副本，对齐 codex/opencode）；`rc.SystemPrompt`（组合后回写）+ base 中间件化（`BaseInstructionsMiddleware` 链首）+ Build 兜底估算删除 + 压缩判定实时三项估算（CompactMiddleware 持 in.Tools）+ Runner 纯执行器。
   - `agentsmd`（onSystemPrompt：项目级 AGENTS.md 向上搜索 + 全局拼接 + 动态系统提示词组装）
   - 注：大工具结果 eviction 已完成（ADR-028），不属于本阶段。
 - **阶段 5：子 agent（内置 + 并行 + 状态 + 单向通信）**

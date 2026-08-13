@@ -74,15 +74,27 @@ func (m appendMiddleware) OnSystemPrompt(_ context.Context, _ *RuntimeContext, c
 	return current + m.text, nil
 }
 
-// TestChainComposeSystemPrompt 验证 transformer pipeline 从左到右。
+// TestChainComposeSystemPrompt 验证 transformer pipeline 从左到右；
+// 起点 = rc.SystemPrompt（调用方 per-call 贡献，可为空；基础提示词由链首
+// 中间件注入，ADR-037 修订 2026-08-13）。
 func TestChainComposeSystemPrompt(t *testing.T) {
 	c := NewChain(appendMiddleware{text: "A"}, appendMiddleware{text: "B"})
-	got, err := c.ComposeSystemPrompt(context.Background(), NewRuntimeContext(), "base")
+	rc := NewRuntimeContext()
+	rc.SystemPrompt = "override"
+	got, err := c.ComposeSystemPrompt(context.Background(), rc)
 	if err != nil {
 		t.Fatalf("compose: %v", err)
 	}
-	if got != "baseAB" {
-		t.Errorf("prompt: got %q want baseAB", got)
+	if got != "overrideAB" {
+		t.Errorf("prompt: got %q want overrideAB", got)
+	}
+	// 空起点：调用方无贡献，流水线从空串开始。
+	got, err = c.ComposeSystemPrompt(context.Background(), NewRuntimeContext())
+	if err != nil {
+		t.Fatalf("compose(empty): %v", err)
+	}
+	if got != "AB" {
+		t.Errorf("prompt(empty): got %q want AB", got)
 	}
 }
 

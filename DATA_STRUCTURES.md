@@ -512,6 +512,7 @@ classDiagram
     class RuntimeContext {
         +string SessionID
         +*Conversation Messages
+        +string SystemPrompt
         +*AgentState State
         +string StatePath
         +string Model
@@ -523,7 +524,7 @@ classDiagram
         -[]Middleware middlewares
         +Add(m)
         +WrapAgent / WrapReasoning / WrapToolCall / WrapActing / WrapModelCall
-        +ComposeSystemPrompt(base)
+        +ComposeSystemPrompt()
     }
     class SessionMiddleware {
         +OnAgent(rc)

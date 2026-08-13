@@ -411,3 +411,14 @@
 - **修订**：前台命令超时语义从"杀树"改为**自动转后台托管**（原决策第 2 点）。用户讨论后拍板：起服务（长活）与长构建（>timeout 但会完成）场景下杀树前功尽弃——超时后进程继续跑、输出无缝续写日志文件、进程树句柄移交注册表、返回"已自动转入后台：PID+日志路径（不要重试——它仍在运行）"；模型轮询日志、kill_pid 终止。**Esc 语义不变**（用户主动说"停"→杀树+回填"已中断"）。
 - **实现要点**：前台输出从内存 buffer 改为写临时日志文件（`.fg_<nano>.log`，转后台时 rename `<pid>.log`——无缝续写无撕裂）；AfterFunc 杀树回调加 `ctx.Err() == context.Canceled` 判断（只 Esc 杀，超时不杀）；Wait 拆到 goroutine（`go func() { err := cmd.Wait(); f.Close(); done <- err }()`——转后台后进程长活时 f 由该 goroutine 在进程死后收尾），Handle 用 select 三路：完成 / Esc（杀树后等 done + 5s 安全网）/ 超时（transferToBackground：rename + 注册表 + tree 置零跳过 defer close）。竞态无害：超时瞬间进程恰好完成 → 注册已死进程（杀空 job 无副作用）；完成瞬间恰逢 Esc → 报中断语义。
 - **边界**：僵尸积累（模型反复跑卡死命令）由退出清理 + 提示词引导 kill_pid 缓解；此语义超出 opencode/codex 参考源（两者超时都杀），为用户自创决策。
+
+## ADR-039：系统提示通道重构——内容通道分类原则 + rc.SystemPrompt + base 中间件化 + 压缩判定实时化（2026-08-13）
+
+- **背景**：两个痛点——① `Agent.instructions` 挂在 agent 结构体上，与 ADR-026 无状态 agent 架构有张力（系统提示本质是会话/运行级内容：阶段四 AGENTS.md 随 cwd 变、阶段五 subagent 不同提示词）；② Build 装配期做兜底 token 估算注入（预组合系统提示 + 工具 schema bytes/4 → `SetSystemPromptTokens`）——装配后写 Runner、阶段四动态注入后固定值失效。
+- **内容通道分类原则（用户定案）**：除对话历史（rc.Messages）外，所有内容归位两个通道——**稳定配置 → 系统提示**（onSystemPrompt 管道）、**结构化工具定义 → toolspec 独立字段**（因含 JSON schema 参数，function calling 必需）。与 codex（`instructions` 顶层 + tools + input items）/opencode（`system[]` + tools + messages）完全同构。两类例外：**即时信号**（TodoReminder 偏离提醒）维持临时副本注入消息尾部（非稳定配置，进系统提示语义不对）；**摘要请求**是内部调用（不带系统提示/工具，opencode `system: []` 同款）。未来新内容（AGENTS.md/MEMORY.md/环境信息）自动归位 onSystemPrompt 管道，不再逐项讨论。
+- **决策（用户逐点拍板）**：
+  1. **rc.SystemPrompt**：`Agent.instructions`/`SetInstructions` 删除——agent 不携带任何提示词文本。rc.SystemPrompt = 本次运行的调用方 per-call 贡献（可空；subagent 覆盖用），agent.Run 经 `ComposeSystemPrompt(ctx, rc)`（去 base 参数，起点 = rc.SystemPrompt）组合后**回写为完整系统提示**（compact 兜底估算读此值）。
+  2. **base 中间件化**：基础提示词（"You are a helpful coding agent."）成为标准链的第一个 onSystemPrompt 中间件（`impl.BaseInstructionsMiddleware{Text}`，`DefaultBaseInstructions` 常量）——空起点时由链首注入，无常量无兜底；subagent = 换链换 Text（build.go 既定方向）。
+  3. **压缩判定实时化（废弃 SystemPromptTokens）**：兜底估算 = 判定时实时三项（镜像实际发送三通道）——`EstimateTokens(messages)` + `EstimateSystemPrompt(rc.SystemPrompt)`（bytes/4）+ `EstimateTools(in.Tools)`（JSON 序列化 bytes/4，实测 7 内置工具约 7.3KB ≈ 1.8K token）。**判定挪到 CompactMiddleware**（onReasoning 同时持有 rc 与 in.Tools 的唯一位置）→ `Runner.ShouldCompact(rc, tools)`；**Runner 变纯执行器**：`Run(ctx, rc) error`（去 force/bool——手动 /compact 语义不变：无条件压缩，判定由调用方决定）。usage 优先路径不变（API 返回的 input/cache 已含三通道全量）。
+- **影响 ADR**：ADR-037——第 8 点 `Options.SystemPromptTokens` 机制废弃（判定时实时估算替代）、`Runner.Run(force)` 签名变更；ADR-026——rc 新增 SystemPrompt 字段（覆盖模式同构：rc 覆盖、链首中间件给默认）；ADR-021——onSystemPrompt 管道新增 BaseInstructionsMiddleware（链首）。
+- **边界**：wire 行为零变化（`Request.Instructions` → `params.System` 顶层、`Request.Tools` → `params.Tools`）；BaseInstructions 仅挂 onSystemPrompt，不影响洋葱顺序。
