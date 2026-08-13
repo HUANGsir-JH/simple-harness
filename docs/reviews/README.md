@@ -7,6 +7,7 @@
 |---|---|---|---|
 | `architecture-review-2026-08-10.html` | 2026-08-10 | 全仓库（13,147 行 / 12 包）架构、可维护性、可读性 | 10 项缺陷经可执行探针证实；分层结构可放心扩展，唯一需与workspace 同批考虑的设计问题是**审批授权粒度**（`Decide` 只看工具名、不看调用目标） |
 | `plan-mode-review-2026-08-12.md` | 2026-08-12 | 提交 `bbdbd77`（plan mode，ADR-036）31 文件 / +1918 行 | 4 项缺陷（3 严重）经探针证实。核心问题：plan 只读强制用**命令名前缀匹配推断副作用**，在两个方向同时错——漏报 68%（`python --version` 被拒）且误报 19%（`sed -i` 真实写盘）。含三源调研 + 策略量化对比，选定方向为**方案一 + 写黑名单反向判定**（待立 ADR） |
+| `shell-process-tree-review-2026-08-13.md` | 2026-08-13 | 提交 `a83d8e5` 起的 shell 进程树生命周期（ADR-038 + 超时转后台勘误）+ 系统提示通道重构（ADR-039）+ 移除双重截断（ADR-028 勘误），52 文件 / +1786 行 | 1 严重经**对照实验**证实：**`context.AfterFunc` 的 `stop` 被丢弃**，`defer cancel()` 使每条前台命令正常返回时都杀树 → 连带杀掉命令自己派生的后台进程（ADR-038 已写明"成功路径 `stop()`"，实现漏了）。另 2 项中等：background 自然退出不注销注册表（POSIX PID 复用可误杀，"仅杀注册表内 PID"边界失效）；POSIX 判活用 `kill -0` 把僵尸当存活 + 超时杀进程组测试语义未随勘误反转 → macOS 上 4 项失败，掩盖回归检测能力 |
 | `usage-compact-review-2026-08-12.md` | 2026-08-12 | 提交 `f2cda04` 起的用量展示 + 上下文压缩（ADR-037 三阶段 + 勘误 + EventCompactStart 扩展），30+ 文件 / +1800 行 | 1 严重 + 1 中等经探针证实：**压缩后同一轮采样仍发送压缩前旧上下文**（CompactMiddleware 未更新 `in.Messages`，触发轮仍可能爆窗 + LastContextTokens 被回抬导致重复压缩）；Summarizer 忽略 `rc.Model`（/model 切换后摘要用旧模型）。另 7 项低风险观察 + 2 项测试覆盖缺口。**实测补充**：`AddUsage` 累计 cache_read 虚高（与 ADR-037 勘误矛盾）、`LastContextTokens` 含 output 致 footer 非单调、thinking 完整回传从未生效（DeepSeek 流式签名走 `signature_delta`，代码未处理） |
 
 ## 阅读顺序建议
