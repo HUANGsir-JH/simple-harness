@@ -405,3 +405,9 @@
   7. 默认超时保持 30s；不做输出流式化（阶段 3，可选后续）。
 - **边界（风险记录）**：job 嵌套降级路径（KILL_ON_JOB_CLOSE 失效）；Attach 竞态窗口（Start 与 Assign 间微秒级，PowerShell 解释执行需数百 ms，实际无孙进程逃逸）；POSIX PID 复用（kill 前可探测，Windows job 句柄精确定位无此风险）；注册表条目进程自然退出后残留至 kill/退出清理（开销可忽略）。
 - **影响 ADR**：ADR-028——shell 长任务缓解从"提示词引导手写后台语法"升级为工具参数化（background/kill_pid）+ Esc/超时杀树；ADR-021——工具层职责（非 middleware：进程树管理是 shell 工具自身生命周期，非链式切面）；ADR-026——注册表进程级全局与无状态 agent 兼容。
+
+### ADR-038 勘误（2026-08-13 扩展，超时转后台）
+
+- **修订**：前台命令超时语义从"杀树"改为**自动转后台托管**（原决策第 2 点）。用户讨论后拍板：起服务（长活）与长构建（>timeout 但会完成）场景下杀树前功尽弃——超时后进程继续跑、输出无缝续写日志文件、进程树句柄移交注册表、返回"已自动转入后台：PID+日志路径（不要重试——它仍在运行）"；模型轮询日志、kill_pid 终止。**Esc 语义不变**（用户主动说"停"→杀树+回填"已中断"）。
+- **实现要点**：前台输出从内存 buffer 改为写临时日志文件（`.fg_<nano>.log`，转后台时 rename `<pid>.log`——无缝续写无撕裂）；AfterFunc 杀树回调加 `ctx.Err() == context.Canceled` 判断（只 Esc 杀，超时不杀）；Wait 拆到 goroutine（`go func() { err := cmd.Wait(); f.Close(); done <- err }()`——转后台后进程长活时 f 由该 goroutine 在进程死后收尾），Handle 用 select 三路：完成 / Esc（杀树后等 done + 5s 安全网）/ 超时（transferToBackground：rename + 注册表 + tree 置零跳过 defer close）。竞态无害：超时瞬间进程恰好完成 → 注册已死进程（杀空 job 无副作用）；完成瞬间恰逢 Esc → 报中断语义。
+- **边界**：僵尸积累（模型反复跑卡死命令）由退出清理 + 提示词引导 kill_pid 缓解；此语义超出 opencode/codex 参考源（两者超时都杀），为用户自创决策。

@@ -49,13 +49,14 @@ const todoGuidance = `# 任务管理
 // 后台语法"升级为显式 background/kill_pid 工具参数）。参照 opencode shell
 // prompt 的 guidance 风格。
 const shellLongTaskGuidance = `# 长耗时命令
-shell_command 默认同步阻塞：命令运行期间模型无法做任何事，超过 timeout_ms 会超时（Esc 中断与超时都会终止整个进程树）。遇到预计耗时较长的命令（构建、测试、下载、网络调用、服务启动等）：
+shell_command 默认同步阻塞：命令运行期间模型无法做任何事，超过 timeout_ms 会超时。遇到预计耗时较长的命令（构建、测试、下载、网络调用、服务启动等）：
 - 用 background 参数后台启动：{"command": "...", "background": true}
   → 立即返回 PID 与日志路径，命令输出写入日志文件
 - 用 read_file / grep 轮询返回的日志路径判断进度与完成情况
 - 需要终止后台进程：{"kill_pid": <background 返回的 PID>}
+- 前台命令超过 timeout_ms 会自动转入后台（返回 PID 与日志路径）——此时**不要重试该命令**（它仍在运行），轮询日志即可
 - 不要用 shell 语法（&、nohup、Start-Process）自己放后台——工具不追踪这类进程，超时/Esc/退出都无法正确终止；统一用 background 参数
-- 不要盲目重试已超时的命令——超时/中断时已收集的输出已保存到 evictions/ 目录（错误信息含完整路径），先用 read_file 读它了解进度与卡点，再决定下一步`
+- 不要盲目重试已超时的命令——先读日志了解进度与卡点，再决定下一步`
 
 // ToolInstructionsMiddleware 是 onSystemPrompt middleware：在基础指令后追加
 // 工具列表、apply_patch 语法说明与任务管理引导（阶段二系统提示动态拼接的

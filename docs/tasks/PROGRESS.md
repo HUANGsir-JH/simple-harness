@@ -42,6 +42,17 @@
 
 ## 2026-08-13
 
+### shell 超时转后台托管（ADR-038 勘误扩展）✅ 版本 0.9.1
+
+- **背景**：0.9.0 中前台命令超时与 Esc 都杀树。用户讨论后拍板：**超时不杀树，自动转后台托管**——起服务（长活）与长构建（>timeout 但会完成）场景下杀树前功尽弃；转后台后模型轮询日志拿结果，kill_pid/退出清理/KILL_ON_JOB_CLOSE 全部自然生效。Esc 语义不变（用户主动说"停"→杀树）。此为超出 opencode/codex 的自创语义。
+- **交付**：
+  - **前台输出从 buffer 改临时文件**（`.fg_<nano>.log`）：转后台时 rename `<pid>.log` 无缝续写（无撕裂）；正常完成/Esc 读回后删除。
+  - **AfterFunc 只杀 Esc**：回调加 `ctx.Err() == context.Canceled` 判断——超时不杀（由 select 超时分支移交）。
+  - **select 三路重构**：`done := make(chan error,1); go func() { err := cmd.Wait(); f.Close(); done <- err }()`（Wait goroutine 统一收尾文件——转后台后进程长活时 f 由它在进程死后关闭）→ select 完成 / Esc（杀树后等 done + 5s 安全网防 job 降级残留）/ 超时（`transferToBackground`：rename + 注册表 + tree 置零跳过 defer close）。竞态无害：超时瞬间进程完成 → 注册已死进程；完成瞬间 Esc → 报中断。
+  - **消息契约**："命令运行超过 X，已自动转入后台：PID+日志路径（轮询日志；kill_pid 终止；**不要重试——它仍在运行**）"；shellLongTaskGuidance 与 Spec 描述同步。
+- **测试**：`TestShellCommandTimeoutKeepsProcessAlive`（转后台后进程存活 + kill_pid 可杀）；`TestShellCommandTimeoutTransfersBackground`（消息 + 日志含已收集输出）；Windows 测试语义反转（超时后孙进程存活 → CleanupBackground 杀）；Esc 系列不变。**真实验证**（临时探针跑完即删）：python 服务超时转后台 → 端口持续监听 → kill_pid → 端口释放。
+- **踩坑**：转后台后 copy goroutine 仍写日志文件——`f.Close()` 不能由 defer 执行（会切断后续输出），必须放进 Wait goroutine 在进程死后收尾。
+
 ### shell 进程树生命周期（ADR-038）✅ 版本 0.9.0
 
 - **背景**：case07 会话实测两个痛点——① 模型前台 `python server.py` 启动后端服务，同步阻塞卡死会话（Windows 上超时后 PowerShell 本体被杀但服务子进程残留——`killProcessGroup` 为 no-op；孙进程继承管道句柄导致 `cmd.Run()` 可能永不返回）；② Esc 中断回合但 shell 进程树仍在执行。用户逐点拍板：阶段 1+2（杀树 + background/kill_pid + 退出 pre-kill，不做流式输出）、默认超时保持 30s、Esc 杀树+回填提示、harness 退出时杀全部 background 进程 + 兜底写回 agentstate。

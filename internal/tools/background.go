@@ -64,10 +64,32 @@ func startForeground(ctx context.Context, cmd *exec.Cmd) (processTreeHandle, err
 	}
 	_ = attachProcessTree(tree, cmd.Process)
 	// AfterFunc 在 Start 之后注册：回调触发时 cmd.Process.Pid 必有值。
-	// Start 前 ctx 已取消的竞态由 Handle 的 ctx.Err() 检查兜底（见 shell.go）。
+	// **只杀 Esc（Canceled）**：超时（DeadlineExceeded）不杀——超时语义是
+	// 转后台托管（ADR-038 扩展），由 Handle 的 select 超时分支移交注册表；
+	// Esc 是用户主动说"停"，杀树。Start 前 ctx 已取消的竞态由 Handle 的
+	// ctx.Err() 检查兜底（见 shell.go）。
 	pid := cmd.Process.Pid
-	context.AfterFunc(ctx, func() { killProcessTree(tree, pid) })
+	context.AfterFunc(ctx, func() {
+		if ctx.Err() == context.Canceled {
+			killProcessTree(tree, pid)
+		}
+	})
 	return tree, nil
+}
+
+// transferToBackground 把前台命令转后台托管（超时转后台，ADR-038 扩展）：
+// 日志临时文件 rename 为 <pid>.log（失败保留临时名，结果显式返回实际路径），
+// 进程树句柄移交注册表——之后该进程树与前台回合彻底解耦，仅由 kill_pid /
+// 退出清理 / KILL_ON_JOB_CLOSE 三条路径终止（Esc 不再影响它）。
+// 调用方须负责 go cmd.Wait 回收进程资源（Wait goroutine 在进程死后关闭
+// 日志文件），并避免再 closeProcessTree 该句柄（已移交）。
+func transferToBackground(rc *middleware.RuntimeContext, tree processTreeHandle, pid int, tmpLog string) string {
+	logPath := filepath.Join(backgroundDir(rc), fmt.Sprintf("%d.log", pid))
+	if err := os.Rename(tmpLog, logPath); err != nil {
+		logPath = tmpLog // 平台差异降级保留临时名
+	}
+	registerBackground(&bgProcess{PID: pid, Handle: tree})
+	return logPath
 }
 
 // startBackground 后台启动 shell 命令：输出重定向到日志文件，立即返回 PID。

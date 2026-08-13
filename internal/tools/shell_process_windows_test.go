@@ -88,24 +88,31 @@ func TestWindowsJobKillsTree(t *testing.T) {
 	}
 }
 
-// TestShellTimeoutKillsTreeWindows 验证痛点①回归：超时后整棵树（含孙进程）
-// 被杀——此前 Windows 超时只杀 PowerShell 本体、python 服务等孙进程残留，
-// 且 cmd.Run 因管道句柄被继承可能继续卡住。
-func TestShellTimeoutKillsTreeWindows(t *testing.T) {
+// TestShellTimeoutTransfersBackgroundWindows 验证超时转后台（ADR-038 扩展）：
+// 超时后整棵树（含孙进程）**存活**（进程移交注册表继续跑，不杀）——此前
+// 语义是杀树；Esc 仍是杀树（见 TestShellEscKillsTreeWindows）。退出清理
+// （CleanupBackground）与 kill_pid 可终止。
+func TestShellTimeoutTransfersBackgroundWindows(t *testing.T) {
 	t.Cleanup(CleanupBackground)
 	pidfile := filepath.Join(t.TempDir(), "child.pid")
 	_, err := call(ShellCommandTool{}, map[string]any{
 		"command":    spawnChildPowerShell(pidfile),
 		"timeout_ms": 3000, // 孙进程启动 ~1s 后超时，树已成型
 	})
-	wantRespondToModel(t, err, "timeout tree")
-	if !strings.Contains(err.Error(), "命令超时") {
-		t.Errorf("应报超时: %s", err)
+	wantRespondToModel(t, err, "timeout transfer")
+	if !strings.Contains(err.Error(), "已自动转入后台") {
+		t.Fatalf("应提示转后台: %s", err)
 	}
 	childPID := readChildPID(t, pidfile)
 	time.Sleep(200 * time.Millisecond)
+	if !isProcessAlive(childPID) {
+		t.Errorf("超时转后台后孙进程 %d 应存活（不杀树）", childPID)
+	}
+	// 退出清理（或 kill_pid）可杀：验证句柄移交注册表生效。
+	CleanupBackground()
+	time.Sleep(200 * time.Millisecond)
 	if isProcessAlive(childPID) {
-		t.Errorf("超时后孙进程 %d 仍存活（杀树失效）", childPID)
+		t.Errorf("CleanupBackground 后孙进程 %d 应死亡", childPID)
 	}
 }
 

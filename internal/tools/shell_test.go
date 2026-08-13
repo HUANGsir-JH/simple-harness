@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -47,12 +48,14 @@ func TestShellCommandTimeout(t *testing.T) {
 	wantRespondToModel(t, err, "slow command")
 }
 
-// TestShellCommandTimeoutEvictsOutput 验证超时时已收集输出落盘（错误带路径，
-// 模型可读进度，ADR-028）。
-func TestShellCommandTimeoutEvictsOutput(t *testing.T) {
+// TestShellCommandTimeoutTransfersBackground 验证超时转后台（ADR-038 扩展）：
+// 超时不杀树——进程继续跑，已收集输出无缝续写到日志文件，消息含 PID+日志
+// 路径+"不要重试"。Esc 仍是杀树（见 TestShellCommandEscInterrupt）。
+func TestShellCommandTimeoutTransfersBackground(t *testing.T) {
 	rc := middleware.NewRuntimeContext()
 	rc.StatePath = filepath.Join(t.TempDir(), "sess", "agentstate.json")
-	// 先输出一段再卡住：PowerShell 冷启动慢（约 1s），timeout 放宽到 5s 让输出
+	t.Cleanup(CleanupBackground)
+	// 先输出一段再挂起：PowerShell 冷启动慢（约 1s），timeout 放宽到 5s 让输出
 	// 稳定发生在超时前；sleep 远大于 timeout 保证必超时。POSIX 启动快用 1.5s。
 	var cmd, timeout int
 	if isWindows() {
@@ -65,17 +68,31 @@ func TestShellCommandTimeoutEvictsOutput(t *testing.T) {
 	var command string
 	switch cmd {
 	case 1:
-		command = `Write-Output ("slow-output-before-hang"*2000); Start-Sleep -Seconds 12` // >40KB 触发落盘
+		command = `Write-Output ("slow-output-before-hang"*2000); Start-Sleep -Seconds 12` // >40KB 输出
 	case 2:
 		command = `yes slow-output-before-hang | head -n 2000; sleep 12`
 	}
 	_, err := callWithRC(ShellCommandTool{}, rc, map[string]any{"command": command, "timeout_ms": timeout})
-	wantRespondToModel(t, err, "命令超时")
-	if !strings.Contains(err.Error(), "完整内容已保存到") {
-		t.Errorf("timeout error should contain saved path hint, got: %s", err.Error())
+	wantRespondToModel(t, err, "timeout transfer")
+	if !strings.Contains(err.Error(), "已自动转入后台") {
+		t.Errorf("应提示已转后台: %s", err)
 	}
-	if !strings.Contains(err.Error(), "slow-output-before-hang") {
-		t.Errorf("timeout error should include collected output, got: %s", err.Error())
+	if !strings.Contains(err.Error(), "不要重试") {
+		t.Errorf("应提示不要重试: %s", err)
+	}
+	// 日志路径从消息提取，含已收集输出（不再走 evictions 路径——日志文件
+	// 本身就是完整输出载体）。
+	logPath := ""
+	for _, line := range strings.Split(err.Error(), "\n") {
+		if i := strings.Index(line, "日志："); i >= 0 {
+			logPath = strings.TrimSpace(line[i+len("日志："):])
+		}
+	}
+	if logPath == "" {
+		t.Fatalf("消息应含日志路径: %s", err)
+	}
+	if data, err := os.ReadFile(logPath); err != nil || !strings.Contains(string(data), "slow-output-before-hang") {
+		t.Errorf("日志应含已收集输出: err=%v len=%d", err, len(data))
 	}
 }
 

@@ -186,6 +186,37 @@ func TestCleanupBackgroundKillsAll(t *testing.T) {
 	}
 }
 
+// TestShellCommandTimeoutKeepsProcessAlive 验证超时转后台后进程**仍存活**
+// （ADR-038 扩展：超时不杀树），且 kill_pid 可终止（移交注册表生效）。
+func TestShellCommandTimeoutKeepsProcessAlive(t *testing.T) {
+	rc := testRCWithStatePath(t)
+	t.Cleanup(CleanupBackground)
+	_, err := callWithRC(ShellCommandTool{}, rc, map[string]any{
+		"command": bgSleep(30), "timeout_ms": 300,
+	})
+	wantRespondToModel(t, err, "timeout keep alive")
+	msg := err.Error()
+	if !strings.Contains(msg, "已自动转入后台") {
+		t.Fatalf("应提示转后台: %s", msg)
+	}
+	var pid int
+	if _, scanErr := fmt.Sscanf(msg, "shell_command: 命令运行超过 300ms，已自动转入后台：PID %d", &pid); scanErr != nil || pid <= 0 {
+		t.Fatalf("无法从消息提取 PID: %q", msg)
+	}
+	// 转后台后进程应存活（超时不杀树）。
+	if !isProcessAlive(pid) {
+		t.Errorf("超时转后台后进程 %d 应存活", pid)
+	}
+	// kill_pid 走注册表可杀（句柄已移交）。
+	r, err := callWithRC(ShellCommandTool{}, rc, map[string]any{"kill_pid": pid})
+	if err != nil || !r.Success {
+		t.Fatalf("kill_pid: %v %v", r, err)
+	}
+	if isProcessAlive(pid) {
+		t.Errorf("kill_pid 后进程 %d 应死亡", pid)
+	}
+}
+
 // TestShellCommandEscInterrupt 验证 Esc（ctx 取消）返回"命令已被中断"提示
 // （ADR-038：Esc 杀树 + 回填语义，模型知道进程树已终止）。
 func TestShellCommandEscInterrupt(t *testing.T) {

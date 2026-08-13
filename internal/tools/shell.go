@@ -1,11 +1,12 @@
 package tools
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"time"
 
@@ -21,9 +22,11 @@ const powershellUTF8Prefix = "try { [Console]::OutputEncoding=[System.Text.Encod
 
 // ShellCommandTool 在 shell 中执行命令（ADR-038）。平台分派：Windows 用
 // PowerShell，POSIX 用 sh -c。三种模式：
-//   - 前台（默认）：同步阻塞至命令退出/超时/Esc 中断。Esc 与超时都**杀整棵
-//     进程树**（Windows Job Object / POSIX 进程组，含派生孙进程），并回填
-//     "已中断/已超时"提示；输出超长时完整版落盘 evictions/。
+//   - 前台（默认）：同步阻塞至命令退出/超时/Esc 中断。Esc 杀**整棵进程树**
+//     （Windows Job Object / POSIX 进程组，含派生孙进程）并回填"已中断"；
+//     **超时不杀树，自动转入后台托管**（返回 PID+日志路径，模型轮询日志，
+//     用 kill_pid 终止，不要重试——命令仍在运行）；输出超长时完整版落盘
+//     evictions/。
 //   - background：后台启动立即返回 PID + 日志路径（长任务/服务启动用），
 //     进程不绑定回合（Esc 不杀），用 read_file/grep 轮询日志，配套 kill_pid
 //     终止；harness 退出时自动清理。
@@ -38,7 +41,7 @@ func (ShellCommandTool) Name() string { return "shell_command" }
 type shellCommandArgs struct {
 	Command    string `json:"command,omitempty" jsonschema:"description=要执行的命令（kill_pid 模式可省略）"`
 	Workdir    string `json:"workdir,omitempty" jsonschema:"description=工作目录（默认当前目录）"`
-	TimeoutMS  int    `json:"timeout_ms,omitempty" jsonschema:"description=超时毫秒（默认 30000；background/kill_pid 模式忽略）"`
+	TimeoutMS  int    `json:"timeout_ms,omitempty" jsonschema:"description=超时毫秒（默认 30000；超时后命令自动转入后台继续运行并返回 PID 与日志路径；background/kill_pid 模式忽略）"`
 	Background bool   `json:"background,omitempty" jsonschema:"description=true 时后台启动并立即返回 PID 与日志路径（长任务/服务启动用；输出写入日志文件，用 read_file/grep 轮询；配套 kill_pid 终止）"`
 	KillPID    int    `json:"kill_pid,omitempty" jsonschema:"description=终止指定后台进程（background 启动返回的 PID；提供时忽略 command）"`
 }
@@ -47,8 +50,8 @@ func (ShellCommandTool) Spec() provider.ToolSpec {
 	return provider.ToolSpec{
 		Name: "shell_command",
 		Description: "在 shell 中执行命令并返回输出（stdout+stderr 合并）。Windows 用 PowerShell，POSIX 用 sh -c。" +
-			"Esc 中断与超时都会终止整个进程树。长任务/服务启动用 background: true 后台运行（返回 PID+日志路径，用 read_file/grep 轮询，kill_pid 终止）。" +
-			"命令非零退出或超时返回错误文本（输出超长时完整版会保存到 evictions/ 目录并用 read_file 提示，错误信息含路径）。",
+			"Esc 中断会终止整个进程树；超时自动转入后台（返回 PID+日志路径，轮询日志、kill_pid 终止，不要重试）。" +
+			"长任务/服务启动用 background: true 后台运行。命令非零退出返回错误文本（输出超长时完整版会保存到 evictions/ 目录并用 read_file 提示，错误信息含路径）。",
 		Parameters: schemaOf[shellCommandArgs](),
 	}
 }
@@ -79,7 +82,8 @@ func (ShellCommandTool) Handle(ctx context.Context, rc *middleware.RuntimeContex
 			pid, logPath, pid)}, nil
 	}
 
-	// 前台模式。
+	// 前台模式：输出写临时日志文件（而非内存 buffer）——超时转后台时输出
+	// 无缝续写到同一文件（ADR-038 扩展）；正常完成/Esc 时读回返回。
 	timeout := time.Duration(p.TimeoutMS) * time.Millisecond
 	if p.TimeoutMS <= 0 {
 		timeout = 30 * time.Second
@@ -87,55 +91,99 @@ func (ShellCommandTool) Handle(ctx context.Context, rc *middleware.RuntimeContex
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	logDir := backgroundDir(rc)
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: "shell_command: " + err.Error()}
+	}
+	tmpLog := filepath.Join(logDir, fmt.Sprintf(".fg_%d.log", time.Now().UnixNano()))
+	f, err := os.Create(tmpLog)
+	if err != nil {
+		return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: "shell_command: " + err.Error()}
+	}
+
 	cmd := newShellCmd(p.Command, p.Workdir)
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &out
+	cmd.Stdout = f
+	cmd.Stderr = f
 
 	tree, err := startForeground(ctx, cmd)
 	if err != nil {
-		// Start 前 ctx 已取消的竞态兜底：区分中断/超时（Esc 与超时都返回
-		// 明确语义，模型知道进程树状态）。
+		f.Close()
+		os.Remove(tmpLog)
+		closeProcessTree(tree)
 		if ctx.Err() == context.Canceled {
 			return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: "shell_command: 命令已被中断（Esc），进程树已终止"}
 		}
 		return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: "shell_command: " + err.Error()}
 	}
-	defer closeProcessTree(tree)
+	// tree 由 defer 关闭；超时转后台分支会把 tree 置零跳过（句柄移交注册表）。
+	defer func() { closeProcessTree(tree) }()
 
 	// Start 后 ctx 已取消的竞态兜底：AfterFunc 注册晚于取消瞬间时会漏杀，
-	// 这里显式杀树（幂等）。
-	if ctx.Err() != nil {
+	// 这里显式杀树（只 Esc——超时交给 select 的转后台分支）。
+	if ctx.Err() == context.Canceled {
 		killProcessTree(tree, cmd.Process.Pid)
 	}
 
-	err = cmd.Wait() // 杀树成功后树必死 → 管道写端全关 → Wait 必返回
-	switch {
-	case ctx.Err() == context.Canceled:
-		// Esc 中断（ADR-038）：杀树已在 ctx 取消瞬间执行，这里幂等再杀一次
-		// 防御；回填"命令已被中断"（模型可见、transcript 落盘）。
-		killProcessTree(tree, cmd.Process.Pid)
-		msg := "shell_command: 命令已被中断（Esc），进程树已终止"
-		if out.Len() > 0 {
-			msg += "\n" + EvictContent(rc, out.String())
+	// Wait goroutine：Wait 返回（copy goroutine 完成 = 文件写完）后关闭
+	// 日志文件再发 done——转后台后进程可能长活，f 的收尾由这里统一承担。
+	done := make(chan error, 1)
+	go func() {
+		err := cmd.Wait()
+		f.Close()
+		done <- err
+	}()
+
+	select {
+	case werr := <-done:
+		// 进程完成（或被 Esc 杀树后 Wait 返回）：读回输出、删临时文件。
+		out, _ := os.ReadFile(tmpLog)
+		os.Remove(tmpLog)
+		if ctx.Err() == context.Canceled {
+			// 完成瞬间恰逢 Esc（杀树已执行或进程已死）：报中断语义。
+			msg := "shell_command: 命令已被中断（Esc），进程树已终止"
+			if len(out) > 0 {
+				msg += "\n" + EvictContent(rc, string(out))
+			}
+			return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: msg}
 		}
-		return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: msg}
-	case ctx.Err() == context.DeadlineExceeded:
-		// 超时：杀树由 AfterFunc 承担（ctx 取消瞬间，不等 Wait）；已收集输出
-		// 落盘（错误带路径，模型可用 read_file 读进度，不盲目重试）。
-		msg := fmt.Sprintf("shell_command: 命令超时（%v），进程树已终止", timeout)
-		if out.Len() > 0 {
-			msg += "\n" + EvictContent(rc, out.String())
+		if werr != nil {
+			msg := "shell_command: " + werr.Error()
+			if len(out) > 0 {
+				msg += "\n" + EvictContent(rc, string(out))
+			}
+			return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: msg}
 		}
-		return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: msg}
-	case err != nil:
-		msg := "shell_command: " + err.Error()
-		if out.Len() > 0 {
-			msg += "\n" + EvictContent(rc, out.String())
+		return messages.ToolResult{Success: true, Content: string(out)}, nil
+
+	case <-ctx.Done():
+		switch ctx.Err() {
+		case context.Canceled:
+			// Esc：AfterFunc 已杀树 → 等 Wait 返回（树死管道 EOF 必返回；
+			// 5s 安全网防 job 降级 + taskkill 失败时残留）。
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+			}
+			out, _ := os.ReadFile(tmpLog)
+			os.Remove(tmpLog)
+			msg := "shell_command: 命令已被中断（Esc），进程树已终止"
+			if len(out) > 0 {
+				msg += "\n" + EvictContent(rc, string(out))
+			}
+			return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: msg}
+
+		default: // DeadlineExceeded
+			// 超时转后台托管（ADR-038 扩展）：不杀树——进程继续跑，日志持续
+			// 写文件，句柄移交注册表；模型轮询日志、kill_pid 终止。竞态：进程
+			// 恰好此时完成也注册无害（杀空 job 无副作用，二次 kill 报未找到）。
+			pid := cmd.Process.Pid
+			logPath := transferToBackground(rc, tree, pid, tmpLog)
+			var zero processTreeHandle
+			tree = zero // 句柄已移交注册表，defer 不再 close
+			return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: fmt.Sprintf(
+				"shell_command: 命令运行超过 %v，已自动转入后台：PID %d，日志：%s\n用 read_file/grep 轮询日志判断进度；用 shell_command {\"kill_pid\": %d} 终止；不要重试该命令——它仍在运行",
+				timeout, pid, logPath, pid)}
 		}
-		return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: msg}
-	default:
-		return messages.ToolResult{Success: true, Content: out.String()}, nil
 	}
 }
 

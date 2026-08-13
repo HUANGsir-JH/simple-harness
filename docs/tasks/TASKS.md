@@ -195,6 +195,7 @@
 | S3 | 审批/schema/TUI/提示词适配：ApprovalKey kill 派生 + SummaryOf + toolCallSummary/applyToolResult + shellLongTaskGuidance 改写 + command 改 omitempty | ✅ 2026-08-13 |
 | S4 | 退出兜底（SaveActiveState）+ ADR-038 + 文档 + 版本 0.9.0 + go mod tidy | ✅ 2026-08-13 |
 | S5 | 全量验证 + e2e + 真实场景手动验证 + 提交 | ✅ 2026-08-13 |
+| S6 | **超时转后台扩展**（ADR-038 勘误）：前台超时不杀树、自动转后台托管（文件输出 + select 三路 + tree 移交注册表）+ 测试语义反转 + 真实 python 服务验证 | ✅ 2026-08-13 |
 
 ## 阶段 6（TUI 后后续可选）：摘要式压缩 / grep 工具 / 双向通信
 
