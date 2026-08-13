@@ -47,8 +47,7 @@ type AgentState struct {
 	Permission        *PermissionState `json:"permission,omitempty"`          // 审批状态（ADR-029）
 	PlanMode          bool             `json:"plan_mode,omitempty"`           // plan 模式开关（/plan 或 plan_enter/plan_done，ADR-036）
 	Plan              *PlanState       `json:"plan,omitempty"`                // plan 文件指针（ADR-036）
-	Summary           string           `json:"summary,omitempty"`             // 压缩摘要，预留
-	Usage             *messages.Usage  `json:"usage,omitempty"`               // 会话累计 token 用量（/usage 展示；ADR-037）
+	Usage             *messages.Usage  `json:"usage,omitempty"`               // 最近一次 API 调用的 token 用量（覆盖语义，/usage 展示；ADR-037）
 	LastContextTokens int64            `json:"last_context_tokens,omitempty"` // 最近一次请求的完整上下文占用（单轮 input+cache+output，footer 与压缩触发，ADR-037）
 }
 
@@ -230,18 +229,15 @@ func (a *AgentState) AddApproved(keys []string) {
 	}
 }
 
-// AddUsage 把一次采样的 token 用量累计进会话 Usage（/usage 展示；ADR-037）。
-// Usage 为 nil 时先建。并行工具批/多轮采样共享同一 *AgentState，带锁。
-func (a *AgentState) AddUsage(u messages.Usage) {
+// SetUsage 记录最近一次 API 调用的 token 用量（**覆盖语义**，ADR-037 勘误
+// 2026-08-13：每次采样返回的 usage 就是该次调用的完整账目，cache_read 是
+// "当前历史全量"而非增量，跨轮累加会虚高到"好多 M"；覆盖语义显示最近一次
+// 调用，与 opencode per-call 跟踪一致）。Usage 并行工具批/多轮采样共享同一
+// *AgentState，带锁。
+func (a *AgentState) SetUsage(u messages.Usage) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.Usage == nil {
-		a.Usage = &messages.Usage{}
-	}
-	a.Usage.InputTokens += u.InputTokens
-	a.Usage.CacheReadInputTokens += u.CacheReadInputTokens
-	a.Usage.CacheCreationInputTokens += u.CacheCreationInputTokens
-	a.Usage.OutputTokens += u.OutputTokens
+	a.Usage = &u
 }
 
 // SetLastContextTokens 记录最近一次请求的**完整上下文占用**（单轮
@@ -255,15 +251,7 @@ func (a *AgentState) SetLastContextTokens(n int64) {
 	a.mu.Unlock()
 }
 
-// SetSummary 写入压缩摘要（ADR-037：resume 恢复，下轮压缩时作 previous-summary
-// 更新式续接）。压缩成功才写；失败/取消不碰（历史仍在 conversation）。
-func (a *AgentState) SetSummary(summary string) {
-	a.mu.Lock()
-	a.Summary = summary
-	a.mu.Unlock()
-}
-
-// UsageTotals 返回累计用量的防御性拷贝（/usage 展示；不受并发写影响）。
+// UsageTotals 返回最近一次调用用量的防御性拷贝（/usage 展示；不受并发写影响）。
 func (a *AgentState) UsageTotals() messages.Usage {
 	a.mu.Lock()
 	defer a.mu.Unlock()

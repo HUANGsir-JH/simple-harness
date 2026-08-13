@@ -158,6 +158,27 @@
 | C3 | 挂载（build.go）+ agent.Compactor 访问器 + Controller.RunCompact + /compact + EventCompacted + TUI 系统行 | ✅ 2026-08-12 |
 | C4 | 测试（compact 纯函数/Summarizer/Runner 失败与取消/agent 集成 EventCompacted/session resume 重建//compact TUI）+ 文档 + 版本 0.8.0 | ✅ 2026-08-12 |
 
+## 阶段 C 修复轮（usage-compact-review-2026-08-12）✅
+
+- **目标**：审查报告 12 项缺陷逐点决策修复——严重：thinking 签名捕获失效（signature_delta 分支）、压缩后同轮采样仍发旧上下文；中等：Summarize 忽略 rc.Model、Usage 累计虚高（改覆盖语义）、压缩后 Usage 归零；低风险：Segment 先落盘后重写、删除 state.Summary、估算固定开销补全、错误路径补发 EventCompacted、help/gofmt。
+- **成功标准**：全部回归测试锁定（含"压缩后采样请求 = [summary]"锚点）；`go build/vet/test ./...` 与相关包 `-race` 全绿；ADR-037 勘误记录。
+- **状态**：✅ 已完成（2026-08-13，ADR-037 勘误）
+- **说明**：11（footer 非单调）待 12 修复后真实 API 实测再定；05（触发滞后）接受设计注释记录；多 thinking 块单签名边角未修（记待办）。
+
+### 任务单元
+
+| # | 单元 | 状态 |
+|---|---|---|
+| R1 | 12：anthropic_stream 补 signature_delta 分支 + 注释修正 + 流式测试 | ✅ 2026-08-13 |
+| R2 | 01：CompactMiddleware in.Messages 回传 + Build 顺序交换（Compact 在 TodoReminder 前）+ 采样内容回归锚点 | ✅ 2026-08-13 |
+| R3 | 02：Summarize rc.Model 优先 + 测试 | ✅ 2026-08-13 |
+| R4 | 10+06：AddUsage→SetUsage 覆盖语义 + 压缩后归零 + /usage 展示 + 测试 | ✅ 2026-08-13 |
+| R5 | 03+07：Runner.Run 先落盘后重写 + 删除 AgentState.Summary/BuildSummaryPrompt 更新式路径 + 测试 | ✅ 2026-08-13 |
+| R6 | 04+05：EstimateTokens 注释修正 + Options.SystemPromptTokens 估算传入 + 滞后注释 | ✅ 2026-08-13 |
+| R7 | 08：CompedKey 检查移到错误判断前 + 测试 | ✅ 2026-08-13 |
+| R8 | 09：help 补 /usage /compact /thinking /rename + 全 gofmt | ✅ 2026-08-13 |
+| R9 | 文档（DECISIONS ADR-037 勘误/TASKS/PROGRESS/review 更新）+ 全量测试与 -race | ✅ 2026-08-13 |
+
 ## 阶段 6（TUI 后后续可选）：摘要式压缩 / grep 工具 / 双向通信
 
 - **状态**：未开始（TUI 已提前为独立阶段；本阶段为压缩/grep/双向通信剩余项）

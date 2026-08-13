@@ -9,6 +9,18 @@
 > 方法：结论经可执行探针证实（探针跑完即删，未入库）；`go build/vet/test ./...`
 > 全绿，相关包 `-race` 全绿
 
+> **修复状态（2026-08-13）**：12 项逐点决策后修复 11 项，回归测试锁定，
+> 全量测试与 -race 全绿。✅ 01/02/03/04/06/07/08/09/10/12；05 接受设计
+> （注释记录）；**11 待实测**——12 修复后 thinking 完整回传，上一轮输出计入
+> 下一轮输入，footer 应恢复单调，实测确认后再决定是否改口径（详见
+> docs/tasks/DECISIONS.md ADR-037 勘误 2026-08-13）。
+> 修复关键点：01 补"压缩后采样请求 = [summary]"回归锚点 + Build 注册顺序
+> 交换（Compact 在 TodoReminder 前）；12 补 `signature_delta` 分支；10 按用户
+> 决策改覆盖语义（`SetUsage`）；06 压缩后 Usage 归零；07 删除
+> `AgentState.Summary`（BuildSummaryPrompt 简化新建式）；03 先落盘后重写；
+> 04 `Options.SystemPromptTokens` 补齐估算缺口；08 错误路径补发
+> EventCompacted；09 help 补命令 + 全 gofmt。
+
 ## 摘要
 
 架构层面是扎实的：`rc.Emit`/`rc.Segment` 沿用 `rc.Approver` 的"session 注入闭包

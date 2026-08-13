@@ -378,4 +378,16 @@
   4. **Esc 中断部分落盘**：维持现状**不落盘**（流式 delta 本就不落盘，块完成才落盘；中断时部分 thinking/text 丢弃，只落中断提示）。
 - **落地状态（2026-08-12）**：三阶段全部完成——阶段 A 用量展示（版本 0.7.1）✅ → 阶段 B thinking 完整回传（版本 0.7.2）✅ → 阶段 C LLM 摘要压缩（版本 0.8.0）✅。实现细节：`internal/compact` 包（EstimateTokens/ShouldCompact(85%)/BuildSummaryPrompt(previous-summary 更新式)/Summarizer(codex 方式)/Runner.Run）；`RuntimeContext.Segment` 钩子（session 注入 NewSegment + seed 落盘 + Flush）；`impl.CompactMiddleware`（onReasoning before，失败终止 Run）；`events.EventCompacted` + TUI 系统行；`/compact` 手动（Controller.RunCompact，成功显式落盘 AgentState——手动路径不经 SessionMiddleware）。**摘要双重计数坑**：Summarizer 只收 `EventTextDone`（整块），delta+done 都收会翻倍。
 - **勘误（2026-08-12，ADR-037 修订）**：`LastContextTokens` 口径修正——原实现只记单轮 `input_tokens`，但 DeepSeek 等端点 `input_tokens` **只统计未命中缓存的新增输入**，历史上下文在 `cache_read_input_tokens`（缓存命中省计费、不省窗口）。只记 input 会把上下文占用低估十几倍：TUI footer 显示 `ctx 0k/1.0M`（实测真实占用 25 万/1M 却显示 0k）、压缩触发（ShouldCompact 读 LastContextTokens）形同虚设（真实爆窗也不触发）。**修正为单轮完整占用 = `input_tokens + cache_read_input_tokens + cache_creation_input_tokens + output_tokens`**（对齐 opencode `tokens.total` 口径 + anthropic Total input tokens 官方定义 + output）。关键认识：单轮 `cache_read` 即"当前历史大小"（缓存前缀 = 历史全量），总和随会话单调增长；**累计值不能相加**（跨轮重复累加会虚高到"好多 M 的错觉"）。`fmtTokens` 同步修复：<1000 显示原值而非 `0k`。压缩成功后 `SetLastContextTokens(0)` 防重入逻辑不变。
-- **影响 ADR**：ADR-025——thinking"存且重放"修订 + `AgentState.Usage/LastContextTokens` + transcript Line.Signature；ADR-021——onReasoning 挂载点新增 UsageMiddleware（用量累计）+ CompactMiddleware（压缩）；ADR-026——无状态 agent 下用量累计/压缩经 rc 与 rc.Segment 钩子，agent 不碰 state。
+- **勘误（2026-08-13，usage-compact-review 修复轮）**：审查 12 项逐点决策，修复 11 项（11 待 12 修复后实测再定），全部回归测试锁定：
+  1. **thinking 签名捕获失效**（严重，阶段 B 实际未生效）：DeepSeek 流式 `content_block_start` 处 signature 是**空串**，签名经 `signature_delta` delta 事件下发（SDK union 含 Signature 字段）而 `anthropic_stream` 无此分支 → 签名全丢、thinking 从未回传。补 `signature_delta` 分支（挂 pendingBlock 随 thinking_done 发出）后回传生效。
+  2. **压缩后同轮采样仍发旧上下文**（严重）：CompactMiddleware 压缩成功后未把重写后的 conversation 传回 `in.Messages` → 触发压缩的那轮仍以完整旧上下文采样（该轮防爆窗失效），且该轮 usage 抬高 LastContextTokens → 下轮重复压缩。修复 = 成功时 `in.Messages = rc.Messages.Messages` + 回归锚点"压缩后采样请求 = [summary]"。**Build 注册顺序调整**：CompactMiddleware 移到 TodoReminder 之前（压缩 = conversation 级变换在外层；提醒 = 请求级装饰在内层，避免其注入被覆盖丢弃）。
+  3. **Summarize 忽略 rc.Model**：摘要请求固定用装配默认模型，`/model` 切换后与正常采样不一致。修复 = 与 agent.sample 同规则 rc.Model 优先。
+  4. **Usage 累计 → 覆盖语义**：`AddUsage` 跨轮累加 cache_read（"当前历史全量"非增量）虚高 6.3M，与"累计值不能相加"自相矛盾。改为 `SetUsage` 覆盖——每次 API 返回的 usage 即该次调用的完整账目（与 opencode per-call 跟踪一致），/usage 展示最近一次调用四字段。
+  5. **压缩后 Usage 归零**：与 SetLastContextTokens(0) 对称，下轮采样覆盖恢复；摘要请求消耗不单独记账（用户决策）。
+  6. **Runner.Run 先落盘后重写**：Segment 失败时内存未动、双轨一致（原顺序 Segment 失败会终止回合但 conversation/state 已改）。
+  7. **删除 `AgentState.Summary`**：压缩后 conversation 首条即摘要（纯占位设计），state 副本冗余，且唯一读取方（previous-summary 更新式）消失——`BuildSummaryPrompt` 简化为新建式（旧摘要在 conversation 中 LLM 可见，双份喂送消除）；与 opencode"摘要即消息"模型一致。
+  8. **EstimateTokens 低估修正**：注释曾称"更早触发"方向相反（漏系统提示/工具 schema 数 KB）。`Options.SystemPromptTokens`（Build 装配时组合系统提示 + 工具 schema bytes/4 估算传入）补齐缺口；触发滞后一轮（review 05）接受设计，注释记录。
+  9. **错误路径补发 EventCompacted**：压缩成功但采样失败时也发"已压缩"系统行（压缩已生效，仅见错误会误判重压/丢历史）。
+  10. **杂项**：help 面板补 /usage /compact /thinking /rename；gofmt 全绿（含 CRLF 行尾规范化）。
+  **11（footer 非单调）待实测**：12 修复后 thinking 完整回传、上一轮输出计入下一轮输入，footer 应恢复单调；实测确认后再定是否改 `LastContextTokens` 口径（去掉 output）。
+- **影响 ADR**：ADR-025——thinking"存且重放"修订 + `AgentState.Usage/LastContextTokens` + transcript Line.Signature；ADR-021——onReasoning 挂载点新增 UsageMiddleware（用量覆盖写）+ CompactMiddleware（压缩）；ADR-026——无状态 agent 下用量覆盖/压缩经 rc 与 rc.Segment 钩子，agent 不碰 state。

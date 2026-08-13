@@ -40,6 +40,29 @@
 
 > 按日期追加，最新在上。记录：进展、阻塞、问题、经验。
 
+## 2026-08-13
+
+### 用量 + 压缩审查修复（usage-compact-review-2026-08-12 十二项缺陷）✅
+
+- **背景**：`f2cda04` 起的用量展示/thinking 回传/压缩五个提交经代码审查 + 真实 API 探针复核，报告 12 项缺陷（2 严重 + 3 中等 + 7 低），逐点决策后修复 11 项（11 待实测）。全部结论先在代码复核证实，修复后回归测试锁定。
+- **严重修复**：
+  - **12 thinking 签名从未生效**：DeepSeek 流式 `content_block_start` 签名是空串，签名经 `signature_delta` delta 事件下发（SDK union 确认含 Signature 字段），`anthropic_stream` 无此分支 → 签名全丢、thinking 从未回传（阶段 B 功能实际退回"存不重放"）。补分支（挂 pendingBlock 随 thinking_done 发出）+ 流式测试 `TestAnthropicStreamSignatureDelta` + 两处"恒返回"注释修正。
+  - **01 压缩后同轮采样发旧上下文**：CompactMiddleware 压缩成功后未把重写后的 conversation 传回 `in.Messages`（agent.Run 采样轮开始时捕获的旧快照）→ 触发压缩的那轮仍以完整旧上下文采样（防爆窗失效），该轮 usage 又抬高 LastContextTokens → 下轮重复压缩。修复 = `ran` 时 `in.Messages = rc.Messages.Messages` + `TestRunAutoCompact` 加回归锚点"压缩后采样请求 = [summary]"（`sampled` 记录每轮采样请求）。**Build 注册顺序交换**：CompactMiddleware 移到 TodoReminder 之前（压缩 = conversation 级变换在外层，提醒 = 请求级装饰在内层，提醒注入才不被覆盖丢弃）。
+- **中等修复**：
+  - **02 Summarize 忽略 rc.Model**：摘要请求固定用装配默认模型（/model 切换后与正常采样不一致）。修复 = 与 agent.sample 同规则 rc.Model 优先 + `TestSummarizeModelOverride`。
+  - **10 Usage 累计 → 覆盖语义**（用户拍板）：`AddUsage` 跨轮累加 cache_read（"当前历史全量"非增量）虚高 6.3M，与 ADR-037 勘误"累计值不能相加"自相矛盾。改 `SetUsage` 覆盖——每次 API 返回的 usage 即该次调用的完整账目（与 opencode per-call 跟踪一致）；/usage 展示最近一次调用四字段；测试改写（覆盖语义断言）。
+  - **06 压缩后 Usage 归零**（用户拍板）：与 SetLastContextTokens(0) 对称，下轮采样覆盖恢复；摘要请求消耗不单独记账。
+- **低风险修复**：
+  - **03 先落盘后重写**：Runner.Run 顺序 = Segment 成功后才重写 conversation/state——落盘失败时内存未动、双轨一致，下轮干净重试（原顺序 Segment 失败会终止回合但内存已改）。+ `TestRunnerRunSegmentFailureKeepsMemory` + Segment 时点断言。
+  - **07 删除 `AgentState.Summary`**（用户拍板）：压缩后 conversation 首条即摘要（纯占位设计），state 副本冗余且唯一读取方（previous-summary 更新式）消失——`BuildSummaryPrompt` 简化无参新建式（旧摘要在 conversation 中 LLM 可见，双份喂送消除）；与 opencode"摘要即消息"模型一致。相关测试（compact/session/command/agentstate）同步。
+  - **04 EstimateTokens 低估修正**：注释曾称"更早触发"方向相反（漏系统提示/工具 schema 数 KB）。`Options.SystemPromptTokens`（Build 装配时 ComposeSystemPrompt 组合 + 工具 specs 序列化 bytes/4 估算传入）+ `TestShouldCompactEstimateIncludesFixedOverhead`。
+  - **05 触发滞后**：接受设计（单轮增长受 ToolOutput 20K 截断约束），contextSize 注释记录。
+  - **08 错误路径补发 EventCompacted**：CompedKey 检查移到 reasoning 错误判断前（压缩已生效，仅见错误会误判重压/丢历史）+ `TestRunAutoCompactSampleFailureStillEmitsCompacted`（事件时序断言）。
+  - **09 杂项**：renderHelp 补 /usage /compact /thinking /rename（review 只点前两个，同缺漏一并补）；gofmt 全绿——7 个文件含 4 个 CRLF 行尾规范化（git autocrlf=true 无大 diff）+ agent_test 缺空行 + compact.go 注释对齐。
+- **验证**：`go build/vet/test ./...` 全绿（e2e 20s）；agent/compact/middleware/impl/agentstate/session `-race` 全绿。
+- **遗留**：**11**（LastContextTokens 含 output 致 footer 非单调）待 12 修复后真实 API 实测再定（thinking 回传后上一轮输出计入下一轮输入，footer 应恢复单调）；多 thinking 块单签名边角（sample 只留最后一块签名）未修，记待办。
+- **下一步**：真实 API 实测（thinking 回传生效 + footer 单调性验证）→ 阶段 4 剩余 agentsmd。
+
 ## 2026-08-12
 
 ### Plan Mode 审查修复（plan-mode-review-2026-08-12 四项缺陷）✅

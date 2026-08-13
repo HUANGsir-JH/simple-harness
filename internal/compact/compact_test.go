@@ -53,23 +53,33 @@ func TestShouldCompactEstimateFallback(t *testing.T) {
 	}
 }
 
-// TestBuildSummaryPrompt 验证摘要 prompt：previous summary 更新式 vs 新建。
+// TestShouldCompactEstimateIncludesFixedOverhead 验证估算兜底计入固定开销
+// （review 04）：系统提示 + 工具 schema 随每次请求发送，SystemPromptTokens
+// 一并计入——否则首轮触发点系统性偏晚（注释曾称"更早触发"，方向相反）。
+func TestShouldCompactEstimateIncludesFixedOverhead(t *testing.T) {
+	// 85% * 4000 = 3400；消息估算 2500 tokens（10000 字节）+ 固定开销 1000 = 3500 → 触发。
+	// 无固定开销时 2500 < 3400 不触发——验证该缺口被补齐。
+	msg := strings.Repeat("x", 10_000)
+	rc := middleware.NewRuntimeContext()
+	rc.Messages = &messages.Conversation{Messages: []*messages.Message{{Role: messages.RoleUser, Content: msg}}}
+	if ShouldCompact(rc, Options{ContextWindow: 4_000}) {
+		t.Error("无固定开销时 2500 < 3400 不应触发")
+	}
+	if !ShouldCompact(rc, Options{ContextWindow: 4_000, SystemPromptTokens: 1_000}) {
+		t.Error("计入固定开销 3500 >= 3400 应触发")
+	}
+}
+
+// TestBuildSummaryPrompt 验证摘要 prompt：新建式指令 + 锚定模板（旧摘要无需
+// previous 参数——压缩后 conversation 首条就是旧摘要，LLM 在历史里可见，
+// review 07 双份喂送已消除）。
 func TestBuildSummaryPrompt(t *testing.T) {
-	// 无 previous → 新建摘要。
-	np := BuildSummaryPrompt("")
+	np := BuildSummaryPrompt()
 	if !strings.Contains(np, "Create a new anchored summary") || !strings.Contains(np, "## Objective") || !strings.Contains(np, "## Next Move") {
-		t.Errorf("新建 prompt 应含创建指令 + 锚定模板: %s", np)
+		t.Errorf("prompt 应含创建指令 + 锚定模板: %s", np)
 	}
-	// 有 previous → 更新式 + 嵌入 previous。
-	up := BuildSummaryPrompt("previous-summary-content")
-	if !strings.Contains(up, "Update the anchored summary") {
-		t.Errorf("应含更新指令: %s", up)
-	}
-	if !strings.Contains(up, "<previous-summary>\nprevious-summary-content\n</previous-summary>") {
-		t.Errorf("应嵌入 previous summary: %s", up)
-	}
-	if strings.Contains(up, "Create a new anchored summary") {
-		t.Error("有 previous 时不应是新建指令")
+	if strings.Contains(np, "<previous-summary>") {
+		t.Error("不应嵌 previous-summary（旧摘要在 conversation 首条）")
 	}
 }
 
@@ -105,7 +115,6 @@ func summaryStream(text string) provider.EventStream {
 // user，无工具，max_tokens（codex 方式，ADR-037）。
 func TestSummarizeRequestShape(t *testing.T) {
 	conv := testRC(overThresholdRC(900_000))
-	conv.State.SetSummary("old")
 	fc := &provider.FakeClient{StreamFn: func(ctx context.Context, req provider.Request) (provider.EventStream, error) {
 		return summaryStream("总结内容"), nil
 	}}
@@ -126,7 +135,7 @@ func TestSummarizeRequestShape(t *testing.T) {
 		t.Fatalf("Messages = %d, want 3", len(req.Messages))
 	}
 	last := req.Messages[len(req.Messages)-1]
-	if last.Role != messages.RoleUser || last.Content != BuildSummaryPrompt("old") {
+	if last.Role != messages.RoleUser || last.Content != BuildSummaryPrompt() {
 		t.Errorf("最后一条应为摘要 prompt user: role=%s", last.Role)
 	}
 	if len(req.Tools) != 0 {
@@ -138,6 +147,30 @@ func TestSummarizeRequestShape(t *testing.T) {
 	// Summarize 本身不重写 conversation（重写发生在 Runner.Run）。
 	if len(conv.Messages.Messages) != 2 {
 		t.Error("Summarize 不应重写 conversation")
+	}
+}
+
+// TestSummarizeModelOverride 验证摘要请求模型覆盖与 agent.sample 同规则
+// （ADR-026）：rc.Model 优先（/model 运行时切换），未设置时用装配默认——
+// 保证摘要与正常采样模型一致。
+func TestSummarizeModelOverride(t *testing.T) {
+	fc := &provider.FakeClient{StreamFn: func(ctx context.Context, req provider.Request) (provider.EventStream, error) {
+		return summaryStream("总结内容"), nil
+	}}
+	s := NewSummarizer(fc, Options{Model: "built-model"})
+	rc := testRC(overThresholdRC(900_000))
+	if _, err := s.Summarize(context.Background(), rc); err != nil {
+		t.Fatalf("Summarize: %v", err)
+	}
+	if fc.LastReq.Model != "built-model" {
+		t.Errorf("无 rc.Model 时应用装配默认: got %q want built-model", fc.LastReq.Model)
+	}
+	rc.Model = "session-model"
+	if _, err := s.Summarize(context.Background(), rc); err != nil {
+		t.Fatalf("Summarize: %v", err)
+	}
+	if fc.LastReq.Model != "session-model" {
+		t.Errorf("rc.Model 应优先: got %q want session-model", fc.LastReq.Model)
 	}
 }
 
@@ -158,15 +191,20 @@ func TestSummarizeStreamError(t *testing.T) {
 
 // --- Runner ----------------------------------------------------------------
 
-// TestRunnerRunCompacts 验证全链路：超阈值 → 摘要 → 重写 conversation 为单一
-// summary user + State.Summary + LastContextTokens 清零 + Segment 落盘 + 置标记。
+// TestRunnerRunCompacts 验证全链路：超阈值 → 摘要 → 先 Segment 落盘、后重写
+// conversation 为单一 summary user（review 03 顺序：落盘失败时内存未动）+ 用量
+// 归零（review 06）+ LastContextTokens 清零 + 置标记。
 func TestRunnerRunCompacts(t *testing.T) {
 	rc := testRC(overThresholdRC(900_000))
+	rc.State.SetUsage(messages.Usage{InputTokens: 900_000})
 	var segmentSeed []*messages.Message
 	segmentCalls := 0
+	rewrittenAtSegment := false
 	rc.Segment = func(seed []*messages.Message) error {
 		segmentCalls++
 		segmentSeed = seed
+		// 03 回归锚点：Segment 时 conversation 应仍是压缩前旧历史（先落盘后重写）。
+		rewrittenAtSegment = len(rc.Messages.Messages) == 1
 		return nil
 	}
 	fc := &provider.FakeClient{StreamFn: func(ctx context.Context, req provider.Request) (provider.EventStream, error) {
@@ -185,17 +223,43 @@ func TestRunnerRunCompacts(t *testing.T) {
 		rc.Messages.Messages[0].Content != "压缩后的总结" {
 		t.Fatalf("conversation 应为单一 summary user: %+v", rc.Messages.Messages)
 	}
-	if rc.State.Summary != "压缩后的总结" {
-		t.Errorf("State.Summary = %q", rc.State.Summary)
-	}
 	if rc.State.CurrentContextTokens() != 0 {
 		t.Error("压缩后 LastContextTokens 应为 0（防重入）")
+	}
+	if got := rc.State.UsageTotals(); !got.IsZero() {
+		t.Errorf("压缩后 Usage 应归零（/usage 与 footer 对称），got %+v", got)
 	}
 	if segmentCalls != 1 || len(segmentSeed) != 1 || segmentSeed[0].Content != "压缩后的总结" {
 		t.Errorf("Segment 应被调用 1 次且 seed = [summary]: calls=%d seed=%+v", segmentCalls, segmentSeed)
 	}
+	if rewrittenAtSegment {
+		t.Error("Segment 时 conversation 不应已被重写（先落盘后重写，review 03）")
+	}
 	if rc.Get(middleware.CompactedKey) != true {
 		t.Error("应置 compacted 标记")
+	}
+}
+
+// TestRunnerRunSegmentFailureKeepsMemory 验证 03 修复：Segment 落盘失败时内存
+// conversation/state 未动（双轨一致，都还是压缩前），下一轮干净重试。
+func TestRunnerRunSegmentFailureKeepsMemory(t *testing.T) {
+	rc := testRC(overThresholdRC(900_000))
+	rc.Segment = func(seed []*messages.Message) error { return errors.New("disk boom") }
+	fc := &provider.FakeClient{StreamFn: func(ctx context.Context, req provider.Request) (provider.EventStream, error) {
+		return summaryStream("压缩后的总结"), nil
+	}}
+	r := NewRunner(NewSummarizer(fc, Options{ContextWindow: 1_000_000}), Options{ContextWindow: 1_000_000})
+	if _, err := r.Run(context.Background(), rc, false); err == nil {
+		t.Fatal("Segment 失败应返回错误")
+	}
+	if len(rc.Messages.Messages) != 2 {
+		t.Fatalf("落盘失败不应重写 conversation: %d 条", len(rc.Messages.Messages))
+	}
+	if rc.State.CurrentContextTokens() != 900_000 {
+		t.Error("落盘失败不应清零 LastContextTokens")
+	}
+	if rc.Get(middleware.CompactedKey) == true {
+		t.Error("落盘失败不应置标记")
 	}
 }
 

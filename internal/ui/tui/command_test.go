@@ -336,7 +336,7 @@ func cfgWithContextWindow(model string, window int) config.Config {
 	}}
 }
 
-// TestUsageCommandShowsTotals 验证 /usage 显示会话累计用量 + 当前上下文占用
+// TestUsageCommandShowsTotals 验证 /usage 显示最近一次调用用量 + 当前上下文占用
 // （ADR-037 用量展示，系统行）。
 func TestUsageCommandShowsTotals(t *testing.T) {
 	c := newTestController(t, nil)
@@ -344,7 +344,7 @@ func TestUsageCommandShowsTotals(t *testing.T) {
 	if err := c.active.SetModel("m1"); err != nil {
 		t.Fatal(err)
 	}
-	c.active.State().AddUsage(messages.Usage{InputTokens: 100000, OutputTokens: 5000, CacheReadInputTokens: 20000})
+	c.active.State().SetUsage(messages.Usage{InputTokens: 100000, OutputTokens: 5000, CacheReadInputTokens: 20000})
 	c.active.State().SetLastContextTokens(100000)
 
 	m := New(c)
@@ -438,10 +438,11 @@ func TestCompactCommandRunsCompaction(t *testing.T) {
 	if len(conv.Messages) != 1 || conv.Messages[0].Role != messages.RoleUser || conv.Messages[0].Content != "压缩摘要" {
 		t.Fatalf("conversation 应为摘要占位: %+v", conv.Messages)
 	}
-	// AgentState 落盘（手动 /compact 持久化，resume 恢复 Summary）。
+	// AgentState 落盘（手动 /compact 持久化；摘要本身在 conversation 首条，
+	// state 不再存副本——review 07）；LastContextTokens 清零防重入。
 	st, err := agentstate.LoadFile(c.active.StatePath())
-	if err != nil || st.Summary != "压缩摘要" {
-		t.Errorf("落盘 summary: %q err=%v", st.Summary, err)
+	if err != nil || st.CurrentContextTokens() != 0 {
+		t.Errorf("落盘 state: lastContext=%d err=%v", st.CurrentContextTokens(), err)
 	}
 }
 

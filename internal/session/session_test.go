@@ -280,7 +280,7 @@ func TestCompactSegmentResume(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	// resume：conversation = 单一 summary user，State.Summary 恢复。
+	// resume：conversation = 单一 summary user（摘要即消息，不依赖 state 副本）。
 	info, ok := proj.Last()
 	if !ok {
 		t.Fatal("Last 无会话")
@@ -293,8 +293,5 @@ func TestCompactSegmentResume(t *testing.T) {
 	conv := rs.Conversation()
 	if len(conv.Messages) != 1 || conv.Messages[0].Role != messages.RoleUser || conv.Messages[0].Content != "压缩摘要" {
 		t.Fatalf("resume conversation 应为单一 summary user: %+v", conv.Messages)
-	}
-	if rs.State().Summary != "压缩摘要" {
-		t.Errorf("resume State.Summary = %q, want 压缩摘要", rs.State().Summary)
 	}
 }

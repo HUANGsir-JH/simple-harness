@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/agent-project/harness/internal/compact"
@@ -34,12 +36,15 @@ func Build(res *config.ProviderConfig, defaultMode string) (*Agent, error) {
 	}
 	// 工具说明注入系统提示（onSystemPrompt middleware；阶段四 AGENTS.md 等在此
 	// 追加）。SessionMiddleware 无状态，从 rc.StatePath 读写 AgentState。
-	// TodoReminderMiddleware 在模型连续多轮不更新 todo 时注入偏离提醒。
 	// CompactMiddleware 上下文压缩（onReasoning before，ADR-037）：每轮采样前
 	// 检查 85% 阈值（实际 usage 驱动 + 估算兜底），超则 LLM 摘要压缩。注册在
-	// UsageMiddleware 之前——压缩的 before 先于采样、用量的 after 后于采样。
-	// UsageMiddleware 累计每轮采样 token 用量进 AgentState（ADR-037 用量展示：
-	// /usage 总账 + LastContextTokens 供 footer 与压缩触发）。
+	// TodoReminder 之前（onion 外层）——压缩是 conversation 级变换、提醒是请求
+	// 级装饰，外层先压缩重写 in.Messages，内层 TodoReminder 的临时提醒注入才
+	// 不会被覆盖丢弃；同时仍在 UsageMiddleware 之前，保证压缩的 before 先于
+	// 采样、用量的 after 后于采样。
+	// TodoReminderMiddleware 在模型连续多轮不更新 todo 时注入偏离提醒。
+	// UsageMiddleware 记录每轮采样 token 用量进 AgentState（ADR-037 用量展示：
+	// /usage 最近一次调用用量 + LastContextTokens 供 footer 与压缩触发）。
 	// ToolOutputMiddleware 统一截断工具结果（超长落盘 evictions/ + head/tail preview，ADR-028）。
 	// ApprovalMiddleware 工具审批（onActing，三档模式 + 会话级记忆，ADR-029）；
 	// 审批交互器经 rc.Approver 注入（TUI/runCmd 各自 channelApprover，非 TTY 不设）。
@@ -53,8 +58,8 @@ func Build(res *config.ProviderConfig, defaultMode string) (*Agent, error) {
 	mw := middleware.NewChain(
 		impl.ToolInstructionsMiddleware{Tools: reg.Specs()},
 		impl.SessionMiddleware{},
-		impl.TodoReminderMiddleware{},
 		impl.CompactMiddleware{Runner: compactor},
+		impl.TodoReminderMiddleware{},
 		impl.UsageMiddleware{},
 		impl.ToolOutputMiddleware{},
 		impl.ApprovalMiddleware{DefaultMode: defaultMode},
@@ -64,5 +69,19 @@ func Build(res *config.ProviderConfig, defaultMode string) (*Agent, error) {
 	a.SetTools(reg)
 	a.SetMiddleware(mw)
 	a.SetCompactor(compactor)
+	// 估算兜底固定开销（review 04）：系统提示 + 工具 schema 随每次请求发送，
+	// EstimateTokens 只覆盖 conversation，此处估算一并计入（bytes/4），使
+	// LastContextTokens 未捕获时（首轮/压缩后首轮）的触发判定更接近真实占用。
+	// ComposeSystemPrompt 在装配期安全：onSystemPrompt 中间件不依赖 rc。
+	sys, err := mw.ComposeSystemPrompt(context.Background(), nil, a.instructions)
+	if err != nil {
+		return nil, fmt.Errorf("compose system prompt: %w", err)
+	}
+	var sysTokens int64
+	if b, err := json.Marshal(reg.Specs()); err == nil {
+		sysTokens = int64(len(b) / 4)
+	}
+	sysTokens += int64(len(sys) / 4)
+	compactor.SetSystemPromptTokens(sysTokens)
 	return a, nil
 }

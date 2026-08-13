@@ -9,37 +9,44 @@ import (
 	"github.com/agent-project/harness/internal/middleware"
 )
 
-// TestUsageMiddlewareAccumulates 验证 onReasoning after 累计：agent.sample 存
-// rc.attrs["round_usage"]，中间件读取后 AddUsage + SetLastContextTokens
+// TestUsageMiddlewareOverwrites 验证 onReasoning after 覆盖语义（ADR-037 勘误
+// 2026-08-13）：agent.sample 存 rc.attrs["round_usage"]，中间件读取后
+// SetUsage（覆盖最近一次调用，跨轮累加 cache_read 会虚高）+ SetLastContextTokens
 // （ADR-037 用量展示）。SetLastContextTokens 记**单轮完整占用**（input +
 // cache_read + output，ADR-037 勘误：不能只记 input——端点只统计未缓存新增）。
-func TestUsageMiddlewareAccumulates(t *testing.T) {
+func TestUsageMiddlewareOverwrites(t *testing.T) {
 	st := agentstate.New("s1", "m", ".")
 	rc := middleware.NewRuntimeContext()
 	rc.State = st
 
 	m := UsageMiddleware{}
-	called := false
-	err := m.OnReasoning(context.Background(), rc, middleware.ReasoningInput{},
-		func(ctx context.Context, rc *middleware.RuntimeContext, in middleware.ReasoningInput) error {
-			called = true
-			// 模拟 agent.sample 落 usage 到 rc.attrs。
-			rc.Set("round_usage", &messages.Usage{InputTokens: 100, OutputTokens: 50, CacheReadInputTokens: 20})
-			return nil
-		})
-	if err != nil {
-		t.Fatalf("OnReasoning: %v", err)
+	usages := []*messages.Usage{
+		{InputTokens: 100, OutputTokens: 50, CacheReadInputTokens: 20},
+		{InputTokens: 30, OutputTokens: 10, CacheReadInputTokens: 40},
 	}
-	if !called {
-		t.Fatal("next 未被调用")
+	for i, u := range usages {
+		called := false
+		err := m.OnReasoning(context.Background(), rc, middleware.ReasoningInput{},
+			func(ctx context.Context, rc *middleware.RuntimeContext, in middleware.ReasoningInput) error {
+				called = true
+				// 模拟 agent.sample 落 usage 到 rc.attrs。
+				rc.Set("round_usage", u)
+				return nil
+			})
+		if err != nil {
+			t.Fatalf("OnReasoning[%d]: %v", i, err)
+		}
+		if !called {
+			t.Fatal("next 未被调用")
+		}
 	}
 	totals := st.UsageTotals()
-	if totals.InputTokens != 100 || totals.OutputTokens != 50 || totals.CacheReadInputTokens != 20 {
-		t.Errorf("totals: got %+v", totals)
+	if totals.InputTokens != 30 || totals.OutputTokens != 10 || totals.CacheReadInputTokens != 40 {
+		t.Errorf("覆盖语义应保留最后一次调用: got %+v", totals)
 	}
-	// 单轮完整占用 = input(100) + cache_read(20) + output(50) = 170。
-	if st.CurrentContextTokens() != 170 {
-		t.Errorf("last context（完整占用）: got %d, want 170", st.CurrentContextTokens())
+	// 单轮完整占用 = input(30) + cache_read(40) + output(10) = 80。
+	if st.CurrentContextTokens() != 80 {
+		t.Errorf("last context（完整占用）: got %d, want 80", st.CurrentContextTokens())
 	}
 }
 

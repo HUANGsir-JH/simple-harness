@@ -85,6 +85,7 @@ func (r *eventRecorder) has(et events.EventType) bool {
 	}
 	return false
 }
+
 // indexOf 返回事件类型首次出现的序号（-1 = 未出现）。时序断言用：
 // start 事件须先于完成事件。
 func (r *eventRecorder) indexOf(et events.EventType) int {
@@ -864,15 +865,61 @@ func TestRunSkipsZeroUsage(t *testing.T) {
 	}
 }
 
-// TestRunAutoCompact 验证 onReasoning 自动压缩（ADR-037）：超 85% 阈值 → 采样
-// 前压缩 → conversation 重写为单一摘要占位 + emit EventCompacted；未超阈值 →
-// 正常透传不压缩。
-func TestRunAutoCompact(t *testing.T) {
-	// StreamFn 按请求末条是否摘要 prompt 区分：摘要请求 → 摘要流，采样 → 正常流。
+// TestRunAutoCompactSampleFailureStillEmitsCompacted 验证 review 08 修复：压缩
+// 成功但随后的采样失败时仍 emit EventCompacted（压缩已生效——conversation 已
+// 重写、transcript 已切段；用户只看到错误会误判重压/丢历史，先"已压缩"系统行
+// 再报错误，下轮重试即正常）。
+func TestRunAutoCompactSampleFailureStillEmitsCompacted(t *testing.T) {
 	fc := &provider.FakeClient{StreamFn: func(ctx context.Context, req provider.Request) (provider.EventStream, error) {
 		if n := len(req.Messages); n > 0 && strings.Contains(req.Messages[n-1].Content, "anchored summary") {
 			return textStream("总结内容"), nil
 		}
+		return nil, errors.New("sample boom")
+	}}
+	compactor := compact.NewRunner(
+		compact.NewSummarizer(fc, compact.Options{ContextWindow: 1_000_000}),
+		compact.Options{ContextWindow: 1_000_000},
+	)
+	a := New(fc, "m")
+	a.SetTools(tools.NewRegistry())
+	a.SetMiddleware(middleware.NewChain(impl.CompactMiddleware{Runner: compactor}))
+	a.SetCompactor(compactor)
+
+	conv := newConversation()
+	rc := rcFor(conv)
+	rc.State = agentstate.New("s1", "m", ".")
+	rc.State.SetLastContextTokens(900_000)
+	rec := &eventRecorder{}
+	rc.Emit = rec.on
+	if err := a.Run(context.Background(), rc, rec.on); err == nil {
+		t.Fatal("采样失败应返回错误")
+	}
+	if !rec.has(events.EventCompacted) {
+		t.Errorf("压缩成功后采样失败仍应 emit EventCompacted: %v", rec.types())
+	}
+	if i, j := rec.indexOf(events.EventCompacted), rec.indexOf(events.EventError); i < 0 || j < 0 || i >= j {
+		t.Errorf("EventCompacted 应早于 EventError: %v", rec.types())
+	}
+	// 压缩已生效：conversation = [summary]（采样失败不追加 assistant）。
+	if len(conv.Messages) != 1 || conv.Messages[0].Content != "总结内容" {
+		t.Errorf("conversation 应为 [summary]: %+v", conv.Messages)
+	}
+}
+
+// TestRunAutoCompact 验证 onReasoning 自动压缩（ADR-037）：超 85% 阈值 → 采样
+// 前压缩 → conversation 重写为单一摘要占位 + emit EventCompacted；未超阈值 →
+// 正常透传不压缩。回归锚点（review 01）：**触发压缩的那一轮采样请求本身**
+// 必须是重写后的 [summary]（而非压缩前的旧快照——旧快照会让压缩防爆窗失效
+// 且该轮 usage 抬高 LastContextTokens 导致下轮重复压缩）。
+func TestRunAutoCompact(t *testing.T) {
+	// StreamFn 按请求末条是否摘要 prompt 区分：摘要请求 → 摘要流，采样 → 正常流。
+	// sampled 记录每次**采样**请求的消息（摘要请求不记，用于断言压缩后采样内容）。
+	var sampled [][]*messages.Message
+	fc := &provider.FakeClient{StreamFn: func(ctx context.Context, req provider.Request) (provider.EventStream, error) {
+		if n := len(req.Messages); n > 0 && strings.Contains(req.Messages[n-1].Content, "anchored summary") {
+			return textStream("总结内容"), nil
+		}
+		sampled = append(sampled, req.Messages)
 		return textStream("final answer"), nil
 	}}
 	compactor := compact.NewRunner(
@@ -909,6 +956,13 @@ func TestRunAutoCompact(t *testing.T) {
 	}
 	if conv.Messages[0].Role != messages.RoleUser || conv.Messages[0].Content != "总结内容" {
 		t.Errorf("conversation[0] 应为摘要占位: %+v", conv.Messages[0])
+	}
+	// 回归锚点（review 01）：压缩后那一轮**采样请求** = [summary]，而非压缩前旧快照。
+	if len(sampled) != 1 {
+		t.Fatalf("采样次数 = %d, want 1", len(sampled))
+	}
+	if len(sampled[0]) != 1 || sampled[0][0].Content != "总结内容" {
+		t.Errorf("压缩后采样请求应为 [summary]，got %d 条: %+v", len(sampled[0]), sampled[0])
 	}
 
 	// 未超阈值：不压缩、不 emit EventCompacted/EventCompactStart、历史保留。

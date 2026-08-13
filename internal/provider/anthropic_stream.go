@@ -87,7 +87,8 @@ func (s *anthropicStream) Next() bool {
 			if cb.Type == "thinking" {
 				// 捕获 thinking 块签名（ADR-025 修订：完整回传）。SDK union
 				// ContentBlockStartEventContentBlockUnion 的 Signature 字段即来自
-				// ThinkingBlock 变体；DeepSeek 兼容端点恒返回。
+				// ThinkingBlock 变体；部分端点在此直接给签名。DeepSeek 流式在此
+				// 返回空串，签名经后续 signature_delta 下发（见 content_block_delta）。
 				pb.signature = cb.Signature
 			}
 			s.blocks[ev.Index] = pb
@@ -106,6 +107,12 @@ func (s *anthropicStream) Next() bool {
 				pb.sb.WriteString(ev.Delta.Thinking)
 				s.cur = Event{Type: EventThinkingDelta, Text: ev.Delta.Thinking}
 				return true
+			case "signature_delta":
+				// thinking 块数字签名（ADR-025 修订完整回传的凭据）。DeepSeek
+				// 流式在 content_block_start 处签名是空串，签名经 signature_delta
+				// 事件下发（content_block_stop 之前），挂到 pendingBlock 随
+				// thinking_done 发出。
+				pb.signature = ev.Delta.Signature
 			case "input_json_delta":
 				pb.sb.WriteString(ev.Delta.PartialJSON)
 			}

@@ -107,7 +107,7 @@ func TestReservedFieldsOptional(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Permission != nil || got.Plan != nil || got.Summary != "" {
+	if got.Permission != nil || got.Plan != nil {
 		t.Errorf("预留字段应缺省: %+v", got)
 	}
 	_ = data
@@ -141,14 +141,20 @@ func TestAgentStateConcurrentAccess(t *testing.T) {
 	wg.Wait()
 }
 
-// TestAddUsageAccumulates 验证累计用量跨多轮累加（ADR-037 用量展示）。
-func TestAddUsageAccumulates(t *testing.T) {
+// TestSetUsageOverwrites 验证用量覆盖语义（ADR-037 勘误 2026-08-13）：每次
+// 采样返回的 usage 是该次调用的完整账目，直接覆盖而非跨轮累加——cache_read
+// 是"当前历史全量"而非增量，累加会虚高。
+func TestSetUsageOverwrites(t *testing.T) {
 	a := New("s1", "m", ".")
-	a.AddUsage(messages.Usage{InputTokens: 100, OutputTokens: 50, CacheReadInputTokens: 20})
-	a.AddUsage(messages.Usage{InputTokens: 30, OutputTokens: 10})
+	a.SetUsage(messages.Usage{InputTokens: 100, OutputTokens: 50, CacheReadInputTokens: 20})
+	a.SetUsage(messages.Usage{InputTokens: 30, OutputTokens: 10})
 	got := a.UsageTotals()
-	if got.InputTokens != 130 || got.OutputTokens != 60 || got.CacheReadInputTokens != 20 {
-		t.Errorf("totals: got %+v", got)
+	if got.InputTokens != 30 || got.OutputTokens != 10 || got.CacheReadInputTokens != 0 {
+		t.Errorf("覆盖语义应保留最后一次调用: got %+v", got)
+	}
+	a.SetUsage(messages.Usage{InputTokens: 5, OutputTokens: 2, CacheReadInputTokens: 300})
+	if got := a.UsageTotals(); got.InputTokens != 5 || got.CacheReadInputTokens != 300 {
+		t.Errorf("覆盖应保留完整四字段: got %+v", got)
 	}
 	a.SetLastContextTokens(130)
 	if a.CurrentContextTokens() != 130 {
@@ -172,7 +178,7 @@ func TestUsageFieldsOptional(t *testing.T) {
 	}
 }
 
-// TestAgentStateConcurrentUsage 验证并发累计用量无 data race（-race 必跑）。
+// TestAgentStateConcurrentUsage 验证并发覆盖用量无 data race（-race 必跑）。
 func TestAgentStateConcurrentUsage(t *testing.T) {
 	a := New("s1", "m", ".")
 	var wg sync.WaitGroup
@@ -181,7 +187,7 @@ func TestAgentStateConcurrentUsage(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < 50; j++ {
-				a.AddUsage(messages.Usage{InputTokens: 1, OutputTokens: 1})
+				a.SetUsage(messages.Usage{InputTokens: 1, OutputTokens: 1})
 				a.SetLastContextTokens(int64(j))
 			}
 			_ = a.UsageTotals()
@@ -190,7 +196,8 @@ func TestAgentStateConcurrentUsage(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	if got := a.UsageTotals().InputTokens; got != 400 {
-		t.Errorf("input total: got %d want 400", got)
+	// 覆盖语义：最终值 = 某一次写入的值（所有写入 InputTokens 均为 1）。
+	if got := a.UsageTotals().InputTokens; got != 1 {
+		t.Errorf("input: got %d want 1", got)
 	}
 }

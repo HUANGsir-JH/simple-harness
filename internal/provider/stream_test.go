@@ -299,6 +299,53 @@ func TestAnthropicStreamThinkingDelta(t *testing.T) {
 	}
 }
 
+// TestAnthropicStreamSignatureDelta 验证 DeepSeek 真实流式行为：thinking 块在
+// content_block_start 处签名是**空串**，签名经独立的 signature_delta 事件下发
+// （content_block_stop 之前）——适配器须把它挂到 pendingBlock 随 thinking_done
+// 发出（此前缺失该分支，签名全部丢弃，thinking 完整回传功能失效）。
+func TestAnthropicStreamSignatureDelta(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		var sb strings.Builder
+		sb.WriteString(anthropicSSE("message_start", `{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-sonnet-5","content":[],"stop_reason":null,"usage":{"input_tokens":10,"output_tokens":1}}}`))
+		// DeepSeek 实测：start 处签名空串。
+		sb.WriteString(anthropicSSE("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}`))
+		sb.WriteString(anthropicSSE("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Let me think"}}`))
+		sb.WriteString(anthropicSSE("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig_deepseek_1"}}`))
+		sb.WriteString(anthropicSSE("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" more"}}`))
+		sb.WriteString(anthropicSSE("content_block_stop", `{"type":"content_block_stop","index":0}`))
+		sb.WriteString(anthropicSSE("message_stop", `{"type":"message_stop"}`))
+		w.Write([]byte(sb.String()))
+	}))
+	defer srv.Close()
+
+	c := newAnthropicClient(&config.ProviderConfig{Model: "claude-sonnet-5", BaseURL: srv.URL, APIKey: "test-key"})
+	es, err := c.Stream(context.Background(), Request{Model: "claude-sonnet-5", Messages: []*messages.Message{NewTestUserMsg("hi")}})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	defer es.Close()
+
+	var thinkingDone string
+	var sig string
+	for es.Next() {
+		switch ev := es.Current(); ev.Type {
+		case EventThinkingDone:
+			thinkingDone = ev.Text
+			sig = ev.Signature
+		}
+	}
+	if err := es.Err(); err != nil {
+		t.Fatalf("stream err: %v", err)
+	}
+	if thinkingDone != "Let me think more" {
+		t.Errorf("thinking_done: got %q", thinkingDone)
+	}
+	if sig != "sig_deepseek_1" {
+		t.Errorf("signature_delta 未挂到 thinking 块：got %q want sig_deepseek_1", sig)
+	}
+}
+
 // TestAnthropicRequestOverrides 验证 per-call 覆盖（ADR-026）：Request.Model /
 // ThinkingEnabled / ThinkingEffort 优先于 client 配置默认（运行时模型/档位切换）。
 func TestAnthropicRequestOverrides(t *testing.T) {

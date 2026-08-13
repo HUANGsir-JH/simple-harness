@@ -46,9 +46,10 @@ func toAnthropicMessages(msgs []*messages.Message) []anthropic.MessageParam {
 
 func toAnthropicAssistantMessage(m *messages.Message) anthropic.MessageParam {
 	// ADR-025 修订：thinking 完整回传。ThinkingSignature 非空时重放 thinking 块
-	// （DeepSeek 兼容端点恒返回签名；实测回传 200 且计入 input_tokens）。签名是
-	// 标准 anthropic 协议的重放凭据——严格端点校验签名，无签名回传会 400；
-	// 故仅签名非空才重放，其余端点 thinking 仍只存不重放（免格式适配）。
+	// （DeepSeek 流式签名经 signature_delta 捕获；实测回传 200 且计入
+	// input_tokens）。签名是标准 anthropic 协议的重放凭据——严格端点校验签名，
+	// 无签名回传会 400；故仅签名非空才重放，其余端点 thinking 仍只存不重放
+	// （免格式适配）。
 	blocks := make([]anthropic.ContentBlockParamUnion, 0, len(m.ToolCalls)+2)
 	if m.ThinkingSignature != "" {
 		blocks = append(blocks, anthropic.ContentBlockParamUnion{

@@ -197,7 +197,8 @@ func (m Model) runCommand(cmd command) (tea.Model, tea.Cmd) {
 		m.refreshStatus() // header 即时显示新名
 		return m.sysOK("Renamed to " + strings.TrimSpace(cmd.arg)), nil
 	case "usage":
-		// 会话累计用量 + 当前上下文占用（ADR-037 用量展示，系统行对齐 /plan view）。
+		// 最近一次 API 调用的完整用量 + 当前上下文占用（ADR-037 用量展示，
+		// 覆盖语义：每次采样返回的 usage 即该次调用的完整账目，系统行对齐 /plan view）。
 		if m.c == nil || m.c.active == nil {
 			return m.sysErr(fmt.Errorf("无会话（先发一条消息）")), nil
 		}

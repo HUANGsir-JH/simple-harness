@@ -353,8 +353,12 @@ func renderHelp(width int) string {
 		"/switch      change session",
 		"/model       change model",
 		"/effort      reasoning effort",
+		"/thinking    toggle thinking",
 		"/permission  approval policy",
 		"/plan        toggle plan mode",
+		"/usage       show token usage",
+		"/compact     compact context",
+		"/rename      rename session",
 		"/exit        leave Harness",
 	}, "\n")
 	right := strings.Join([]string{

@@ -23,6 +23,10 @@ type Options struct {
 	ContextWindow   int64  // 模型 context_window（token；0 = 无法判定阈值 → 不触发）
 	Model           string // 摘要请求模型（正常采样同款；空 = client 默认）
 	MaxOutputTokens int    // 摘要请求最大输出（codex 方式 4096；0 = 用 summaryOutputTokens）
+	// SystemPromptTokens 是估算兜底的固定开销：系统提示 + 工具 schema 随每次
+	// 请求发送（数 KB），EstimateTokens 只覆盖 conversation（review 04 低估修正）。
+	// agent.Build 装配时估算传入（bytes/4）；0 = 不计（仅测试/无装配场景）。
+	SystemPromptTokens int64
 }
 
 // summaryTemplate 是 opencode 的锚定摘要模板（Objective / Important Details /
@@ -60,26 +64,28 @@ Rules:
 - Preserve exact file paths, symbols, commands, error strings, URLs, and identifiers when known.
 - Do not mention the summary process or that context was compacted.`
 
-// BuildSummaryPrompt 构造摘要 prompt：previous summary 更新式（opencode
-// buildPrompt 同款：已有摘要 → 续接合并；无 → 新建）+ 锚定模板。作为最后一条
-// user 消息追加到完整 conversation（codex 方式发送，ADR-037）。
-func BuildSummaryPrompt(previousSummary string) string {
-	if strings.TrimSpace(previousSummary) != "" {
-		return "Update the anchored summary below using the conversation history above.\n" +
-			"Preserve still-true details, remove stale details, and merge in the new facts.\n" +
-			"<previous-summary>\n" + previousSummary + "\n</previous-summary>\n\n" + summaryTemplate
-	}
+// BuildSummaryPrompt 构造摘要 prompt：新建式指令 + 锚定模板（opencode 结构化
+// 模板）。旧摘要无需作为 previous 单独传入——压缩后 conversation 首条就是旧
+// 摘要 user 消息（ADR-037 纯占位设计），LLM 在历史里可见，prompt 里再嵌一份
+// 是重复喂送（review 07）。prompt 作为最后一条 user 消息追加到完整 conversation
+// （codex 方式发送，ADR-037）。
+func BuildSummaryPrompt() string {
 	return "Create a new anchored summary from the conversation history.\n\n" + summaryTemplate
 }
 
 // contextSize 返回当前上下文占用（token）：实际 usage（LastContextTokens =
 // 最近一次请求的完整占用，单轮 input+cache+output，ADR-037 勘误）优先；
-// 未捕获（0）时用估算兜底（EstimateTokens 镜像实际发送，含 thinking 回传）。
-func contextSize(rc *middleware.RuntimeContext) int64 {
+// 未捕获（0）时用估算兜底（EstimateTokens 镜像实际发送，含 thinking 回传 +
+// 系统提示/工具 schema 固定开销）。
+//
+// 触发滞后说明（review 05，接受设计）：usage 驱动读的是**上一轮**请求的
+// usage，回合间新用户消息与上一轮工具结果不在其中——滞后最多一轮；单轮增长
+// 受 ToolOutput 20K 截断约束，越过 85% 的幅度有界。
+func contextSize(rc *middleware.RuntimeContext, opts Options) int64 {
 	if rc != nil && rc.State != nil && rc.State.CurrentContextTokens() > 0 {
 		return rc.State.CurrentContextTokens()
 	}
-	return int64(EstimateTokens(messagesOf(rc)))
+	return int64(EstimateTokens(messagesOf(rc))) + opts.SystemPromptTokens
 }
 
 func messagesOf(rc *middleware.RuntimeContext) []*messages.Message {
@@ -94,7 +100,7 @@ func ShouldCompact(rc *middleware.RuntimeContext, opts Options) bool {
 	if opts.ContextWindow <= 0 {
 		return false
 	}
-	return contextSize(rc) >= int64(float64(opts.ContextWindow)*ThresholdPercent/100)
+	return contextSize(rc, opts) >= int64(float64(opts.ContextWindow)*ThresholdPercent/100)
 }
 
 // Summarizer 生成压缩摘要：复用 provider.Client 单独采样（codex 方式，ADR-037）——
@@ -121,18 +127,20 @@ func (s *Summarizer) Summarize(ctx context.Context, rc *middleware.RuntimeContex
 	msgs := messagesOf(rc)
 	reqMsgs := make([]*messages.Message, 0, len(msgs)+1)
 	reqMsgs = append(reqMsgs, msgs...)
-	previous := ""
-	if rc != nil && rc.State != nil {
-		previous = rc.State.Summary
-	}
-	reqMsgs = append(reqMsgs, &messages.Message{Role: messages.RoleUser, Content: BuildSummaryPrompt(previous)})
+	reqMsgs = append(reqMsgs, &messages.Message{Role: messages.RoleUser, Content: BuildSummaryPrompt()})
 
+	// 模型覆盖与 agent.sample 同规则（ADR-026）：rc.Model 优先（/model 运行时
+	// 切换），未设置时用装配默认 opts.Model——保证摘要与正常采样模型一致。
+	model := s.opts.Model
+	if rc != nil && rc.Model != "" {
+		model = rc.Model
+	}
 	maxOut := s.opts.MaxOutputTokens
 	if maxOut <= 0 {
 		maxOut = summaryOutputTokens
 	}
 	es, err := s.client.Stream(ctx, provider.Request{
-		Model:           s.opts.Model,
+		Model:           model,
 		Messages:        reqMsgs,
 		MaxOutputTokens: maxOut,
 		// Tools 空：摘要请求不提供工具（codex/opencode 同，ADR-037）。
@@ -175,6 +183,16 @@ func NewRunner(summarizer *Summarizer, opts Options) *Runner {
 	return &Runner{summarizer: summarizer, opts: opts}
 }
 
+// SetSystemPromptTokens 设置估算兜底的固定开销（系统提示 + 工具 schema，
+// bytes/4）。仅装配期调用（agent.Build 装配链后估算传入）；运行期只读、
+// 共享 Runner 并发安全的前提是装配完成后不再写。
+func (r *Runner) SetSystemPromptTokens(n int64) {
+	if r == nil {
+		return
+	}
+	r.opts.SystemPromptTokens = n
+}
+
 // Run 执行一次压缩：force=false 时先 ShouldCompact（85% 阈值，超才压）；
 // force=true 强制（手动 /compact）。成功返回 true；未超限返回 false, nil。
 // 摘要失败/取消返回错误（调用方终止 Run，ADR-037）；**失败绝不重写 conversation**
@@ -208,15 +226,18 @@ func (r *Runner) Run(ctx context.Context, rc *middleware.RuntimeContext, force b
 	// 信息"由摘要 prompt 交给 LLM（opencode 结构化模板）；tool_use→tool_result
 	// 邻接天然安全（纯占位全丢，无残留配对问题）。
 	summaryMsg := messages.NewUserMessage(summary)
-	rc.Messages.Messages = []*messages.Message{summaryMsg}
-	if rc.State != nil {
-		rc.State.SetSummary(summary)
-		rc.State.SetLastContextTokens(0) // 防重入：压缩后上下文占用清零
-	}
+	// 先落盘后重写（review 03）：Segment 失败时内存 conversation/state 未动，
+	// 双轨一致（都还是压缩前），下一轮干净重试；落盘成功后的步骤全是无失败点
+	// 的内存操作，顺序安全。
 	if rc.Segment != nil {
 		if err := rc.Segment([]*messages.Message{summaryMsg}); err != nil {
 			return false, fmt.Errorf("上下文压缩落盘失败: %w", err)
 		}
+	}
+	rc.Messages.Messages = []*messages.Message{summaryMsg}
+	if rc.State != nil {
+		rc.State.SetLastContextTokens(0)    // 防重入：压缩后上下文占用清零
+		rc.State.SetUsage(messages.Usage{}) // 压缩后用量归零（/usage 与 footer 对称），下轮采样覆盖恢复
 	}
 	rc.Set(middleware.CompactedKey, true)
 	return true, nil

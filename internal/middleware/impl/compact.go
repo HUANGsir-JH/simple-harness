@@ -25,8 +25,16 @@ type CompactMiddleware struct {
 
 func (m CompactMiddleware) OnReasoning(ctx context.Context, rc *middleware.RuntimeContext, in middleware.ReasoningInput, next middleware.ReasoningHandler) error {
 	if m.Runner != nil && rc != nil {
-		if _, err := m.Runner.Run(ctx, rc, false); err != nil {
+		ran, err := m.Runner.Run(ctx, rc, false)
+		if err != nil {
 			return err
+		}
+		if ran {
+			// 压缩成功：采样必须用重写后的 conversation。in.Messages 是 agent.Run
+			// 采样轮开始时捕获的压缩前快照，直接透传会以完整旧上下文采样——
+			// 触发压缩的那轮仍可能爆窗，且该轮 usage 会把 LastContextTokens
+			// 重新抬高，导致下轮重复触发压缩。
+			in.Messages = rc.Messages.Messages
 		}
 	}
 	return next(ctx, rc, in)

@@ -114,16 +114,19 @@ func (a *Agent) Run(ctx context.Context, rc *middleware.RuntimeContext, onEvent 
 			// 这里兜底旧数据（如 resume 修复前中断产生的会话）。
 			repairDanglingToolUse(conversation, emit)
 			result = sampleResult{}
-			if err := reasoning(ctx, rc, middleware.ReasoningInput{Messages: conversation.Messages, Tools: a.tools.Specs()}); err != nil {
-				emit(events.Event{Type: events.EventError, Err: err})
-				return err
-			}
+			err := reasoning(ctx, rc, middleware.ReasoningInput{Messages: conversation.Messages, Tools: a.tools.Specs()})
 			// 压缩完成标记（ADR-037）：CompactMiddleware（onReasoning before）压缩
 			// 成功后置 rc.attrs；此处发出回合级事件（TUI 系统行"上下文已压缩"）。
-			// 读后清标记，避免同一轮后续采样重复发出。
+			// 无条件读清标记（review 08）：压缩成功但采样失败时也补发——压缩已
+			// 生效（conversation 已重写、transcript 已切段），用户只看到错误会误
+			// 判重压/丢历史；先发"已压缩"系统行再报错误，下轮重试即正常。
 			if rc != nil && rc.Get(middleware.CompactedKey) == true {
 				rc.Set(middleware.CompactedKey, false)
 				emit(events.Event{Type: events.EventCompacted})
+			}
+			if err != nil {
+				emit(events.Event{Type: events.EventError, Err: err})
+				return err
 			}
 			conversation.Add(result.assistant)
 			// 每轮采样后透出用量（ADR-037）：非零才发，避免无 usage 数据时的
