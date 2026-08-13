@@ -79,3 +79,24 @@ func closeProcessTree(h processTreeHandle) {
 		_ = windows.CloseHandle(h)
 	}
 }
+
+// preserveProcessTree 释放进程树：清除 KILL_ON_JOB_CLOSE 限制（codex
+// JobObject.preserve_descendants 同款）。前台命令正常完成时调用——命令退出
+// 但派生的后台进程（`npm run dev &`）仍在 job 内，直接关句柄会被内核兜底
+// 杀树（"起了又没了"）；清除标志后关句柄，派生进程存活。
+//
+// crash 兜底不受影响：崩溃时本函数未执行，句柄随进程消亡被内核关闭，
+// KILL_ON_JOB_CLOSE 仍杀树。Esc/超时路径不调用本函数（Esc 要杀、超时转后台
+// 要移交句柄继续受控）。
+func preserveProcessTree(h processTreeHandle) {
+	if h == 0 {
+		return
+	}
+	info := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{
+		BasicLimitInformation: windows.JOBOBJECT_BASIC_LIMIT_INFORMATION{
+			LimitFlags: 0, // 清空全部限制（含 KILL_ON_JOB_CLOSE）
+		},
+	}
+	_, _ = windows.SetInformationJobObject(h, windows.JobObjectExtendedLimitInformation,
+		uintptr(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info)))
+}

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -136,4 +137,35 @@ func TestShellEscKillsTreeWindows(t *testing.T) {
 	if isProcessAlive(childPID) {
 		t.Errorf("Esc 后孙进程 %d 仍存活（杀树失效）", childPID)
 	}
+}
+
+// waitForProcessDead 短超时内轮询等待进程死亡（tasklist 判定，覆盖刷新
+// 窗口）。与 POSIX 版配对：统一"应死亡"断言助手（审查报告 03）。
+func waitForProcessDead(pid int, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if !isProcessAlive(pid) {
+			return true
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return false
+}
+
+// fgSpawnChildCommand 构造"Start-Process 派生孙进程 + 主命令立即退出"的
+// PowerShell 命令（01 回归锚点：前台命令正常退出后派生进程应存活）。
+func fgSpawnChildCommand(pidfile string) string {
+	return fmt.Sprintf(
+		"Start-Process powershell -ArgumentList '-NoProfile','-Command','Start-Sleep -Seconds 30' -PassThru | Select-Object -ExpandProperty Id | Set-Content '%s'",
+		pidfile)
+}
+
+// readSpawnedPID 轮询 pidfile 读取派生进程 PID（PowerShell 冷启动 ~1s，
+// 委托 readChildPID）。
+func readSpawnedPID(t *testing.T, pidfile string) int { return readChildPID(t, pidfile) }
+
+// killPidDirect 直接杀单个进程（01 语义：派生进程不被注册表追踪，测试清理
+// 用 taskkill 直接杀）。
+func killPidDirect(pid int) {
+	_ = exec.Command("taskkill", "/PID", strconv.Itoa(pid), "/F").Run()
 }

@@ -50,31 +50,41 @@ func unregisterBackground(pid int) *bgProcess {
 // 永不返回（写端不关、读端无 EOF），形成"卡住 → 杀不到"的死锁。杀树成功后
 // 树内全部进程消亡、管道写端随进程终止被内核关闭 → Wait 必返回。
 //
-// 返回进程树句柄，调用方须全路径 defer closeProcessTree(tree)：
-// 成功路径关闭空 job 无害（进程已自然退出）；ctx 取消路径杀树后关闭。
-// attach 失败降级（tree 置 0）：杀树走 taskkill 尽力兜底（Windows 嵌套 job
-// 限制场景，ADR-038 已知边界）。
-func startForeground(ctx context.Context, cmd *exec.Cmd) (processTreeHandle, error) {
+// 返回进程树句柄 + AfterFunc 的 stop 函数，调用方须全路径 defer
+// closeProcessTree(tree)：完成/超时分支须先 stop()（防 defer cancel() 触发
+// 杀树——ADR-038 决策第 2 点"成功路径 stop() 防 PID 复用误杀"：回调若在进程
+// 退出后才触发，pid 可能已被系统复用给无关进程），Esc 分支不 stop（杀树就是
+// 目的）。Start 失败返回零值句柄（避免调用方错误分支二次 close——Windows 上
+// 双重 CloseHandle 可能关闭被复用句柄值）。attach 失败降级（tree 置 0）：
+// 杀树走 taskkill 尽力兜底（Windows 嵌套 job 限制场景，ADR-038 已知边界）。
+func startForeground(ctx context.Context, cmd *exec.Cmd) (processTreeHandle, func() bool, error) {
 	// createProcessTree 失败（如 Windows 嵌套 job 限制）→ 零值句柄：
 	// attach 对零值 no-op，杀树走 taskkill 兜底（ADR-038 已知边界）。
 	tree, _ := createProcessTree()
 	if err := cmd.Start(); err != nil {
 		closeProcessTree(tree)
-		return tree, err
+		var zero processTreeHandle
+		return zero, nil, err
 	}
-	_ = attachProcessTree(tree, cmd.Process)
+	if err := attachProcessTree(tree, cmd.Process); err != nil {
+		// attach 失败降级：句柄已无效，置零让杀树走 taskkill 兜底
+		// （ADR-038 决策第 1 点"Assign 失败 → 句柄记 0"）。
+		closeProcessTree(tree)
+		var zero processTreeHandle
+		tree = zero
+	}
 	// AfterFunc 在 Start 之后注册：回调触发时 cmd.Process.Pid 必有值。
 	// **只杀 Esc（Canceled）**：超时（DeadlineExceeded）不杀——超时语义是
 	// 转后台托管（ADR-038 扩展），由 Handle 的 select 超时分支移交注册表；
 	// Esc 是用户主动说"停"，杀树。Start 前 ctx 已取消的竞态由 Handle 的
 	// ctx.Err() 检查兜底（见 shell.go）。
 	pid := cmd.Process.Pid
-	context.AfterFunc(ctx, func() {
+	stop := context.AfterFunc(ctx, func() {
 		if ctx.Err() == context.Canceled {
 			killProcessTree(tree, pid)
 		}
 	})
-	return tree, nil
+	return tree, stop, nil
 }
 
 // transferToBackground 把前台命令转后台托管（超时转后台，ADR-038 扩展）：
@@ -123,7 +133,12 @@ func startBackground(rc *middleware.RuntimeContext, command, workdir string) (pi
 		os.Remove(tmp)
 		return 0, "", err
 	}
-	_ = attachProcessTree(tree, cmd.Process)
+	if err := attachProcessTree(tree, cmd.Process); err != nil {
+		// attach 失败降级：句柄置零走 taskkill 兜底（同 startForeground）。
+		closeProcessTree(tree)
+		var zero processTreeHandle
+		tree = zero
+	}
 
 	pid = cmd.Process.Pid
 	logPath = filepath.Join(dir, fmt.Sprintf("%d.log", pid))
@@ -131,10 +146,13 @@ func startBackground(rc *middleware.RuntimeContext, command, workdir string) (pi
 		logPath = tmp // 平台差异降级保留临时名；结果显式返回实际路径，模型不猜文件名
 	}
 	f.Close()
-	// 回收子进程资源：Wait 在进程死后等管道 EOF 即返回（goroutine 不阻塞主流程）。
-	go func() { _ = cmd.Wait() }()
-
+	// 先注册再起回收 goroutine（顺序铁定：条目存在期间进程在跑；先起 goroutine
+	// 则进程极快退出时注销可能先于注册执行，死进程条目残留回旧行为）。
 	registerBackground(&bgProcess{PID: pid, Handle: tree})
+	// 回收子进程资源：Wait 在进程死后等管道 EOF 即返回（goroutine 不阻塞主流程）。
+	// 进程自然退出后注销注册表条目——残留条目在 POSIX 上会因 PID 复用让
+	// kill_pid 通过"仅注册表内 PID"检查后误杀无关进程组（安全边界失效）。
+	go func() { _ = cmd.Wait(); unregisterBackground(pid) }()
 	return pid, logPath, nil
 }
 

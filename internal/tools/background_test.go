@@ -149,7 +149,9 @@ func TestShellCommandKillBackground(t *testing.T) {
 		t.Errorf("kill 结果: %q", r2.Content)
 	}
 	// 杀树是同步内核操作（job terminate / kill 信号），进程应已死。
-	if isProcessAlive(pid) {
+	// 用 waitForProcessDead 轮询：瞬时 kill -0 会撞上"僵尸未回收"窗口
+	// （审查报告 03，POSIX 假阳性）。
+	if !waitForProcessDead(pid, 2*time.Second) {
 		t.Errorf("kill_pid 后进程 %d 仍存活", pid)
 	}
 	// 二次 kill：注册表已注销。
@@ -180,7 +182,7 @@ func TestCleanupBackgroundKillsAll(t *testing.T) {
 	}
 	CleanupBackground()
 	for _, pid := range pids {
-		if isProcessAlive(pid) {
+		if !waitForProcessDead(pid, 2*time.Second) {
 			t.Errorf("CleanupBackground 后进程 %d 仍存活", pid)
 		}
 	}
@@ -212,7 +214,7 @@ func TestShellCommandTimeoutKeepsProcessAlive(t *testing.T) {
 	if err != nil || !r.Success {
 		t.Fatalf("kill_pid: %v %v", r, err)
 	}
-	if isProcessAlive(pid) {
+	if !waitForProcessDead(pid, 2*time.Second) {
 		t.Errorf("kill_pid 后进程 %d 应死亡", pid)
 	}
 }
@@ -230,4 +232,65 @@ func TestShellCommandEscInterrupt(t *testing.T) {
 	if !strings.Contains(err.Error(), "命令已被中断") {
 		t.Errorf("Esc 应回填中断提示: %s", err)
 	}
+}
+
+// TestShellCommandFgSpawnedChildSurvives 回归锚点（审查报告 01）：前台命令
+// 派生后台进程后正常退出——派生进程必须存活（终端式语义）。修复前两条路径
+// 都会误杀：POSIX = defer cancel() 触发 AfterFunc 杀进程组；Windows = job
+// 句柄关闭 KILL_ON_JOB_CLOSE 杀全树。等待 500ms 再断言：杀树回调是异步的，
+// 瞬时检查会放过竞态窗口（误判通过）。
+func TestShellCommandFgSpawnedChildSurvives(t *testing.T) {
+	pidFile := filepath.Join(t.TempDir(), "child.pid")
+	r, err := call(ShellCommandTool{}, map[string]any{
+		"command": fgSpawnChildCommand(pidFile),
+	})
+	if err != nil || !r.Success {
+		t.Fatalf("前台命令: %v %v", r, err)
+	}
+	child := readSpawnedPID(t, pidFile)
+	time.Sleep(500 * time.Millisecond)
+	if !isProcessAlive(child) {
+		t.Errorf("命令派生的后台进程 %d 被杀（正常退出误杀回归）", child)
+	}
+	// 清理：派生进程不被注册表追踪（01 语义，与终端一致），直接杀。
+	killPidDirect(child)
+	if !waitForProcessDead(child, 3*time.Second) {
+		t.Errorf("清理失败：派生进程 %d 未死", child)
+	}
+}
+
+// TestShellCommandBackgroundAutoUnregister 回归锚点（审查报告 02）：background
+// 进程自然退出后注册表条目自动注销——kill_pid 应报"未找到"。残留条目在
+// POSIX 上会因 PID 复用让 kill_pid 通过"仅注册表内 PID"检查后误杀无关进程组
+// （安全边界失效）。
+func TestShellCommandBackgroundAutoUnregister(t *testing.T) {
+	rc := testRCWithStatePath(t)
+	t.Cleanup(CleanupBackground)
+	r, err := callWithRC(ShellCommandTool{}, rc, map[string]any{
+		"command": "echo done", "background": true,
+	})
+	if err != nil || !r.Success {
+		t.Fatalf("background: %v %v", r, err)
+	}
+	var pid int
+	if _, err := fmt.Sscanf(r.Content, "已后台启动 PID %d", &pid); err != nil || pid <= 0 {
+		t.Fatalf("提取 PID 失败: %q", r.Content)
+	}
+	if !waitForProcessDead(pid, 10*time.Second) {
+		t.Fatalf("进程 %d 未在期限内退出", pid)
+	}
+	// Wait goroutine 注销晚于进程死亡：轮询注册表直至条目消失。
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, ok := backgroundProcesses.Load(pid); !ok {
+			_, err = callWithRC(ShellCommandTool{}, rc, map[string]any{"kill_pid": pid})
+			wantRespondToModel(t, err, "auto unregister")
+			if !strings.Contains(err.Error(), "未找到后台进程") {
+				t.Errorf("自然退出后 kill_pid 应报未找到: %s", err)
+			}
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Errorf("进程自然退出后注册表条目未自动注销（残留）")
 }

@@ -24,7 +24,8 @@ const powershellUTF8Prefix = "try { [Console]::OutputEncoding=[System.Text.Encod
 // PowerShell，POSIX 用 sh -c。三种模式：
 //   - 前台（默认）：同步阻塞至命令退出/超时/Esc 中断。Esc 杀**整棵进程树**
 //     （Windows Job Object / POSIX 进程组，含派生孙进程）并回填"已中断"；
-//     **超时不杀树，自动转入后台托管**（返回 PID+日志路径，模型轮询日志，
+//     **正常退出不杀派生进程**（`npm run dev &` 起的服务随命令返回继续运行，
+//     终端式语义）；**超时不杀树，自动转入后台托管**（返回 PID+日志路径，模型轮询日志，
 //     用 kill_pid 终止，不要重试——命令仍在运行）；输出超长时完整版由
 //     ToolOutputMiddleware 统一落盘 evictions/（工具返回完整结果，ADR-028）。
 //   - background：后台启动立即返回 PID + 日志路径（长任务/服务启动用），
@@ -105,7 +106,7 @@ func (ShellCommandTool) Handle(ctx context.Context, rc *middleware.RuntimeContex
 	cmd.Stdout = f
 	cmd.Stderr = f
 
-	tree, err := startForeground(ctx, cmd)
+	tree, stopTree, err := startForeground(ctx, cmd)
 	if err != nil {
 		f.Close()
 		os.Remove(tmpLog)
@@ -140,12 +141,20 @@ func (ShellCommandTool) Handle(ctx context.Context, rc *middleware.RuntimeContex
 		os.Remove(tmpLog)
 		if ctx.Err() == context.Canceled {
 			// 完成瞬间恰逢 Esc（杀树已执行或进程已死）：报中断语义。
+			// 不调 stopTree：杀树就是 Esc 的目的。
 			msg := "shell_command: 命令已被中断（Esc），进程树已终止"
 			if len(out) > 0 {
 				msg += "\n" + string(out)
 			}
 			return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: msg}
 		}
+		// 正常完成路径：stopTree 防 defer cancel() 触发杀树（ADR-038 决策
+		// 第 2 点——否则每条前台命令返回瞬间，命令派生的后台进程
+		// （`npm run dev &`）随进程组/job 一并被杀）；preserveProcessTree
+		// 释放句柄关闭时的内核兜底杀树（Windows 清 KILL_ON_JOB_CLOSE，
+		// codex preserve_descendants 同款；POSIX no-op）。
+		stopTree()
+		preserveProcessTree(tree)
 		if werr != nil {
 			msg := "shell_command: " + werr.Error()
 			if len(out) > 0 {
@@ -178,6 +187,7 @@ func (ShellCommandTool) Handle(ctx context.Context, rc *middleware.RuntimeContex
 			// 恰好此时完成也注册无害（杀空 job 无副作用，二次 kill 报未找到）。
 			pid := cmd.Process.Pid
 			logPath := transferToBackground(rc, tree, pid, tmpLog)
+			stopTree() // 回调已在超时瞬间触发（DeadlineExceeded 不杀），此处 no-op 防御
 			var zero processTreeHandle
 			tree = zero // 句柄已移交注册表，defer 不再 close
 			return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: fmt.Sprintf(

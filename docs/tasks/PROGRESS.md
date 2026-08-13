@@ -1,5 +1,18 @@
 ## 2026-08-13
 
+### shell 进程树审查修复轮（审查报告 01-06）✅ 版本 0.9.2
+
+- **背景**：`shell-process-tree-review-2026-08-13.md` 审查（a83d8e5..661a303）发现 5 项缺陷——01 严重：AfterFunc 的 stop 被丢弃，`defer cancel()` 使每条前台命令正常返回瞬间触发杀树，命令派生的后台进程（`npm run dev &`）"起了又没了"（对照实验证实）；02 background 自然退出后注册表残留（POSIX PID 复用 → kill_pid 误杀无关进程组，探针证实）；03 POSIX 判活把僵尸当存活（macOS 3 假失败）；04 POSIX 超时测试语义未随勘误反转（真实失败）；05 Windows 双重 CloseHandle。核实中另发现 06：attach 失败降级（决策第 1 点"句柄记 0 走 taskkill"）未实现。逐点决策：01-Windows 用 codex 同款 preserve（清 KILL_ON_JOB_CLOSE）；03 拆两助手；6 项一批全修（POSIX 实测后续在 Mac 补）。
+- **修复**（详见 DECISIONS.md ADR-038 二次勘误）：
+  - **01**：`startForeground` 返回 stop，Handle 完成分支（非 Esc）与超时分支调用；Esc 分支不调（杀树即目的）。
+  - **01-Windows 延伸**：新平台函数 `preserveProcessTree`（清 KILL_ON_JOB_CLOSE 再关句柄，codex `preserve_descendants` 同款；POSIX no-op）——仅 stop() 不够：defer 顺序使句柄关闭先于 cancel，内核兜底仍杀树（Windows 探针证实孙进程被杀）。
+  - **02**：Wait goroutine 补 `unregisterBackground(pid)`。
+  - **05/06**：Start 失败返回零值句柄；attach 失败 close + 置零（taskkill 兜底可达）。
+  - **03/04**：`waitForProcessDead`（短超时轮询，"应死亡"断言用）与瞬时 `isProcessAlive`（"应存活"断言用）拆分；`TestShellTimeoutKillsProcessGroup` → `TestShellTimeoutTransfersBackgroundUnix`（超时后进程组存活 + kill_pid 杀整组，前台 sleep 加长到 30s 防自然退出注销竞态）。
+  - **回归锚点**：`TestShellCommandFgSpawnedChildSurvives`（01，跨平台——修复前双平台全杀）+ `TestShellCommandBackgroundAutoUnregister`（02）。
+- **验证**：Windows 全量 `go build/vet/test ./...` + tools `-race` + e2e 全绿；linux/darwin 交叉编译绿。POSIX 测试修复已就位、待 macOS 实测——**此前 ADR-038 各记录"全量全绿"均为 Windows 平台**（POSIX 侧 3 个测试因僵尸判活假失败、1 个因语义过期真失败；本轮 03/04 即为恢复 POSIX 回归检测能力）。
+- **踩坑**：超时转后台的 POSIX 测试若前台 sleep 太短（5s），sh 自然退出后注册表自动注销（02 修复），kill_pid 会报"未找到"——前台 sleep 用 30s 保证条目存活期间可杀。
+
 ### ADR-028 勘误：移除 shell 工具内截断 ✅（消除双重截断）
 
 - **背景**：复查发现 shell 错误分支（非零退出/Esc 中断）工具内调用 `EvictContent`，与 ToolOutputMiddleware after 双重截断——preview ≈ 20K+ 元文本再次超阈值触发二级截断 + 冗余 eviction 文件（内容是 preview 而非原始输出）；且成功分支不截、错误分支截，行为不一致。历史动机（超时后内存 buffer 输出会丢，需工具内抢先落盘）自 ADR-038 输出写日志文件 + 中间件 after 无条件兜底后已不存在。ADR-028 原文两条款本就矛盾（"工具返回完整结果，删工具内 truncate" vs "shell 长任务缓解 B：经 EvictContent 落盘"）。

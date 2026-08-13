@@ -26,3 +26,7 @@ func killProcessTree(h processTreeHandle, pid int) {
 }
 
 func closeProcessTree(h processTreeHandle) {}
+
+// preserveProcessTree POSIX：no-op——正常完成路径的杀树风险只来自 AfterFunc
+// 回调（由调用方 stop() 阻止）；进程组无句柄关闭兜底杀树（Windows 专有）。
+func preserveProcessTree(h processTreeHandle) {}

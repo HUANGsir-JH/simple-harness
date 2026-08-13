@@ -412,6 +412,18 @@
 - **实现要点**：前台输出从内存 buffer 改为写临时日志文件（`.fg_<nano>.log`，转后台时 rename `<pid>.log`——无缝续写无撕裂）；AfterFunc 杀树回调加 `ctx.Err() == context.Canceled` 判断（只 Esc 杀，超时不杀）；Wait 拆到 goroutine（`go func() { err := cmd.Wait(); f.Close(); done <- err }()`——转后台后进程长活时 f 由该 goroutine 在进程死后收尾），Handle 用 select 三路：完成 / Esc（杀树后等 done + 5s 安全网）/ 超时（transferToBackground：rename + 注册表 + tree 置零跳过 defer close）。竞态无害：超时瞬间进程恰好完成 → 注册已死进程（杀空 job 无副作用）；完成瞬间恰逢 Esc → 报中断语义。
 - **边界**：僵尸积累（模型反复跑卡死命令）由退出清理 + 提示词引导 kill_pid 缓解；此语义超出 opencode/codex 参考源（两者超时都杀），为用户自创决策。
 
+### ADR-038 二次勘误（2026-08-13，审查修复轮：正常退出不杀派生进程 + 自然退出注销 + 降级路径补实现）
+
+- **背景**：`docs/reviews/shell-process-tree-review-2026-08-13.md` 审查发现 5 项缺陷（对照实验/探针证实），核实中另发现 1 项（06 attach 降级）。其中 01/06 属**实现漏掉已定案设计**（决策第 2 点 stop() / 决策第 1 点"句柄记 0"）。
+- **修复（6 项，用户逐点拍板）**：
+  1. **正常完成路径补 `stop()`（01，严重）**：原实现丢弃 AfterFunc 返回的 stop，`defer cancel()` 使每条前台命令正常返回瞬间 `ctx.Err()==Canceled` → 杀树回调触发，命令派生的后台进程（`npm run dev &`）随进程组/job 被杀（"起了又没了"）。`startForeground` 返回 stop，Handle 完成分支（非 Esc）与超时分支调用；Esc 分支不调用（杀树就是目的）。超时分支调用是 no-op 防御（回调已在超时瞬间触发且不杀）。
+  2. **Windows 正常完成补 `preserveProcessTree`（01 延伸，审查报告未覆盖）**：Windows 上仅 stop() 不够——defer 顺序（LIFO）使 `closeProcessTree` 先于 `cancel` 执行，KILL_ON_JOB_CLOSE 句柄关闭仍由内核兜底杀树。新平台函数：完成分支**清除 KILL_ON_JOB_CLOSE 限制**再关句柄（codex `JobObject.preserve_descendants` 同款）——派生进程完全释放，与 POSIX stop() 后语义对齐（**终端式：前台正常退出不杀派生进程，派生进程退出 harness 后仍存活**；模型经 shell 语法放后台的进程不被注册表追踪、不能用 kill_pid，与决策第 6 点引导一致）；Esc/超时路径不调用（Esc 要杀、超时转后台要移交句柄继续受控）；crash 兜底不受影响（崩溃时本函数未执行，句柄随进程消亡关闭仍杀树）。
+  3. **background 自然退出自动注销（02）**：Wait goroutine 补 `unregisterBackground(pid)`——消除边界"注册表条目进程自然退出后残留至 kill/退出清理"，POSIX PID 复用后 `kill_pid` 误杀无关进程组的风险随之关闭（Windows 因 job 句柄精确定位本无此风险）。
+  4. **attach 失败降级补实现（06，报告外）**：原实现丢弃 attach 错误且句柄未置零——有效空 job 走 `TerminateJobObject` 分支杀空气、taskkill 兜底不可达。修复：attach 失败 → close + 置零（startForeground/startBackground 两处）。
+  5. **Start 失败返回零值句柄（05）**：消除 Windows 上错误分支二次 `CloseHandle`（关闭被内核复用句柄值的未定义行为）。
+  6. **测试修复（03/04）**：POSIX 判活拆分 `waitForProcessDead`（短超时轮询——僵尸态对 kill -0 假活，"应死亡"断言专用）与瞬时 `isProcessAlive`（"应存活"断言专用）；`TestShellTimeoutKillsProcessGroup` 反转为 `TestShellTimeoutTransfersBackgroundUnix`（超时后进程组存活 + kill_pid 杀整组，对齐 Windows 版）；回归锚点 `TestShellCommandFgSpawnedChildSurvives`（锁 01，跨平台）+ `TestShellCommandBackgroundAutoUnregister`（锁 02）。
+- **平台验证状态**：Windows 全量 `go build/vet/test ./...` + tools `-race` + e2e 全绿；linux/darwin 交叉编译绿；POSIX 测试待 macOS 实测——**此前 ADR-038 各记录"全量全绿"均为 Windows 平台验证**（POSIX 侧 3 个测试因僵尸判活假失败、1 个因语义过期真失败）。
+
 ### ADR-028 勘误（2026-08-13，移除 shell 工具内截断）
 
 - **背景**：ADR-028 两条款自相矛盾——"截断上收中间件（工具返回完整结果，删工具内 truncate）"与"shell 长任务缓解 B：超时/非零退出经 EvictContent 落盘"。shell 错误分支（非零退出/Esc 中断）工具内调用 EvictContent，与 ToolOutputMiddleware after 双重截断：preview ≈ 20K + 元文本再次超阈值 → 二级截断 + 冗余 eviction 文件（内容是 preview 而非原始输出）；且成功分支不截、错误分支截，行为不一致。历史动机（超时后内存 buffer 输出会丢，需工具内抢先落盘）自 ADR-038 输出写日志文件 + 中间件 after 无条件兜底后已不存在。
