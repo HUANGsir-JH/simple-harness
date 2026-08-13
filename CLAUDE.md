@@ -83,3 +83,5 @@ internal/
 1. D:\agent-project\harness\codex：codex开源仓库
 2. D:\agent-project\harness\opencode：opencode开源仓库
 3. D:\agent-project\harness\simple-harness\agent-scope-llms.txt：AgentScope LLMs 相关信息
+4. D:\agent-project\harness\agentscope-java： AgentScope Java v2 架构源码
+5. D:\agent-project\harness\deepseek-harness：DeepSeek harness 源码
