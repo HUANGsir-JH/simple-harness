@@ -25,8 +25,8 @@ const powershellUTF8Prefix = "try { [Console]::OutputEncoding=[System.Text.Encod
 //   - 前台（默认）：同步阻塞至命令退出/超时/Esc 中断。Esc 杀**整棵进程树**
 //     （Windows Job Object / POSIX 进程组，含派生孙进程）并回填"已中断"；
 //     **超时不杀树，自动转入后台托管**（返回 PID+日志路径，模型轮询日志，
-//     用 kill_pid 终止，不要重试——命令仍在运行）；输出超长时完整版落盘
-//     evictions/。
+//     用 kill_pid 终止，不要重试——命令仍在运行）；输出超长时完整版由
+//     ToolOutputMiddleware 统一落盘 evictions/（工具返回完整结果，ADR-028）。
 //   - background：后台启动立即返回 PID + 日志路径（长任务/服务启动用），
 //     进程不绑定回合（Esc 不杀），用 read_file/grep 轮询日志，配套 kill_pid
 //     终止；harness 退出时自动清理。
@@ -142,14 +142,14 @@ func (ShellCommandTool) Handle(ctx context.Context, rc *middleware.RuntimeContex
 			// 完成瞬间恰逢 Esc（杀树已执行或进程已死）：报中断语义。
 			msg := "shell_command: 命令已被中断（Esc），进程树已终止"
 			if len(out) > 0 {
-				msg += "\n" + EvictContent(rc, string(out))
+				msg += "\n" + string(out)
 			}
 			return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: msg}
 		}
 		if werr != nil {
 			msg := "shell_command: " + werr.Error()
 			if len(out) > 0 {
-				msg += "\n" + EvictContent(rc, string(out))
+				msg += "\n" + string(out)
 			}
 			return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: msg}
 		}
@@ -168,7 +168,7 @@ func (ShellCommandTool) Handle(ctx context.Context, rc *middleware.RuntimeContex
 			os.Remove(tmpLog)
 			msg := "shell_command: 命令已被中断（Esc），进程树已终止"
 			if len(out) > 0 {
-				msg += "\n" + EvictContent(rc, string(out))
+				msg += "\n" + string(out)
 			}
 			return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: msg}
 

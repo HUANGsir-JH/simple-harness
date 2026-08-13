@@ -412,6 +412,11 @@
 - **实现要点**：前台输出从内存 buffer 改为写临时日志文件（`.fg_<nano>.log`，转后台时 rename `<pid>.log`——无缝续写无撕裂）；AfterFunc 杀树回调加 `ctx.Err() == context.Canceled` 判断（只 Esc 杀，超时不杀）；Wait 拆到 goroutine（`go func() { err := cmd.Wait(); f.Close(); done <- err }()`——转后台后进程长活时 f 由该 goroutine 在进程死后收尾），Handle 用 select 三路：完成 / Esc（杀树后等 done + 5s 安全网）/ 超时（transferToBackground：rename + 注册表 + tree 置零跳过 defer close）。竞态无害：超时瞬间进程恰好完成 → 注册已死进程（杀空 job 无副作用）；完成瞬间恰逢 Esc → 报中断语义。
 - **边界**：僵尸积累（模型反复跑卡死命令）由退出清理 + 提示词引导 kill_pid 缓解；此语义超出 opencode/codex 参考源（两者超时都杀），为用户自创决策。
 
+### ADR-028 勘误（2026-08-13，移除 shell 工具内截断）
+
+- **背景**：ADR-028 两条款自相矛盾——"截断上收中间件（工具返回完整结果，删工具内 truncate）"与"shell 长任务缓解 B：超时/非零退出经 EvictContent 落盘"。shell 错误分支（非零退出/Esc 中断）工具内调用 EvictContent，与 ToolOutputMiddleware after 双重截断：preview ≈ 20K + 元文本再次超阈值 → 二级截断 + 冗余 eviction 文件（内容是 preview 而非原始输出）；且成功分支不截、错误分支截，行为不一致。历史动机（超时后内存 buffer 输出会丢，需工具内抢先落盘）自 ADR-038 输出写日志文件 + 中间件 after 无条件兜底后已不存在。
+- **修订**：移除 shell.go 错误分支三处 EvictContent 调用，错误消息拼原始输出——工具成功/失败一致返回完整结果，截断 + 落盘 + 路径提示统一由 ToolOutputMiddleware（onToolCall after 无条件执行，含 Esc 中断回填）负责。落盘文件内容由"纯输出"变为"错误前缀 + 输出"（无害，更完整）。
+
 ## ADR-039：系统提示通道重构——内容通道分类原则 + rc.SystemPrompt + base 中间件化 + 压缩判定实时化（2026-08-13）
 
 - **背景**：两个痛点——① `Agent.instructions` 挂在 agent 结构体上，与 ADR-026 无状态 agent 架构有张力（系统提示本质是会话/运行级内容：阶段四 AGENTS.md 随 cwd 变、阶段五 subagent 不同提示词）；② Build 装配期做兜底 token 估算注入（预组合系统提示 + 工具 schema bytes/4 → `SetSystemPromptTokens`）——装配后写 Runner、阶段四动态注入后固定值失效。

@@ -1,3 +1,11 @@
+## 2026-08-13
+
+### ADR-028 勘误：移除 shell 工具内截断 ✅（消除双重截断）
+
+- **背景**：复查发现 shell 错误分支（非零退出/Esc 中断）工具内调用 `EvictContent`，与 ToolOutputMiddleware after 双重截断——preview ≈ 20K+ 元文本再次超阈值触发二级截断 + 冗余 eviction 文件（内容是 preview 而非原始输出）；且成功分支不截、错误分支截，行为不一致。历史动机（超时后内存 buffer 输出会丢，需工具内抢先落盘）自 ADR-038 输出写日志文件 + 中间件 after 无条件兜底后已不存在。ADR-028 原文两条款本就矛盾（"工具返回完整结果，删工具内 truncate" vs "shell 长任务缓解 B：经 EvictContent 落盘"）。
+- **改动**：删除 `shell.go` 错误分支三处 `EvictContent` 调用（错误消息拼原始输出，成功/失败一致返回完整结果）；截断 + 落盘 + 路径提示统一由 ToolOutputMiddleware 兜底（after 无条件执行，含 Esc 中断回填）；落盘文件内容由"纯输出"变为"错误前缀 + 输出"（无害，更完整）。evict.go/shell.go 注释、DECISIONS.md（ADR-028 勘误段）同步。
+- **测试**：`go build/vet/test ./...` 全绿 + e2e `-count=1` 强制重跑通过（shell_test/tool_output_test 无断言依赖工具内截断行为）。
+
 ## 2026-08-12
 
 ### 阶段 C：LLM 摘要式压缩 ✅ 版本 0.8.0（ADR-037 第三段）

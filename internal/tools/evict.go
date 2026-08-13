@@ -17,8 +17,10 @@ const MaxOutputChars = 20000
 // EvictContent 截断工具结果：超 MaxOutputChars 时保留 head 前 50% + tail 后
 // 50%（各 MaxOutputChars/2），中间省略并计数；全量落盘到会话目录下
 // evictions/（rc.StatePath 所在目录），返回 preview + 绝对路径 + 读取提示。
-// 供 tools 包（shell 超时错误分支）与 impl 的 ToolOutputMiddleware 复用
-// （ADR-028）。定义在 tools 包：工具域逻辑，避免 tools → impl 反向依赖
+// 供 impl 的 ToolOutputMiddleware 统一调用（onToolCall after 截断，ADR-028）；
+// 工具自身返回完整结果——shell 工具内自行调用已移除（2026-08-13 勘误：
+// 与"截断上收中间件"条款矛盾，造成双重截断 + 冗余 eviction 文件）。
+// 定义在 tools 包：工具域逻辑，避免 tools → impl 反向依赖
 // （Bug03 断环，2026-08-10）。
 //
 // rc 为 nil 或 StatePath 为空（非会话场景/测试）→ 退化纯截断（不落盘），
