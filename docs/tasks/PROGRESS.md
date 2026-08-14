@@ -1,5 +1,18 @@
 ## 2026-08-14
 
+### TUI 重构（视觉 + 组件化 + 交互增强）✅ ADR-043（分支 feat/tui-redesign）
+
+- **背景**：现有 TUI 功能完备但视觉偏工程化（全 ASCII 边框、YOU/ASSISTANT 文字标签、9 个写死颜色、todo/queue 裸文本条、每次 refresh 全量重排时间线）。重新调研 codex（HistoryCell/语义色/keymap 三件套/稳定前缀流式）与 opencode（主题 token/通用 DialogSelect/工具双形态/16ms 合帧），方案 `docs/plans/tui-redesign-2026-08-14.md` 经用户拍板：单栏+弹窗布局、无 emoji 基线+主题系统、只做视觉与组件化重构（功能/命令/键位零变化）、键位维持现状。
+- **Phase 0 文档**：ADR-043 落 DECISIONS.md、TASKS.md 建 T0~T6 条目、基线全绿。
+- **Phase 1 地基（零视觉变化）**：theme.go——15 语义 token + 内置 harness-dark/light + termenv 明暗探测（非 TTY 默认 dark 保证测试确定性）+ rebuildStyles 派生全部样式/颜色全局变量（调用点零改动）；keymap.go——7 上下文键位表（global/composer/timeline/approval/ask/select/help）单一事实来源，model.go 六个 handle*Key switch 收敛为表驱动分发（判定顺序/降级/兜底逐字节等价）。验收：**既有测试零改动全绿**。
+- **Phase 2 统一 dialog**：renderDialog 骨架（标题+分隔线+内容+提示行，圆角边框+panel 背景）+ dialogStyle；审批/ask/选择器/help 四实例迁移（键位/标题/文案语义不变，e2e 契约串保留）；几何延续 ADR-032 单一来源；主题 Border 切 RoundedBorder。
+- **Phase 3 主界面 + 三项交互增强（用户追加）**：cells.go——user 改 › 前缀（去 YOU 标签）、assistant 去标签、thinking 折叠行抽取首个粗体标题+字符数+耗时（首个增量→块完成打点，流式实时）；composer 圆角边框（去 MESSAGE 标签，焦点 accent）、header/todo/queue 视觉统一；**右侧滚动条**（轨道 border 淡化+拇指 accent、内容不超视口隐藏、点击按比例跳转+拖拽连续滚动，viewport 让出 1 列）；**鼠标文本选择**（press/motion/release 三态：无位移=点击保留折叠切换语义、拖拽=选区 ANSI 感知列换算不破坏行内样式、Ctrl+C 优先复制选区纯文本无选区回退复制 composer、Esc 空闲清除选区）；**时长展示**（footer 运行态实时耗时+空闲态 last Ns、thinking/工具调用耗时，纯 UI 侧计时不回写 transcript）。
+- **Phase 4 工具双形态**：Inline 单行（read_file/list_dir/glob/update_todo/后台 shell：徽章+摘要+耗时，不可展开）vs Block 边框块（shell 输出/write_file diff/apply_patch/失败详情：折叠+…+N lines）；**展开态完整 args**（pretty JSON 缩进全文不截断）+ 完整结果；新建 write_file 正文按扩展名 chroma 语法高亮（terminal256+github-dark）；@@ hunk 行 muted。
+- **Phase 5 渲染缓存**：cellCache 挂 timelineItem——消息 cell key=宽度/选中/thinking 折叠/展示开关（Done 消息内容不可变缓存安全），工具 cell 运行中完全绕过缓存（耗时实时+Done 翻转）、Done 后 key=宽度/选中/折叠态；流式尾块不缓存。长会话流式 delta 不再全量重排历史 cell。
+- **测试**：每阶段 go test ./... 全绿 + e2e -count=1 强制重跑全绿；新增 theme/keymap/scrollbar/selection/工具双形态/args 完整性/耗时/缓存正确性锚定测试；既有测试仅同步视觉契约（点击改 press+release、THINKING→Thinking、read_file 改断言 Inline、弹窗行数 8→9）。
+- **人工实测清单（待用户）**：滚条拖拽手感/拇指比例、文本选择拖拽+复制、Ctrl+C 选区优先、中文 IME 输入、resize/40 列窄屏、长会话滚动性能、明暗终端主题呈现、ConPTY/Windows 边框字形。
+
+
 ### 后台日志分配竞态修复 ✅ 版本 0.11.1（ADR-042）
 
 - **背景**：TUI 实测（问题文档 `docs/problems/background-log-race-2026-08-14.md`）发现并发启动 background 任务时 5/8 轮日志分配竞态：临时日志名用 `time.Now().UnixNano()` 合成，而本机墙上时钟 tick 粒度粗（实测连续调用 **93% 同值**、8 并发同刻放行 **7~8 个相同**）——并行 tool call 同刻 `os.Create` 共享同一 inode：输出同偏移互覆、等长行整体丢失；先 rename 者胜、后 rename 者 ENOENT 降级到已不存在的 `.bg` 路径（完成通知路径不可读）。四种症状（共享 `.bg` 路径 / `.bg` 消失 / 内容串扰 / 输出丢失）一次性全部复现定位。

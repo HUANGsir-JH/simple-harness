@@ -295,16 +295,16 @@
 
 - **目标**：参照 codex/opencode 重做 TUI 视觉与组织（方案 `docs/plans/tui-redesign-2026-08-14.md`）：主题系统（token + 明暗探测）+ 组件化（cell/tools 双形态/dialog 框架/keymap 表）+ 右侧滚动条 + 鼠标文本选择 + 工具块展开态完整 args。命令集/键位/审批/队列语义零变化；每阶段全绿。
 - **成功标准**：主题化、组件化的新 TUI 上线，全部单测 + e2e 全绿；Phase 1 零测试改动；人工实测清单交付（滚条拖拽/文本选择复制/resize/窄屏/中文 IME/长会话性能）。
-- **状态**：进行中（2026-08-14，ADR-043；Phase 0 完成，方案已批准）
+- **状态**：✅ 已完成（2026-08-14，ADR-043；分支 feat/tui-redesign 六阶段全绿）
 
 ### 任务单元
 
 | # | 单元 | 状态 |
 |---|---|---|
 | T0 | 方案文档 + 分支 feat/tui-redesign + ADR-043 + 基线全绿 | ✅ 2026-08-14 |
-| T1 | theme.go（token + 明暗探测 + 样式构建，迁移全局 style 变量）+ keymap.go（键位表驱动，行为零变化）；验收 = 零测试改动全绿 | 进行中 |
-| T2 | dialogs.go 统一 modal 框架 + 审批/ask/select/help 四实例迁移 | 未开始 |
-| T3 | cells.go + 布局视觉（header/footer/aux/composer）+ 右侧滚动条 + 鼠标文本选择状态机 | 未开始 |
-| T4 | tools.go 工具双形态 + 展开态完整 args + diff/代码高亮（chroma） | 未开始 |
-| T5 | render.go cell 渲染缓存（P1；P2 合帧视评估） | 未开始 |
-| T6 | 测试迁移收尾 + e2e 全绿 + 文档（PROGRESS/IMPLEMENTATION_PLAN）+ 人工实测清单 | 未开始 |
+| T1 | theme.go（token + 明暗探测 + 样式构建，迁移全局 style 变量）+ keymap.go（键位表驱动，行为零变化）；验收 = 零测试改动全绿 | ✅ 2026-08-14 |
+| T2 | dialogs.go 统一 modal 框架 + 审批/ask/select/help 四实例迁移 | ✅ 2026-08-14 |
+| T3 | cells.go + 布局视觉（header/footer/aux/composer）+ 右侧滚动条 + 鼠标文本选择状态机 + 回合/thinking 时长 | ✅ 2026-08-14 |
+| T4 | tools.go 工具双形态 + 展开态完整 args + 工具耗时 + diff/代码高亮（chroma） | ✅ 2026-08-14 |
+| T5 | render.go cell 渲染缓存（P1；P2 合帧未做，收益评估后置） | ✅ 2026-08-14 |
+| T6 | 测试迁移收尾 + e2e 全绿 + 文档（PROGRESS/IMPLEMENTATION_PLAN）+ 人工实测清单（待用户实测） | ✅ 2026-08-14（人工实测待用户） |

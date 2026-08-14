@@ -503,4 +503,4 @@
   8. **实施**：独立分支 `feat/tui-redesign`，六阶段（0 文档基线 → 1 theme/keymap 零视觉 → 2 dialog → 3 布局/cell/滚条/选择 → 4 工具双形态/args/高亮 → 5 缓存 → 6 收尾），每阶段独立 commit + `go test ./...` 全绿；Phase 1 验收标准 = 零测试改动。
 - **理由**：codex/opencode 共性（类型化 cell、语义色主题、统一 dialog、集中 keymap、流式稳定前缀）是 agent TUI 已验证形态，bubbletea 栈与 ADR-030 决策延续可复用全部测试基建；"视觉重构 + 零功能变化"把破坏面限制在渲染层，e2e 契约 + 单测锚定回归；三项追加需求（滚条/选择/args）均为长会话/长内容的可用性刚需，且不触碰核心交互语义。
 - **影响 ADR**：ADR-030 修订——视觉规范升级（边框/标签/主题），命令集/键位/队列语义不变；ADR-031 修订——鼠标命中改为 press/motion/release 三态（点击 vs 拖拽判定）；ADR-032 延续——弹窗几何收敛函数迁移至统一 dialog 框架。
-- **验证**：每阶段 `go test ./...` 全绿 + e2e 六用例断言串保持；Phase 1 零测试改动；人工实测清单（滚条拖拽/文本选择复制/resize/窄屏/中文 IME）Phase 6 交付。
+- **验证**：六阶段每阶段 `go test ./...` 全绿 + e2e `-count=1` 强制重跑全绿（Phase 1 既有测试零改动）；新增 theme/keymap/滚条几何/选区状态机/工具双形态/args 完整性/耗时/缓存正确性锚定测试；既有测试仅同步视觉契约（点击 press+release、THINKING→Thinking、read_file Inline、弹窗行数 8→9）。人工实测清单（滚条拖拽/文本选择复制/中文 IME/resize/窄屏/明暗终端/ConPTY 边框）已交付 PROGRESS.md，待用户实测。
