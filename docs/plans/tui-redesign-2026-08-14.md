@@ -31,6 +31,7 @@
 | 滚动条（补充） | 时间线右侧细滚动条（轨道 + 拇指），主题化、可点击跳转、可拖拽，见 §6.2.1 |
 | 文本选择（补充） | 时间线内鼠标左键拖拽选择文本；Ctrl+C 优先复制选区（无选区回退现有行为），见 §6.7 |
 | 工具参数（补充） | 工具块展开态完整展示调用参数（args 不截断）+ 完整结果，见 §6.4 |
+| 运行时长展示（补充） | 纯 UI 侧计时：回合耗时（footer 运行中实时 + 结束后 `last Ns`）、thinking 耗时（折叠行）、工具调用耗时（块头）；事件边界打点，不回写 transcript/不进 conversation，见 §6.3/§6.4/§6.6 |
 
 ## 3. 参考实现提炼（两份调研的核心结论）
 
@@ -190,7 +191,7 @@ func tstyle(t Token) lipgloss.Style
 | assistant | `ASSISTANT` 标签 + 正文 | 无标签，正文直接渲染（markdown）；thinking 块在正文前 |
 | system | `SYSTEM` 标签（muted） | 保留标签但缩为 muted 小标签 `·` 前缀风格：`─ SYSTEM` 行 + 内容 |
 | error | `ERROR` 标签（红） | 同上，红色 |
-| thinking 折叠 | `THINKING [collapsed] N chars` | `Thinking · <首个**粗体**标题，无则省略> · N chars [collapsed]`（muted）；展开淡化样式渲染全文（首个标题加粗），点击区域/键位不变 |
+| thinking 折叠 | `THINKING [collapsed] N chars` | `Thinking · <首个**粗体**标题，无则省略> · N chars · <耗时> [collapsed]`（muted）；展开淡化样式渲染全文（首个标题加粗），点击区域/键位不变。耗时 = 首个 thinking 增量 → thinking_done（流式中实时、结束后定格；历史块无时间戳不显示） |
 | 流式 | 纯文本拼接 | 保留纯文本流式（block 完成才走 markdown，ADR-030 决策不变） |
 
 ### 6.4 工具 cell 双形态（tools.go）
@@ -199,6 +200,7 @@ func tstyle(t Token) lipgloss.Style
 - **Block（边框块）**：shell_command 输出、write_file diff、apply_patch diff、失败详情 → 左竖线块 + 状态行 + 内容折叠 + `… +N lines` 展开提示（现有折叠交互不变：点击/Enter）。
 - **展开态完整参数（用户追加需求）**：展开后 = 状态行 + **完整 args**（原始 JSON pretty-print + Hardwrap，可选 chroma JSON 高亮）+ 完整结果（diff/输出/代码），一律**不截断**。头部摘要行（`toolCallSummary`）维持截断——那只是折叠态的块头；展开态正文不再吃 `truncate(...,200)` 类截断。
 - 状态徽章保持 `[RUN]/[OK]/[ERR]` + 黄/绿/红（无 emoji 约束）。
+- **调用耗时（用户追加需求）**：块头追加 `· 1.4s`（ToolStatus.Started/Duration 打点；运行中实时、结束后定格；历史块无时间戳不显示）。
 - diff 渲染（diff.go）：gotextdiff 输出按 +/-/hunk 行着色（现状已做），代码块语言检测 + chroma 高亮（shell/输出不强行高亮，markdown 代码块与 write_file 内容高亮）。
 - 折叠提示行文字从 `[collapsed N lines]` 升级为 `… +N lines`（muted）——**注意**：单测如断言旧文案需同步（§8 契约表）。
 
@@ -221,7 +223,7 @@ func tstyle(t Token) lipgloss.Style
 ### 6.6 composer / footer / aux
 
 - composer：保留 boxed textarea；边框改圆角（unicode），焦点 accent、失焦 border；占位符文案 `Ask anything or type / for commands` **保留**（e2e 断言依赖）；去掉 `MESSAGE [inactive]` 文字标签，焦点状态由边框色 + footer 表达（Tab 切焦点行为不变）。
-- footer：保持单行左右布局；左侧 READY/◌RUNNING（spinner），右侧 `[PLAN] permission · effort · ctx · todo · queued`（内容不变，仅样式统一 muted）。
+- footer：保持单行左右布局；左侧运行中 `◌ RUNNING <elapsed>`（回合打点实时计时）、空闲 `READY · last <elapsed>`（上一回合总耗时，用户追加需求）；右侧 `[PLAN] permission · effort · ctx · todo · queued`（内容不变，仅样式统一 muted）。
 - aux：todo 面板化（细边框 + `TODO` 小标题 + ≤5 项 + 统计行，内容与排序不变）；queue 条与 todo 同风格。
 
 ### 6.7 鼠标文本选择（用户追加需求）
@@ -247,6 +249,7 @@ func tstyle(t Token) lipgloss.Style
 - Ctrl+C：**有选区复制选区（新增）**；无选区复制 composer 内容（现有行为不变）；
 - 鼠标点击工具块/thinking 折叠切换：保留（press→release 无位移 = 点击）；press→拖拽 = 文本选择（新增）；
 - 审批三档 + 会话记忆、队列消费规则（runDoneMsg 边界）、懒加载会话、后台唤醒——不动；
+- 时长展示（用户追加需求）= 纯 UI 侧计时（事件边界打点 + 渲染时 time.Since）：不进 conversation、不回写 transcript、不新增事件；
 - 事件桥（agentEventMsg/approvalRequestMsg/askRequestMsg/completionWakeMsg）——不动。
 
 ### 8.2 e2e 字符串契约（termtest 断言）
@@ -280,8 +283,8 @@ func tstyle(t Token) lipgloss.Style
 | 0 | 本方案批准；ADR-043 落 DECISIONS.md；TASKS.md 建条目；基线 `go test ./...` 确认 | 无 |
 | 1 | theme.go + keymap.go：样式与键位收拢为表驱动，全部调用点迁移 | **零**（验收：全部测试不因视觉文案变化而改动） |
 | 2 | dialogs.go：统一 modal 框架 + 四实例迁移 | 弹窗视觉升级 |
-| 3 | cells.go + layout/view：header/footer/aux/composer 视觉 + 消息 cell + **右侧滚动条**（§6.2.1）+ **鼠标文本选择状态机**（§6.7） | 主界面视觉升级 + 两项鼠标交互 |
-| 4 | tools.go + diff.go：工具双形态 + **展开态完整 args**（§6.4）+ diff/代码高亮 | 工具块视觉升级 |
+| 3 | cells.go + layout/view：header/footer/aux/composer 视觉 + 消息 cell + **右侧滚动条**（§6.2.1）+ **鼠标文本选择状态机**（§6.7）+ **回合/thinking 时长**（§6.3/§6.6） | 主界面视觉升级 + 交互增强 |
+| 4 | tools.go + diff.go：工具双形态 + **展开态完整 args**（§6.4）+ **工具耗时**（§6.4）+ diff/代码高亮 | 工具块视觉升级 |
 | 5 | render.go：cell 渲染缓存（P1；P2 合帧视评估） | 无 |
 | 6 | 测试迁移收尾 + e2e 全绿 + 文档（ADR-043/IMPLEMENTATION_PLAN.md 状态/PROGRESS.md）+ 人工实测清单（含滚条拖拽/文本选择复制）交付 | — |
 
