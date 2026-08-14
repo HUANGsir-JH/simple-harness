@@ -65,11 +65,23 @@ func NewController(a *agent.Agent, proj *session.Project, cfg config.Config, ses
 // 唤起信号 + 登记已打开会话的队列回调（2026-08-13）：resume 传入的初始 sess
 // 在 NewController 已进 open、早于 wakeSignal 生成——故在此统一补登记；此后
 // ensureActive/SwitchTo 打开新会话处各自 registerWake。
+// wakeSignal 是命名方法值 c.wake（架构整理 2026-08-14：去匿名闭包，可 grep/
+// 可跳转），字段本身保留作 registerWake 的"未生成"哨兵。
 func (c *Controller) setSend(send func(tea.Msg)) {
 	c.send = send
-	c.wakeSignal = func() { send(completionWakeMsg{}) }
+	c.wakeSignal = c.wake
 	for _, s := range c.open {
 		c.registerWake(s)
+	}
+}
+
+// wake 是后台完成事件的 UI 唤起信号（setSend 后经 wakeSignal 方法值挂到
+// 会话完成队列的 OnAppend）：事件到达 → program.Send(completionWakeMsg) →
+// Update → MaybeWake。非 active 会话的事件也发信号，MaybeWake 查 active 的
+// pending → 空 → 忽略（不打扰当前会话）。send 未注入（纯 UI 测试）时 no-op。
+func (c *Controller) wake() {
+	if c.send != nil {
+		c.send(completionWakeMsg{})
 	}
 }
 
@@ -104,6 +116,17 @@ func (c *Controller) cancelRun() {
 	}
 }
 
+// newRunContext 是单一 UI 域注入点（架构整理 2026-08-14）：会话域默认
+// （Session.RuntimeContext：Messages/State/Segment/Completions/AppendUser）+ UI
+// 接缝覆写（Approver/Emit）。Run/RunWakeup/RunCompact 都经它——新增接缝只改
+// 这里，不再每处登记。
+func (c *Controller) newRunContext() *middleware.RuntimeContext {
+	rc := c.active.RuntimeContext()
+	rc.Approver = c.approver() // TUIApprover；send 未注入时 nil = 自动拒绝
+	rc.Emit = c.onEvent        // 压缩开始/系统通知事件桥（ADR-037 扩展）
+	return rc
+}
+
 // Run 启动一个回合（tea.Cmd：bubbletea 执行 goroutine 里跑 agent，ADR-030
 // 事件桥 onEvent → program.Send）。返回 runDoneMsg 标记回合结束。
 // runs.Add 在创建 Cmd 时同步执行（program.Run 期间发生），Done 在 goroutine
@@ -125,9 +148,7 @@ func (c *Controller) Run(line string) tea.Cmd {
 				}
 			}
 		}
-		rc := c.active.RuntimeContext()
-		rc.Approver = c.approver() // W4 注入 TUIApprover；当前 nil = 自动拒绝
-		rc.Emit = c.onEvent        // 压缩开始通知（ADR-037 扩展）：中间件经 rc.Emit 推送
+		rc := c.newRunContext()
 		c.active.AddUser(line)
 		runCtx, cancel := context.WithCancel(c.ctx)
 		c.setCancel(cancel)
@@ -156,9 +177,7 @@ func (c *Controller) RunWakeup(runCtx context.Context, cancel context.CancelFunc
 	return func() tea.Msg {
 		defer c.runs.Done()
 		defer c.clearCancel()
-		rc := c.active.RuntimeContext()
-		rc.Approver = c.approver() // TUIApprover 注入（与 Run 同）
-		rc.Emit = c.onEvent        // 压缩/通知系统行事件桥（与 Run 同）
+		rc := c.newRunContext()
 		err := c.a.Run(runCtx, rc, c.onEvent)
 		return runDoneMsg{err}
 	}
@@ -301,7 +320,7 @@ func (c *Controller) RunCompact() tea.Cmd {
 		if compactor == nil {
 			return compactDoneMsg{err: fmt.Errorf("此装配不支持上下文压缩")}
 		}
-		rc := c.active.RuntimeContext()
+		rc := c.newRunContext()
 		runCtx, cancel := context.WithCancel(c.ctx)
 		c.setCancel(cancel)
 		defer c.clearCancel()
