@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/agent-project/harness/internal/agentstate"
+	"github.com/agent-project/harness/internal/completion"
 	"github.com/agent-project/harness/internal/events"
 	"github.com/agent-project/harness/internal/messages"
 	"github.com/agent-project/harness/internal/middleware"
@@ -16,6 +17,10 @@ import (
 
 // FileAgentState 是会话目录下的 state 文件名。
 const FileAgentState = "agentstate.json"
+
+// FileCompletions 是会话目录下的后台完成事件文件名（通用 async 通道，
+// 2026-08-13；独立于 AgentState——完成通知是"一次性事件"不是"会话状态"）。
+const FileCompletions = "completions.json"
 
 // Session 是一个会话：conversation + AgentState + 异步 transcript writer。
 // 目录布局见 Store 注释（session 目录下 historys/ + agentstate.json + plans/）。
@@ -27,6 +32,7 @@ type Session struct {
 	conversation *messages.Conversation
 	state        *agentstate.AgentState
 	writer       *TranscriptWriter
+	completions  *completion.Queue
 }
 
 // Create 新建一个会话：建目录、写 meta 首行、初始化 agentstate.json。
@@ -66,6 +72,7 @@ func (p *Project) Create(model, cwd, mode string) (*Session, error) {
 		conversation: messages.NewConversation(),
 		state:        st,
 		writer:       w,
+		completions:  completion.New(filepath.Join(dir, FileCompletions)),
 	}
 	// meta 首行（会话元数据，resume 可读）。
 	w.Write(Line{Type: "meta", SessionID: sid, CWD: cwd, Model: model, CreatedAt: st.CreatedAt})
@@ -96,6 +103,9 @@ func (p *Project) Resume(info SessionInfo) (*Session, error) {
 		conversation: conv,
 		state:        st,
 		writer:       w,
+		// Resume 自动恢复未注入的完成事件：已完成未注入的 pending 从
+		// completions.json 加载，下次采样前由注入中间件补注入。
+		completions: completion.New(filepath.Join(info.Path, FileCompletions)),
 	}, nil
 }
 
@@ -110,6 +120,10 @@ func (s *Session) State() *agentstate.AgentState { return s.state }
 
 // StatePath 返回 agentstate.json 路径（SessionMiddleware 用）。
 func (s *Session) StatePath() string { return s.statePath }
+
+// Completions 返回后台完成事件队列（rc.Completions 注入 + TUI 唤醒器
+// SetOnAppend 订阅用；2026-08-13）。
+func (s *Session) Completions() *completion.Queue { return s.completions }
 
 // Model 返回会话使用的模型（来自 AgentState；空 = 未设置）。
 func (s *Session) Model() string { return s.state.Model }
@@ -164,6 +178,12 @@ func (s *Session) RuntimeContext() *middleware.RuntimeContext {
 		s.writer.Flush()
 		return nil
 	}
+	// 完成事件队列 + 注入钩子（2026-08-13）：生产端（tools Wait goroutine）
+	// 只写队列；注入端中间件每次采样前 Drain 经 AppendUser 写进对话——
+	// AddUser = conversation.Add + transcript user 行（通知复用 LineTypeUser，
+	// transcript/load 零改动）。
+	rc.Completions = s.completions
+	rc.AppendUser = func(c string) { s.AddUser(c) }
 	return rc
 }
 

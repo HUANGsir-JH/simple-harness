@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"github.com/agent-project/harness/internal/agentstate"
+	"github.com/agent-project/harness/internal/completion"
 	"github.com/agent-project/harness/internal/events"
 	"github.com/agent-project/harness/internal/messages"
 )
@@ -65,6 +66,19 @@ type RuntimeContext struct {
 	// Controller.Run 注入 c.onEvent（与 rc.Approver 同模式）；nil = 不发出
 	// （非交互场景；现有测试 rc 未注入，天然兼容）。
 	Emit func(events.Event)
+
+	// Completions 是会话级后台任务完成事件队列（通用 async 通道，
+	// 2026-08-13）。session 注入；nil = 无异步通知能力（非会话/测试）。
+	// 生产端（tools 的 Wait goroutine）只写队列不碰 conversation（避开主循环
+	// data race）；注入端 BackgroundCompletionMiddleware 每次采样前 Drain
+	// 进对话；TUI 唤醒器订阅 OnAppend 唤起空闲会话。
+	Completions *completion.Queue
+
+	// AppendUser 写一条用户消息进 conversation + transcript（session 注入
+	// = Session.AddUser；middleware 拿不到 writer，须由 session 提供）。
+	// 与 rc.Segment 同款防环模式（session 知道 middleware、反之不成立）；
+	// nil = 无注入能力（非会话/测试）。
+	AppendUser func(content string)
 
 	attrs map[string]any
 }

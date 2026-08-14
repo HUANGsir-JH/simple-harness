@@ -292,6 +292,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case runDoneMsg:
 		return m.handleRunDone(msg.err)
+	case completionWakeMsg:
+		// 后台任务完成唤起信号（2026-08-13）：m.running 是第二道同步闸
+		// （第一道 = MaybeWake 同步抢占 cancel）——兜底 handleRunDone 补唤醒
+		// 与 wake 消息间隙的竞态，保证绝不并发启动两个 run。
+		if m.running {
+			return m, nil
+		}
+		return m.maybeStartWake()
 	case compactDoneMsg:
 		return m.handleCompactDone(msg)
 	case spinner.TickMsg:
@@ -645,6 +653,26 @@ func (m Model) startRun(line string) (tea.Model, tea.Cmd) {
 	return m, m.c.Run(line)
 }
 
+// maybeStartWake 评估唤醒决策（2026-08-13）：MaybeWake 非 nil → 系统行 +
+// running 同步置位 + 启动唤醒 run。唤醒器只启动 run 不注入内容——通知全文
+// 由 BackgroundCompletionMiddleware 在新 run 首采样前注入，Drain 清空后
+// PendingCount()==0 天然防重。
+func (m Model) maybeStartWake() (Model, tea.Cmd) {
+	if m.c == nil {
+		return m, nil
+	}
+	cmd := m.c.MaybeWake()
+	if cmd == nil {
+		return m, nil
+	}
+	m.appendSystem("后台进程完成，继续执行…", false)
+	m.running = true
+	m.turnDone = false
+	m.eventError = false
+	m.refresh(true)
+	return m, cmd
+}
+
 func (m Model) handleAgentEvent(ev events.Event) (tea.Model, tea.Cmd) {
 	switch ev.Type {
 	case events.EventTurnStart:
@@ -682,6 +710,11 @@ func (m Model) handleAgentEvent(ev events.Event) (tea.Model, tea.Cmd) {
 		// 自动压缩开始（ADR-037 扩展）：Summarize 阻塞期间先给反馈，与完成行
 		// 配对。经 rc.Emit 发出（中间件层无 agent 事件通道）。
 		m.appendSystem("正在压缩上下文…", false)
+	case events.EventNotice:
+		// 后台完成等系统通知的 UI 可见性（2026-08-13）：注入中间件经 rc.Emit
+		// 发出，渲染为系统行——内容同时已作为 user 消息进 conversation
+		// （transcript 不落盘该类型，user 行由 AddUser 写入）。
+		m.appendSystem(ev.Text, false)
 	case events.EventCompacted:
 		// 自动压缩成功（ADR-037）：conversation 已重写为摘要占位。回合进行中
 		// 不能 reloadSession（会清空运行态/队列）；只打系统行，视图保持历史
@@ -720,6 +753,14 @@ func (m Model) handleRunDone(err error) (tea.Model, tea.Cmd) {
 	m.eventError = false
 	m.refresh(true)
 	if len(m.queue) == 0 {
+		// 竞态窗口补唤醒（2026-08-13）：在途 run 最后一次采样已过后后台完成，
+		// 唤醒信号被 isRunning 丢弃、pending 残留——err == nil 时重新评估补
+		// 启动 run；err != nil 跳过：pending 未清时补唤醒会形成"唤醒失败 →
+		// 再唤醒"热循环（成功 run 必跑过首采样、Drain 必已清空 pending，故
+		// err == nil && pending > 0 恰好只对应此竞态窗口）。
+		if err == nil {
+			return m.maybeStartWake()
+		}
 		return m, nil
 	}
 	next := m.queue[0]

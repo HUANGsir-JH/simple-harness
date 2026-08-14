@@ -36,4 +36,9 @@ type (
 		req    middleware.AskRequest
 		respCh chan middleware.AskResult
 	}
+
+	// completionWakeMsg 是后台任务完成唤起信号（2026-08-13）：会话完成队列
+	// OnAppend → program.Send；Update 内 MaybeWake 决策（同步抢占 cancel +
+	// m.running 双闸防并发 run）。
+	completionWakeMsg struct{}
 )

@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -9,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/agent-project/harness/internal/completion"
 	"github.com/agent-project/harness/internal/messages"
 	"github.com/agent-project/harness/internal/middleware"
 )
@@ -20,9 +22,16 @@ import (
 // bgProcess 是一个后台 shell 进程的注册表条目。
 // Handle 是平台进程树资源：Windows = job 句柄（KILL_ON_JOB_CLOSE），
 // POSIX = 零值（杀树走 kill(-pid) 进程组语义）。
+// queue/sessionID/logPath 是完成通知字段（2026-08-13）：启动时从 rc 捕获，
+// 进程自然退出时 Wait goroutine 拼通知全文 Append 进队列；queue nil =
+// 非会话/测试（进程照常管理，只是完成不通知）。
 type bgProcess struct {
 	PID    int
 	Handle processTreeHandle
+
+	queue     *completion.Queue
+	sessionID string
+	logPath   string
 }
 
 // backgroundProcesses 是进程级后台进程注册表（PID → 条目）。
@@ -98,8 +107,66 @@ func transferToBackground(rc *middleware.RuntimeContext, tree processTreeHandle,
 	if err := os.Rename(tmpLog, logPath); err != nil {
 		logPath = tmpLog // 平台差异降级保留临时名
 	}
-	registerBackground(&bgProcess{PID: pid, Handle: tree})
+	entry := &bgProcess{PID: pid, Handle: tree}
+	captureCompletion(entry, rc, logPath)
+	registerBackground(entry)
 	return logPath
+}
+
+// captureCompletion 从 rc 捕获完成通知字段存进条目（2026-08-13）。
+// rc.Completions nil = 非会话/测试，跳过（进程照常管理，完成不通知）。
+func captureCompletion(e *bgProcess, rc *middleware.RuntimeContext, logPath string) {
+	if rc == nil || rc.Completions == nil {
+		return
+	}
+	e.queue = rc.Completions
+	e.sessionID = rc.SessionID
+	e.logPath = logPath
+}
+
+// notifyCompletion 是后台进程自然退出时的完成通知（通用 async 通道，
+// 2026-08-13）：注销注册表条目；条目存在且带队列 → 拼通知全文 Append 进完成
+// 事件队列（只写队列、不碰 conversation，避开主循环 data race）。
+// no-op 场景：kill_pid/CleanupBackground 已注销（模型已知/退出中）、前台
+// 正常完成（pid 从未进注册表）。退出码：exec.ExitError.ExitCode()，signal
+// 杀 = -1。
+func notifyCompletion(pid int, exitErr error) {
+	entry := unregisterBackground(pid)
+	if entry == nil || entry.queue == nil {
+		return
+	}
+	code := 0
+	if exitErr != nil {
+		code = -1
+		var ee *exec.ExitError
+		if errors.As(exitErr, &ee) {
+			code = ee.ExitCode()
+		}
+	}
+	result := fmt.Sprintf(
+		"（系统通知：后台进程 %d 已退出（exit %d）。日志：%s，可用 read_file 查看输出）",
+		pid, code, entry.logPath)
+	entry.queue.Append(completion.Event{
+		ToolName:  ShellCommandTool{}.Name(),
+		Result:    result,
+		ExitCode:  &code,
+		DoneAt:    time.Now().UTC().Format(time.RFC3339),
+		SessionID: entry.sessionID,
+	})
+}
+
+// compensateTransferNotify 是超时转后台竞态窗口的补偿（2026-08-13）：进程恰
+// 在超时瞬间已死时，前台 Wait goroutine 的 notify 先于 transferToBackground
+// 注册执行（no-op）——此后无人再通知、且死条目残留注册表。对 done 做一次
+// **非阻塞 receive**：已有结果 → 补注销 + 通知；无结果 → goroutine 仍在等、
+// 进程死后自会通知。两路恰好一个拿到 entry（unregister 只返回一次非 nil），
+// 天然不会双通知。
+func compensateTransferNotify(done chan error, pid int) {
+	select {
+	case werr := <-done:
+		notifyCompletion(pid, werr)
+	default:
+	}
 }
 
 // startBackground 后台启动 shell 命令：输出重定向到日志文件，立即返回 PID。
@@ -146,13 +213,16 @@ func startBackground(rc *middleware.RuntimeContext, command, workdir string) (pi
 		logPath = tmp // 平台差异降级保留临时名；结果显式返回实际路径，模型不猜文件名
 	}
 	f.Close()
+	entry := &bgProcess{PID: pid, Handle: tree}
+	captureCompletion(entry, rc, logPath)
 	// 先注册再起回收 goroutine（顺序铁定：条目存在期间进程在跑；先起 goroutine
 	// 则进程极快退出时注销可能先于注册执行，死进程条目残留回旧行为）。
-	registerBackground(&bgProcess{PID: pid, Handle: tree})
+	registerBackground(entry)
 	// 回收子进程资源：Wait 在进程死后等管道 EOF 即返回（goroutine 不阻塞主流程）。
-	// 进程自然退出后注销注册表条目——残留条目在 POSIX 上会因 PID 复用让
-	// kill_pid 通过"仅注册表内 PID"检查后误杀无关进程组（安全边界失效）。
-	go func() { _ = cmd.Wait(); unregisterBackground(pid) }()
+	// 进程自然退出后经 notifyCompletion 注销注册表条目（残留条目在 POSIX 上会
+	// 因 PID 复用让 kill_pid 通过"仅注册表内 PID"检查后误杀无关进程组——安全
+	// 边界失效），并 Append 完成事件（通用 async 通道，2026-08-13）。
+	go func() { err := cmd.Wait(); notifyCompletion(pid, err) }()
 	return pid, logPath, nil
 }
 

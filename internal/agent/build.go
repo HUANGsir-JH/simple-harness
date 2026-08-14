@@ -62,6 +62,11 @@ func Build(res *config.ProviderConfig, defaultMode string) (*Agent, error) {
 		impl.ToolInstructionsMiddleware{Tools: reg.Specs()},
 		impl.SessionMiddleware{},
 		impl.CompactMiddleware{Runner: compactor},
+		// 后台完成通知注入（2026-08-13）：onReasoning before，每次采样前
+		// Drain completions 队列以 user 消息注入。注册在 Compact 之后——
+		// 压缩重写 conversation 后本中间件再注入、同步 in.Messages；在
+		// TodoReminder 之前——注入的通知不会被内层提醒装饰逻辑覆盖。
+		impl.BackgroundCompletionMiddleware{},
 		impl.TodoReminderMiddleware{},
 		impl.UsageMiddleware{},
 		impl.ToolOutputMiddleware{},

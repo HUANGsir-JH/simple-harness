@@ -214,6 +214,24 @@
 | T4 | CompactMiddleware 判定（in.Tools）+ Controller.RunCompact 手动路径适配 | ✅ 2026-08-13 |
 | T5 | 测试改写（compact/chain/session）+ 新增（base_instructions/TestRunSystemPromptCompose 回归锚点/TestRunnerShouldCompact）+ 文档 + 全量验证 | ✅ 2026-08-13 |
 
+## 阶段 后台任务完成自动反向通知 + 唤醒器（ADR-040）✅
+
+- **目标**：shell 后台进程（background: true / 超时转后台）完成时主动通知模型（参照 AgentScope Java v2 AsyncToolMiddleware + MessageBus.inbox + WakeupDispatcher）：通用 async 通道（独立 completion 包，阶段 5 子 agent 复用）→ 落盘完成事件 → 下次采样前注入对话末尾；会话空闲时唤醒 run 自动继续。
+- **成功标准**：completions.json 独立落盘（不挂 AgentState）；通知角色 RoleUser（transcript/load 零改动）；唤醒决策收敛 `Controller.MaybeWake`（agent 核心零耦合）；计划评审轮三处竞态修复（同步抢占防双唤醒 / 超时瞬间补偿 / 失败不热循环）落地并有回归锚点；全量 build/vet/test + tools -race + 三平台交叉编译绿。
+- **状态**：✅ 已完成（2026-08-13，ADR-040，版本 0.9.3）
+- **说明**：计划 `docs/plans/async-completion-notify-2026-08-13.md` 评审轮修复三处后实施；路径 A（注入）与路径 B（唤醒）按会话状态自然分流，Drain 清空 + PendingCount()==0 天然防重；run 单轮模式无唤醒器为已知局限（测试用，ADR 记录）。
+
+### 任务单元
+
+| # | 单元 | 状态 |
+|---|---|---|
+| T1 | completion 包（Event + Queue：锁内 append/Drain + pid 临时名原子落盘 + 锁外 OnAppend）+ 7 测试（含并发守恒 -race） | ✅ 2026-08-13 |
+| T2 | rc 加 Completions/AppendUser + Session Create/Resume 构造队列 + RuntimeContext 注入（防环同 rc.Segment）+ 2 测试 | ✅ 2026-08-13 |
+| T3 | BackgroundCompletionMiddleware（onReasoning before：Drain → AppendUser → in.Messages 同步 → rc.Emit EventNotice）+ events.EventNotice + build.go 挂载 + 3 测试 | ✅ 2026-08-13 |
+| T4 | tools 生产端：bgProcess 条目加 queue/sessionID/logPath + notifyCompletion + 两处 Wait goroutine + compensateTransferNotify（超时瞬间竞态补偿）+ 文案/schema + 9 测试（4 集成） | ✅ 2026-08-13 |
+| T5 | TUI 唤醒器：RunWakeup/MaybeWake（同步抢占 cancel）/isRunning + setSend 遍历 open + ensureActive/SwitchTo 登记 + Model 双闸（m.running + completionWakeMsg）+ handleRunDone err==nil 补唤醒 + EventNotice 系统行 + 13 测试 | ✅ 2026-08-13 |
+| T6 | 文档（ADR-040/PROGRESS/IMPLEMENTATION_PLAN/TASKS）+ 版本 0.9.3 + 全量验证 + 交叉编译 + go install | ✅ 2026-08-13 |
+
 ## 阶段 6（TUI 后后续可选）：摘要式压缩 / grep 工具 / 双向通信
 
 - **状态**：未开始（TUI 已提前为独立阶段；本阶段为压缩/grep/双向通信剩余项）

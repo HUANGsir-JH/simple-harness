@@ -32,7 +32,12 @@ type Controller struct {
 	newSession func() (*session.Session, error) // 懒加载创建器（repl 传；resume 不触发传 nil）
 	ctx        context.Context                  // 顶层 ctx（回合从它派生；SIGTERM cancel）
 	send       func(tea.Msg)                    // program.Send（RunTUI 注入；并发安全）
-	runs       sync.WaitGroup                   // 在途 run goroutine 计数（WaitRuns 用，Bug09）
+	// wakeSignal 是后台完成事件的 UI 唤起信号（setSend 后生成，2026-08-13）：
+	// 会话完成队列的 OnAppend 指向它——事件到达 → program.Send(completionWakeMsg)
+	// → Update → MaybeWake。非 active 会话的事件也发信号，MaybeWake 查 active
+	// 的 pending → 空 → 忽略（不打扰当前会话）。
+	wakeSignal func()
+	runs       sync.WaitGroup // 在途 run goroutine 计数（WaitRuns 用，Bug09）
 
 	mu     sync.Mutex
 	cancel context.CancelFunc // 当前回合 cancel（Esc 中断，跨 goroutine 保护）
@@ -56,8 +61,25 @@ func NewController(a *agent.Agent, proj *session.Project, cfg config.Config, ses
 	}
 }
 
-// setSend 注入 program.Send（bubbletea Program 创建后调用）。
-func (c *Controller) setSend(send func(tea.Msg)) { c.send = send }
+// setSend 注入 program.Send（bubbletea Program 创建后调用），并生成完成事件
+// 唤起信号 + 登记已打开会话的队列回调（2026-08-13）：resume 传入的初始 sess
+// 在 NewController 已进 open、早于 wakeSignal 生成——故在此统一补登记；此后
+// ensureActive/SwitchTo 打开新会话处各自 registerWake。
+func (c *Controller) setSend(send func(tea.Msg)) {
+	c.send = send
+	c.wakeSignal = func() { send(completionWakeMsg{}) }
+	for _, s := range c.open {
+		c.registerWake(s)
+	}
+}
+
+// registerWake 给会话完成队列挂唤起回调（wakeSignal 未生成时 no-op——
+// setSend 会补登记）。重复调用幂等（SetOnAppend 覆盖）。
+func (c *Controller) registerWake(s *session.Session) {
+	if c.wakeSignal != nil && s != nil {
+		s.Completions().SetOnAppend(c.wakeSignal)
+	}
+}
 
 // setCancel 记录当前回合 cancel（回合启动时设置）。
 func (c *Controller) setCancel(f context.CancelFunc) {
@@ -115,6 +137,51 @@ func (c *Controller) Run(line string) tea.Cmd {
 	}
 }
 
+// isRunning 报告是否有在途回合（锁内读 cancel，复用现有状态零新增字段）。
+// 唤醒决策用（2026-08-13）：/compact 期间 cancel 也被占用 → 同样不唤醒。
+func (c *Controller) isRunning() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.cancel != nil
+}
+
+// RunWakeup 启动一个"唤醒"回合（后台进程完成自动继续，2026-08-13）：
+// Run 去 AddUser 的变体——不往对话写任何东西；通知全文由
+// BackgroundCompletionMiddleware 在新 run 首采样前 Drain 注入（唤醒器只
+// 负责"启动一个 run"这一个动作）。ctx/cancel 由 MaybeWake 同步创建并抢占
+// （防连续两条 wake 消息并发启动两个 run）；active 已由 MaybeWake 判定
+// 非 nil，无需 ensureActive。
+func (c *Controller) RunWakeup(runCtx context.Context, cancel context.CancelFunc) tea.Cmd {
+	c.runs.Add(1)
+	return func() tea.Msg {
+		defer c.runs.Done()
+		defer c.clearCancel()
+		rc := c.active.RuntimeContext()
+		rc.Approver = c.approver() // TUIApprover 注入（与 Run 同）
+		rc.Emit = c.onEvent        // 压缩/通知系统行事件桥（与 Run 同）
+		err := c.a.Run(runCtx, rc, c.onEvent)
+		return runDoneMsg{err}
+	}
+}
+
+// MaybeWake 是后台任务完成唤醒的决策入口（2026-08-13）：决策逻辑收敛在
+// Controller，Model 只薄转发（"何时启动 run"本就是编排层职责，唤醒只是
+// 第二个触发源）。三分支丢弃：active nil（懒加载未触发）、在途 run
+// （cancel 非 nil）、无 pending 完成事件（防空跑）；否则拉起唤醒 run。
+//
+// ⚠ 同步抢占：cancel 必须在返回 cmd **之前**设置——tea.Cmd 由 bubbletea 在
+// Update 返回后异步执行，若在 cmd 内才 setCancel，连续两条 wake 消息会在
+// 间隙双双通过 isRunning 检查 → 两个 run 并发跑同一 conversation（data race
+// + 双倍采样）。Model 层 m.running 闸为第二道兜底。
+func (c *Controller) MaybeWake() tea.Cmd {
+	if c.active == nil || c.isRunning() || c.active.Completions().PendingCount() == 0 {
+		return nil
+	}
+	runCtx, cancel := context.WithCancel(c.ctx)
+	c.setCancel(cancel)
+	return c.RunWakeup(runCtx, cancel)
+}
+
 // ensureActive 确保有 active 会话（懒加载：新入口首次动作才创建；resume 已
 // 预加载则 no-op）。创建后登记 open 供 /switch 进程内复用。
 func (c *Controller) ensureActive() error {
@@ -130,6 +197,7 @@ func (c *Controller) ensureActive() error {
 	}
 	c.open[s.ID] = s
 	c.active = s
+	c.registerWake(s) // 完成事件唤起回调（2026-08-13）
 	return nil
 }
 

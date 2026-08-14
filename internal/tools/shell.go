@@ -42,8 +42,8 @@ func (ShellCommandTool) Name() string { return "shell_command" }
 type shellCommandArgs struct {
 	Command    string `json:"command,omitempty" jsonschema:"description=要执行的命令（kill_pid 模式可省略）"`
 	Workdir    string `json:"workdir,omitempty" jsonschema:"description=工作目录（默认当前目录）"`
-	TimeoutMS  int    `json:"timeout_ms,omitempty" jsonschema:"description=超时毫秒（默认 30000；超时后命令自动转入后台继续运行并返回 PID 与日志路径；background/kill_pid 模式忽略）"`
-	Background bool   `json:"background,omitempty" jsonschema:"description=true 时后台启动并立即返回 PID 与日志路径（长任务/服务启动用；输出写入日志文件，用 read_file/grep 轮询；配套 kill_pid 终止）"`
+	TimeoutMS  int    `json:"timeout_ms,omitempty" jsonschema:"description=超时毫秒（默认 30000；超时后命令自动转入后台继续运行并返回 PID 与日志路径，完成会自动通知；background/kill_pid 模式忽略）"`
+	Background bool   `json:"background,omitempty" jsonschema:"description=true 时后台启动并立即返回 PID 与日志路径（长任务/服务启动用；输出写入日志文件，完成会自动通知，可等通知也可用 read_file/grep 轮询；配套 kill_pid 终止）"`
 	KillPID    int    `json:"kill_pid,omitempty" jsonschema:"description=终止指定后台进程（background 启动返回的 PID；提供时忽略 command）"`
 }
 
@@ -51,8 +51,8 @@ func (ShellCommandTool) Spec() provider.ToolSpec {
 	return provider.ToolSpec{
 		Name: "shell_command",
 		Description: "在 shell 中执行命令并返回输出（stdout+stderr 合并）。Windows 用 PowerShell，POSIX 用 sh -c。" +
-			"Esc 中断会终止整个进程树；超时自动转入后台（返回 PID+日志路径，轮询日志、kill_pid 终止，不要重试）。" +
-			"长任务/服务启动用 background: true 后台运行。命令非零退出返回错误文本（输出超长时完整版会保存到 evictions/ 目录并用 read_file 提示，错误信息含路径）。",
+			"Esc 中断会终止整个进程树；超时自动转入后台（返回 PID+日志路径，完成会自动通知，也可轮询日志、kill_pid 终止，不要重试）。" +
+			"长任务/服务启动用 background: true 后台运行（完成会自动通知）。命令非零退出返回错误文本（输出超长时完整版会保存到 evictions/ 目录并用 read_file 提示，错误信息含路径）。",
 		Parameters: schemaOf[shellCommandArgs](),
 	}
 }
@@ -79,7 +79,7 @@ func (ShellCommandTool) Handle(ctx context.Context, rc *middleware.RuntimeContex
 			return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: "shell_command: 后台启动失败: " + err.Error()}
 		}
 		return messages.ToolResult{Success: true, Content: fmt.Sprintf(
-			"已后台启动 PID %d，日志：%s\n用 read_file/grep 轮询日志判断进度；用 shell_command {\"kill_pid\": %d} 终止；会话结束自动清理",
+			"已后台启动 PID %d，日志：%s\n完成会自动通知；可继续其它任务等通知，也可用 read_file/grep 轮询日志观察进度；用 shell_command {\"kill_pid\": %d} 终止；会话结束自动清理",
 			pid, logPath, pid)}, nil
 	}
 
@@ -127,10 +127,13 @@ func (ShellCommandTool) Handle(ctx context.Context, rc *middleware.RuntimeContex
 
 	// Wait goroutine：Wait 返回（copy goroutine 完成 = 文件写完）后关闭
 	// 日志文件再发 done——转后台后进程可能长活，f 的收尾由这里统一承担。
+	// notifyCompletion（2026-08-13）：前台正常完成 pid 不在注册表 → no-op
+	// 天然正确；超时转后台后进程死 → 命中条目发出完成通知。
 	done := make(chan error, 1)
 	go func() {
 		err := cmd.Wait()
 		f.Close()
+		notifyCompletion(cmd.Process.Pid, err)
 		done <- err
 	}()
 
@@ -190,8 +193,12 @@ func (ShellCommandTool) Handle(ctx context.Context, rc *middleware.RuntimeContex
 			stopTree() // 回调已在超时瞬间触发（DeadlineExceeded 不杀），此处 no-op 防御
 			var zero processTreeHandle
 			tree = zero // 句柄已移交注册表，defer 不再 close
+			// 竞态窗口补偿（2026-08-13）：进程恰在超时瞬间已死时，Wait
+			// goroutine 的 notify 先于上面的注册执行（no-op）——补一次
+			// 注销+通知，保证"完成会自动通知"的承诺不落空。
+			compensateTransferNotify(done, pid)
 			return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: fmt.Sprintf(
-				"shell_command: 命令运行超过 %v，已自动转入后台：PID %d，日志：%s\n用 read_file/grep 轮询日志判断进度；用 shell_command {\"kill_pid\": %d} 终止；不要重试该命令——它仍在运行",
+				"shell_command: 命令运行超过 %v，已自动转入后台：PID %d，日志：%s\n完成会自动通知；可用 read_file/grep 轮询日志观察进度；用 shell_command {\"kill_pid\": %d} 终止；不要重试该命令——它仍在运行",
 				timeout, pid, logPath, pid)}
 		}
 	}

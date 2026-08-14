@@ -17,4 +17,4 @@
 11. subagent的状态要挂在哪里？session吗？还是sessionmanager？
 12. tui上的subagent管理界面：是否需要在tui上提供subagent的管理界面，方便查看和控制子agent的状态和任务执行情况？（待讨论）
 13. 是否支持用户主动给subagent发送消息？
-14. 如何处理subagent的工具调用？
+14. 如何处理subagent的工具调用？子agent允许停下本次agent run来等待shell后台完成提醒吗？

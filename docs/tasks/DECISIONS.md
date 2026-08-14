@@ -439,3 +439,25 @@
   3. **压缩判定实时化（废弃 SystemPromptTokens）**：兜底估算 = 判定时实时三项（镜像实际发送三通道）——`EstimateTokens(messages)` + `EstimateSystemPrompt(rc.SystemPrompt)`（bytes/4）+ `EstimateTools(in.Tools)`（JSON 序列化 bytes/4，实测 7 内置工具约 7.3KB ≈ 1.8K token）。**判定挪到 CompactMiddleware**（onReasoning 同时持有 rc 与 in.Tools 的唯一位置）→ `Runner.ShouldCompact(rc, tools)`；**Runner 变纯执行器**：`Run(ctx, rc) error`（去 force/bool——手动 /compact 语义不变：无条件压缩，判定由调用方决定）。usage 优先路径不变（API 返回的 input/cache 已含三通道全量）。
 - **影响 ADR**：ADR-037——第 8 点 `Options.SystemPromptTokens` 机制废弃（判定时实时估算替代）、`Runner.Run(force)` 签名变更；ADR-026——rc 新增 SystemPrompt 字段（覆盖模式同构：rc 覆盖、链首中间件给默认）；ADR-021——onSystemPrompt 管道新增 BaseInstructionsMiddleware（链首）。
 - **边界**：wire 行为零变化（`Request.Instructions` → `params.System` 顶层、`Request.Tools` → `params.Tools`）；BaseInstructions 仅挂 onSystemPrompt，不影响洋葱顺序。
+
+## ADR-040：后台任务完成自动反向通知 + 唤醒器（2026-08-13）
+
+- **背景**：shell 后台进程（`background: true` 与超时转后台）完成时 harness 不主动通知模型——模型被要求"轮询日志"，浪费 token/回合，且 `cmd.Wait()` 的退出码被直接丢弃。参照 AgentScope Java v2（`AsyncToolMiddleware` + `AsyncToolRegistry` + `MessageBus.inbox` + `InboxMiddleware` + `WakeupDispatcher`）实现：后台任务完成 → 落盘完成事件 → 下一次推理开始前注入对话末尾；会话空闲时 → 唤醒 run 自动继续。计划文档：`docs/plans/async-completion-notify-2026-08-13.md`（含三处审查修复，见下）。
+- **用户逐点拍板**：
+  1. 保留轮询能力，提示词强调"可等通知"，模型自行选择。
+  2. **通用 async 通道**：独立 `internal/completion` 包（只依赖 stdlib），阶段 5 子 agent 复用同一链路。
+  3. 完成事件落盘（独立 `completions.json`，**不挂 AgentState**——完成通知是"一次性事件"不是"会话状态"）。
+  4. 通知角色 = **RoleUser**（复用 LineTypeUser，transcript/load 零改动）。
+  5. 唤醒器本轮做：决策逻辑收敛在 `Controller.MaybeWake()`，Model 只薄转发；agent 核心零耦合（"何时启动 run"本就是编排层职责，唤醒只是第二个触发源）。
+  6. TUI 事件桥复用（`completionWakeMsg` 走既有 `program.Send`）。
+- **数据链路（一个事件 → 两个下游，按会话状态自然分流）**：
+  - **生产端**：Wait goroutine 进程自然退出 → `notifyCompletion`（注销注册表条目；nil → kill_pid/CleanupBackground 已注销或前台正常完成 → no-op）→ `Queue.Append`（锁内 append + pid 临时名原子落盘 + 锁外调 `OnAppend`）。**只写 Queue、不碰 conversation**（避开主循环 data race）。
+  - **路径 A（注入）**：`BackgroundCompletionMiddleware`（onReasoning before，注册在 Compact 之后、TodoReminder 之前）每次采样前 `Drain()` → `rc.AppendUser(ev.Result)`（session 注入 = `AddUser`，防环同 rc.Segment 模式）→ `in.Messages = rc.Messages.Messages` 同步 → 经 `rc.Emit` 推 `EventNotice`（TUI 系统行可见——否则模型突然回应一条界面上从未出现过的通知）；TUI `handleAgentEvent` 渲染系统行；transcript 不落盘该类型（user 行已由 AddUser 写入）。
+  - **路径 B（唤醒）**：`OnAppend → program.Send(completionWakeMsg{})` → Update → `MaybeWake`：`active == nil || isRunning()（cancel != nil）|| PendingCount()==0` → 丢弃；否则 `RunWakeup`（Run 去 AddUser 的变体）拉起新 run——唤醒器只启动 run 不注入内容，新 run 首采样前路径 A 注入，`Drain` 清空后 `PendingCount()==0` 天然防重。resume 双路径恢复：已注入的靠 transcript user 行重建；已完成未注入的靠 completions.json 加载下次采样前补注入。
+- **审查修复（计划评审轮，三处竞态/热循环）**：
+  1. **双唤醒竞态（不能只靠 bubbletea 单线程）**：tea.Cmd 由 bubbletea 在 Update 返回后异步执行，`cancel` 若在 cmd 内才 `setCancel`，连续两条 wake 消息会在间隙双双通过 `isRunning` → 两个 run 并发跑同一 conversation。修法：`MaybeWake` **返回 cmd 前同步抢占** `setCancel`（第一道闸）+ Model `m.running` 同步闸（第二道兜底）。
+  2. **超时转后台竞态窗口**：进程恰在超时瞬间已死时，前台 Wait goroutine 的 notify 先于 `transferToBackground` 注册执行（no-op）→ 通知永久丢失 + 死条目残留。修法：DeadlineExceeded 分支注册后对 `done` 做**非阻塞 receive**（`compensateTransferNotify`）——已有结果补注销+通知，两路恰好一个拿到 entry，天然不双通知。
+  3. **唤醒失败热循环**：唤醒 run 首采样前失败 → pending 未清 → `runDoneMsg` 补唤醒 → 再失败无限循环打 API。修法：`handleRunDone` 末尾补 `MaybeWake` **仅当 `err == nil`**（成功 run 必跑过首采样、Drain 必已清空 pending，故 `err==nil && pending>0` 恰好只对应"最后一次采样已过后台完成"的竞态窗口；失败时 pending 留待下一次完成信号/用户消息注入，不丢）。
+- **已知局限（记录，不本轮处理）**：`harness run` 单轮模式（主要测试用）无 TUI 唤醒器——"完成会自动通知"只在回合采样期间成立，模型若"结束回合等通知"则通知不会到达（进程最终由 CleanupBackground 清理）；完整承诺仅对 TUI 会话成立。
+- **影响 ADR**：ADR-021——rc 新增 `Completions`/`AppendUser` 注入（防环同 rc.Segment 模式）；ADR-026——无状态 agent 零改动（唤醒是编排层第二个触发源）；ADR-038——bgProcess 条目扩展完成通知字段、Wait goroutine 完成时注销+通知合流；ADR-030——TUI 事件桥新增 completionWakeMsg（复用 program.Send）。
+- **边界**：Drain 落盘清空与逐条注入之间存在极小崩溃窗口（进程崩溃丢这批事件；不重复注入优先——重复通知比丢失更糟）；bubbletea v1.3.10 `Send` 有 `ctx.Done()` 守卫，退出竞态下 Append+Send 为 no-op 不 panic；完成通知成为 conversation 永久 user 消息（压缩时随摘要收敛）。

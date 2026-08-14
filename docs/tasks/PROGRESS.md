@@ -1,5 +1,16 @@
 ## 2026-08-13
 
+### 后台任务完成自动反向通知 + 唤醒器 ✅ 版本 0.9.3（ADR-040）
+
+- **背景**：shell 后台进程（background: true / 超时转后台）完成时 harness 不主动通知模型，模型被迫轮询日志浪费 token/回合，且 `cmd.Wait()` 退出码被丢弃。参照 AgentScope Java v2（AsyncToolMiddleware + MessageBus.inbox + WakeupDispatcher）实现通用 async 通道。计划文档 `docs/plans/async-completion-notify-2026-08-13.md`（计划评审轮修复三处竞态/热循环后实施）。
+- **交付**：
+  - **completion 包（新，只依赖 stdlib）**：`Event` + `Queue`（锁内 append/Drain + pid 临时名原子落盘 completions.json + 锁外 OnAppend 防重入；读侧损坏容错）；7 个测试含并发守恒 `-race`。
+  - **注入端**：rc 新增 `Completions`/`AppendUser`（session 注入，防环同 rc.Segment）；Session Create/Resume 构造队列（Resume 自动恢复未注入事件）；`BackgroundCompletionMiddleware`（onReasoning before，Compact 之后 TodoReminder 之前）：采样前 Drain → AddUser 注入 → `in.Messages` 同步 → `rc.Emit` 推 `EventNotice`（TUI 系统行可见性，text/json 渲染器 default 忽略已核实）。
+  - **生产端（tools）**：bgProcess 条目加 queue/sessionID/logPath（rc 捕获，非会话跳过）；`notifyCompletion`（注销 + 拼通知全文 + Append，exit 码 `exec.ExitError.ExitCode()`、signal 杀 = -1）；两处 Wait goroutine 完成时调用；`compensateTransferNotify`（超时瞬间进程已死的竞态窗口非阻塞 done 补偿，两路恰好一个拿 entry 不双通知）；shell 文案/参数 schema 改"完成会自动通知，可等通知也可轮询日志"。9 个新测试（含 4 个集成：自然退出通知 / kill 不通知 / 前台不通知 / 超时转后台通知 / 超时竞态恰好 1 条）。
+  - **TUI 唤醒器**：`RunWakeup`（Run 去 AddUser 变体）+ `MaybeWake`（三分支丢弃 + **返回 cmd 前同步抢占 cancel**）+ `isRunning`（复用 cancel 零新增字段）；wake 登记（setSend 遍历 open + ensureActive + SwitchTo 三处）；Model `completionWakeMsg` 双闸（m.running + MaybeWake）+ `handleRunDone` 末尾 `err==nil` 补唤醒 + EventNotice 系统行。13 个新测试（含三处回归锚点：同步抢占防并发 run / 双 wake 消息不并发 / 唤醒失败不热循环）。
+- **验证**：`go build/vet/test ./...` 全绿；completion + tools `-race` 绿；linux/darwin 交叉编译绿。
+- **已知局限（ADR-040 记录）**：`harness run` 单轮模式（测试用）无唤醒器，完整通知承诺仅对 TUI 会话成立。
+
 ### shell 进程树审查修复轮（审查报告 01-06）✅ 版本 0.9.2
 
 - **背景**：`shell-process-tree-review-2026-08-13.md` 审查（a83d8e5..661a303）发现 5 项缺陷——01 严重：AfterFunc 的 stop 被丢弃，`defer cancel()` 使每条前台命令正常返回瞬间触发杀树，命令派生的后台进程（`npm run dev &`）"起了又没了"（对照实验证实）；02 background 自然退出后注册表残留（POSIX PID 复用 → kill_pid 误杀无关进程组，探针证实）；03 POSIX 判活把僵尸当存活（macOS 3 假失败）；04 POSIX 超时测试语义未随勘误反转（真实失败）；05 Windows 双重 CloseHandle。核实中另发现 06：attach 失败降级（决策第 1 点"句柄记 0 走 taskkill"）未实现。逐点决策：01-Windows 用 codex 同款 preserve（清 KILL_ON_JOB_CLOSE）；03 拆两助手；6 项一批全修（POSIX 实测后续在 Mac 补）。
