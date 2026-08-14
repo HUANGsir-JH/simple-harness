@@ -9,6 +9,8 @@ import (
 	"github.com/agent-project/harness/internal/events"
 	"github.com/agent-project/harness/internal/messages"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
+	"github.com/muesli/termenv"
 )
 
 // TestToolStateMachine tool_call → pending，tool_result → done + 分派内容。
@@ -33,16 +35,20 @@ func TestToolStateMachine(t *testing.T) {
 	}
 }
 
-func TestReadFileToolCanExpand(t *testing.T) {
+func TestReadFileToolInline(t *testing.T) {
 	m := New(nil)
 	tc := &messages.ToolCall{ID: "read-expand", Name: "read_file", Args: []byte(`{"path":"README.md"}`)}
 	m.onToolCall(tc)
 	m.onToolResult(events.Event{ToolCall: tc, ToolResult: &messages.ToolResult{Success: true, Content: "first\nsecond\nthird"}})
-	if !m.tools[0].Expandable() {
-		t.Fatal("read_file should retain full output for expansion")
+	// ADR-043 双形态：read_file 为 Inline 单行（元信息），不再折叠展开。
+	if !m.tools[0].Inline {
+		t.Fatal("read_file 应为 Inline 单行形态")
 	}
-	if !strings.Contains(m.tools[0].Full, "second") {
-		t.Fatalf("read_file full output = %q", m.tools[0].Full)
+	if m.tools[0].Expandable() {
+		t.Fatal("Inline 形态不可展开")
+	}
+	if !strings.Contains(m.tools[0].InlineBody, "README.md") || !strings.Contains(m.tools[0].InlineBody, "3 lines") {
+		t.Fatalf("read_file 单行摘要 = %q", m.tools[0].InlineBody)
 	}
 }
 
@@ -211,5 +217,110 @@ func TestInterruptPromptAddedOnRunDone(t *testing.T) {
 	// 下一轮可继续（无未配对 tool_use）：conversation 末尾合法。
 	if m.running {
 		t.Fatal("handleRunDone 后应停止 running")
+	}
+}
+
+// TestToolDurationLiveAndDone 调用耗时：live 回合打点（运行中实时、结束后定格）；
+// resume 历史重建不设 Started → 不显示耗时（ADR-043 用户追加需求）。
+func TestToolDurationLiveAndDone(t *testing.T) {
+	m := New(nil)
+	m.running = true
+	tc := &messages.ToolCall{ID: "dur", Name: "shell_command", Args: []byte(`{"command":"sleep 1"}`)}
+	m.onToolCall(tc)
+	if m.tools[0].Started.IsZero() {
+		t.Fatal("live 回合 ToolCall 应打点 Started")
+	}
+	if got := toolDuration(m.tools[0]); got == "" {
+		t.Fatal("运行中应显示实时耗时")
+	}
+	m.onToolResult(events.Event{ToolCall: tc, ToolResult: &messages.ToolResult{Success: true, Content: "ok"}})
+	if m.tools[0].Duration <= 0 {
+		t.Fatal("ToolResult 应结算 Duration")
+	}
+	if got, want := toolDuration(m.tools[0]), formatDuration(m.tools[0].Duration); got != want {
+		t.Fatalf("结束后耗时 = %q, want %q", got, want)
+	}
+
+	// 历史重建（running=false）：不打点、不显示。
+	m2 := New(nil)
+	m2.onToolCall(tc)
+	if !m2.tools[0].Started.IsZero() || m2.tools[0].Duration != 0 {
+		t.Fatal("历史重建不应打点耗时")
+	}
+}
+
+// TestExpandedToolShowsFullArgs 展开态完整展示 args（不截断，用户追加需求）：
+// 头部摘要截断的块头之外，展开渲染必须包含完整命令原文。
+func TestExpandedToolShowsFullArgs(t *testing.T) {
+	longCmd := "echo " + strings.Repeat("很长的命令参数", 10)
+	ts := &ToolStatus{
+		Name:      "shell_command",
+		Args:      []byte(`{"command":"` + longCmd + `"}`),
+		Summary:   toolCallSummary("shell_command", []byte(`{"command":"`+longCmd+`"}`)),
+		Done:      true,
+		Content:   "exit 0\noutput",
+		Full:      "exit 0\noutput",
+		Collapsed: false,
+	}
+	render := renderToolBlock(ts, 80, false)
+	plain := ansiStripForTest(render)
+	// args 段会按宽度 Hardwrap（换行+缩进，CJK 可能逐字断行），且块渲染在每
+	// 行行首有左竖线边框——归一化需同时去掉边框字符与全部空白。
+	norm := func(s string) string { return strings.Join(strings.Fields(strings.ReplaceAll(s, "|", "")), "") }
+	if !strings.Contains(norm(plain), norm(longCmd)) {
+		t.Fatalf("展开态应含完整命令参数（不截断），render:\n%s", plain)
+	}
+	if !strings.Contains(plain, "args") {
+		t.Fatalf("展开态应有 args 段，render:\n%s", plain)
+	}
+}
+
+// TestInlineToolRendering Inline 单行形态：徽章 + 摘要 + 无折叠提示。
+func TestInlineToolRendering(t *testing.T) {
+	ts := &ToolStatus{
+		Name: "list_dir", Args: []byte(`{"path":"."}`), Summary: "list_dir .",
+		Done: true, Content: "3 items  a b c", Full: "a\nb\nc",
+		Inline: true, InlineBody: "3 items  a b c", Collapsed: true,
+	}
+	render := renderToolBlock(ts, 80, false)
+	plain := ansiStripForTest(render)
+	if !strings.Contains(plain, "[OK]") || !strings.Contains(plain, "list_dir .") || !strings.Contains(plain, "3 items") {
+		t.Fatalf("Inline 渲染应含徽章+摘要，got:\n%s", plain)
+	}
+	if strings.Contains(plain, "collapsed") || strings.Contains(plain, "+ lines") {
+		t.Fatalf("Inline 形态不应有折叠提示，got:\n%s", plain)
+	}
+}
+
+// ansiStripForTest 测试用 ANSI 剥离。
+func ansiStripForTest(s string) string { return ansi.Strip(s) }
+
+// TestPrettyArgs 参数 JSON 缩进排版 + 非 JSON 兜底原文。
+func TestPrettyArgs(t *testing.T) {
+	got := prettyArgs([]byte(`{"path":"a.txt","command":"ls"}`))
+	if !strings.Contains(got, "\n") || !strings.Contains(got, "\"path\"") {
+		t.Fatalf("JSON 参数应缩进排版，got %q", got)
+	}
+	if want := "not-json"; prettyArgs([]byte(want)) != want {
+		t.Fatalf("非 JSON 参数应兜底原文")
+	}
+	if prettyArgs(nil) != "" {
+		t.Fatalf("空参数应返回空串")
+	}
+}
+
+// TestHighlightFileContent 代码高亮输出 ANSI 颜色（256 色档案下非空且含转义）。
+func TestHighlightFileContent(t *testing.T) {
+	withColorProfile(t, termenv.ANSI256)
+	out := highlightFileContent("main.go", "package main\n\nfunc main() {}\n")
+	if out == "" {
+		t.Fatal("高亮输出不应为空")
+	}
+	if !strings.Contains(out, "\x1b[") {
+		t.Fatalf("高亮输出应含 ANSI 颜色序列，got %q", out)
+	}
+	// 未知语言走 chroma Fallback lexer（仍带默认前景色），内容必须完整保留。
+	if got := ansi.Strip(highlightFileContent("unknown.zzz", "plain text")); got != "plain text" {
+		t.Fatalf("语言未识别内容应完整保留，got %q", got)
 	}
 }

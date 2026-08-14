@@ -777,6 +777,11 @@ func (m *Model) onToolCall(tc *messages.ToolCall) {
 		return
 	}
 	ts := &ToolStatus{ID: tc.ID, Name: tc.Name, Args: tc.Args, Summary: toolCallSummary(tc.Name, tc.Args), Collapsed: true}
+	// 调用耗时打点（ADR-043）：仅 live 回合打点；resume 历史重建（running=false）
+	// 不设 Started → 历史块不显示耗时。
+	if m.running {
+		ts.Started = time.Now()
+	}
 	prepareTool(ts)
 	m.tools = append(m.tools, ts)
 	m.items = append(m.items, timelineItem{kind: itemTool, tool: ts})

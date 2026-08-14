@@ -360,66 +360,6 @@ func renderMessages(m *Model) string {
 	return content
 }
 
-func renderToolBlock(tool *ToolStatus, width int, selected bool) string {
-	status := "[RUN]"
-	statusStyle := styleRunning
-	if tool.Done {
-		status = "[OK]"
-		statusStyle = styleSuccess
-		if tool.Failed {
-			status = "[ERR]"
-			statusStyle = styleError
-		}
-	}
-	head := statusStyle.Render(status) + " " + styleText.Render(ansi.Truncate(tool.Summary, maxInt(8, width-10), "..."))
-	if selected {
-		head = styleSelected.Render("> ") + head
-	}
-
-	content := tool.Content
-	if !tool.Collapsed && tool.Full != "" {
-		content = tool.Full
-	}
-	if content == "" {
-		content = "waiting for result"
-	}
-	lines := strings.Split(strings.TrimSpace(content), "\n")
-	total := len(lines)
-	if tool.Collapsed && len(lines) > 6 {
-		lines = lines[:6]
-	}
-	for i, line := range lines {
-		lines[i] = "  " + colorDiffLine(ansi.Hardwrap(line, maxInt(8, width-4), true))
-	}
-	body := strings.Join(lines, "\n")
-	if tool.Expandable() {
-		state := "expanded"
-		if tool.Collapsed {
-			state = fmt.Sprintf("collapsed  %d lines", total)
-		}
-		body += "\n" + styleMuted.Render("  ["+state+"]")
-	}
-	return head + "\n" + lipgloss.NewStyle().
-		BorderStyle(lipgloss.Border{Left: "|"}).
-		BorderLeft(true).
-		BorderForeground(colorBorder).
-		PaddingLeft(1).
-		Render(body)
-}
-
-func colorDiffLine(line string) string {
-	switch {
-	case strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "---"):
-		return styleMuted.Render(line)
-	case strings.HasPrefix(line, "+"):
-		return styleAdd.Render(line)
-	case strings.HasPrefix(line, "-"):
-		return styleDelete.Render(line)
-	default:
-		return line
-	}
-}
-
 func (m Model) selectedTarget() *hitTarget {
 	if m.focus != focusTimeline || m.selectedHit < 0 || m.selectedHit >= len(m.hits) {
 		return nil

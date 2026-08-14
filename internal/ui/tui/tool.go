@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/agent-project/harness/internal/messages"
 	"github.com/hexops/gotextdiff"
@@ -26,13 +27,25 @@ type ToolStatus struct {
 	// Collapsed 是否折叠（默认 true；展开交互 W4：点击/Enter 切换）。
 	Collapsed bool
 
+	// Inline 单行形态（ADR-043 双形态）：read_file/list_dir/glob/update_todo/
+	// 后台 shell 只渲染徽章 + 摘要 + 耗时一行，不参与折叠展开。
+	Inline     bool
+	InlineBody string // 单行形态的摘要正文（分派时生成）
+
+	// 调用耗时（ADR-043 用户追加需求，纯 UI 侧计时）：Started 在 ToolCall
+	// 事件打点（resume 历史重建不设），Duration 在 ToolResult 结算；运行中
+	// 渲染时 time.Since(Started) 实时显示。
+	Started  time.Time
+	Duration time.Duration
+
 	oldContent string // write_file diff 用：ToolCall 时预读的旧文件（覆盖场景）
 	oldExists  bool
 }
 
 // Expandable reports whether the block has detail beyond its compact view.
+// Inline 单行形态不可展开（ADR-043）。
 func (t *ToolStatus) Expandable() bool {
-	if t == nil || t.Full == "" {
+	if t == nil || t.Inline || t.Full == "" {
 		return false
 	}
 	return t.Full != t.Content || len(strings.Split(strings.TrimSpace(t.Full), "\n")) > 6
@@ -99,8 +112,13 @@ func prepareTool(ts *ToolStatus) {
 
 // applyToolResult 在 ToolResult 时按工具分派生成折叠态/展开态内容。
 // 失败（错误/审批拒绝）时 Content 含错误信息（对齐失败态红 [ERR] + 错误 + 输出）。
+// Inline 单行形态按工具分派（ADR-043）；Duration 结算调用耗时（Started 为
+// resume 历史重建时保留零值 → 不显示）。
 func applyToolResult(ts *ToolStatus, res *messages.ToolResult) {
 	ts.Done = true
+	if !ts.Started.IsZero() {
+		ts.Duration = time.Since(ts.Started)
+	}
 	ts.Failed = !res.Success
 	if !res.Success {
 		ts.Content = truncate(res.Content, 240)
@@ -113,6 +131,8 @@ func applyToolResult(ts *ToolStatus, res *messages.ToolResult) {
 		lines := lineCount(res.Content)
 		ts.Content = fmt.Sprintf("%s  |  %d lines  |  %s", readFilePath(ts.Args), lines, humanSize(len(res.Content)))
 		ts.Full = res.Content
+		ts.Inline = true
+		ts.InlineBody = ts.Content
 	case "write_file":
 		ts.writeResult(res)
 	case "apply_patch":
@@ -126,19 +146,27 @@ func applyToolResult(ts *ToolStatus, res *messages.ToolResult) {
 		names := listDirNames(res.Content)
 		ts.Content = fmt.Sprintf("%d items  %s", len(names), firstN(names, 5))
 		ts.Full = strings.Join(names, "\n")
+		ts.Inline = true
+		ts.InlineBody = ts.Content
 	case "glob":
 		paths := splitLines(res.Content)
 		ts.Content = fmt.Sprintf("%d matches  %s", len(paths), firstN(paths, 5))
 		ts.Full = res.Content
+		ts.Inline = true
+		ts.InlineBody = ts.Content
 	case "update_todo":
-		ts.Content = res.Content // 完整 checklist
+		ts.Content = res.Content // 完整 checklist（todo 常驻条同步展示）
 		ts.Full = res.Content
+		ts.Inline = true
+		ts.InlineBody = fmt.Sprintf("%d items", lineCount(res.Content))
 	case "shell_command":
 		// background 模式（ADR-038）：结果是"已后台启动 PID xxx"，不是命令
 		// 输出——原文展示，不拼 "exit 0" 前缀（会误导为命令已完成）。
 		if toolBackground(ts.Args) {
 			ts.Content = res.Content
 			ts.Full = res.Content
+			ts.Inline = true
+			ts.InlineBody = res.Content
 			break
 		}
 		ts.Content = "exit 0" + headLines(res.Content, 5)
