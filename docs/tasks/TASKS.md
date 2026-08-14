@@ -235,3 +235,8 @@
 ## 阶段 6（TUI 后后续可选）：摘要式压缩 / grep 工具 / 双向通信
 
 - **状态**：未开始（TUI 已提前为独立阶段；本阶段为压缩/grep/双向通信剩余项）
+
+## 阶段 7（功能完善后）：代码架构整理
+
+- **状态**：⏳ 待启动（阶段 4/5/6 完成后再做；记录见 `docs/plans/architecture-cleanup-2026-08-13.md`）
+- **要点**：① 注入闭包改命名方法值（`AppendUser = s.AddUser`、Segment/wakeSignal 抽命名方法）提升可读性/可跳转；② **收敛散乱的装配逻辑**——命令层三入口（run/resume/repl）各自装配、rc 注入点两处分裂（Session.RuntimeContext 会话域 vs Controller UI 域）、TUI 启停序列隐式、装配根不唯一（agent.Build / app.Load / Controller）→ 显式 Composition Root + 对称启动/拆除；③ TUI 构造顺序（Model→Controller→Program）收敛审视；闭包来源分类已定（框架强制 / 解耦接缝 / 时序生命周期 / 普通回调——架构方向不改，只做可读性整理）
