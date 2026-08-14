@@ -488,3 +488,19 @@
 - **影响 ADR**：ADR-038——日志文件分配实现修正（进程生命周期/注册表/通知链路不变，仅临时命名机制）；ADR-028——eviction 落盘文件命名机制。
 - **回归锚点**：`TestShellCommandBackgroundConcurrentUniqueLogs`（12 轮 × 8 任务屏障并发直调 `startBackground`；断言路径唯一且为 `<pid>.log`、文件可读、内容仅含本任务、无 `.bg` 残留；修复前一次运行即复现全部四症状）。
 - **验证**：`go build/vet/test ./...` 全绿；`tools -race` 绿；linux/windows/darwin 交叉编译绿。版本 0.11.1。
+
+## ADR-043：TUI 重构——视觉 + 组件化 + 三项交互增强（2026-08-14）
+
+- **背景**：现有 TUI（ADR-030，bubbletea + lipgloss + glamour，约 6100 行）功能完备、架构干净（Model/Update 纯函数 + Controller 事件桥 + 几何收敛 ADR-031/032），但用户对展示效果不满意：视觉偏工程化（全 ASCII 边框、YOU/ASSISTANT 文字标签、9 个写死颜色、无主题概念、todo/queue 裸文本条）、每次 refresh 全量重排时间线（长会话性能隐患）。重新调研 codex（`codex-rs/tui`：HistoryCell 类型化 cell、语义色 + 终端色探测、keymap 三件套、稳定前缀流式渲染）与 opencode（OpenTUI + SolidJS：主题 60+ token JSON、通用 DialogSelect、工具双形态 Inline/Block、16ms 事件合帧、贴底滚动），提炼共性并形成方案 `docs/plans/tui-redesign-2026-08-14.md`（本 ADR 的权威细化文档）。
+- **决策**：
+  1. **技术栈不动**：继续 bubbletea + lipgloss + glamour + gotextdiff（ADR-030 栈），重构的是 UI 层组织与渲染，非换框架；单包内按职责拆文件（theme/keymap/cells/tools/diff/dialogs/render），不拆子包。
+  2. **布局**：单栏 + 命令面板/弹窗（opencode 风格），不做常驻侧栏；header 一行信息条 + 分隔线 + 弹性时间线（贴底滚动）+ aux（todo/queue 面板化）+ composer（圆角边框、焦点 accent）+ footer 单行。
+  3. **主题系统**：语义 token（~20：canvas/panel/raised/border/borderFocus/text/muted/accent/user/success/warning/error/diff*/syntax*）+ 内置 harness-dark（默认，基于现有 234 底座精修）/harness-light + termenv 明暗探测；全局 style 变量迁移为 token 派生；无 emoji 基线延续（ADR-030 风格约束），状态徽章 [OK]/[ERR]/[RUN] 保留，边框 Unicode 圆角 + ASCII 兜底。
+  4. **组件化**：消息 cell（user `›` 前缀去标签、assistant 去标签、thinking 折叠行抽首个粗体标题）；工具双形态（Inline 单行 / Block 边框块）+ 展开态完整 args（不截断，用户追加需求）；统一 modal 框架承载审批/ask/选择器/help 四弹窗（几何继续 modalPanelWidth/modalInnerWidth 收敛，ADR-032）；集中 keymap 表（行为零变化，不引入前导键）。
+  5. **三项交互增强（用户 2026-08-14 追加）**：时间线右侧 1 列滚动条（轨道 TokenBorder 淡化 + 拇指 TokenAccent，点击跳转/拖拽滚动/内容不超视口时隐藏）；时间线鼠标文本选择（press/motion/release 三态：无位移 = 点击保留工具块/thinking 折叠切换，拖拽 = 选区，Ctrl+C 有选区复制选区、无选区回退复制 composer）；工具块展开态完整展示 args + 结果。
+  6. **功能边界（红线）**：命令集（/switch /model /effort /thinking /permission /plan /usage /compact /rename /help /exit）、审批三档 + 会话记忆、队列消费规则（runDoneMsg 边界）、懒加载会话、后台唤醒、事件桥（agentEventMsg/approvalRequestMsg/askRequestMsg/completionWakeMsg）一律不变；e2e 断言串（"Ask anything"/"PERMISSION REQUIRED"/"PLAN APPROVAL"/系统行中文文案/工具摘要）保留。
+  7. **性能**：P1 = cell 级渲染缓存（脏标记 + 宽度/主题/选中态 key）；P2 = 事件合帧（P1 后评估，可选）。
+  8. **实施**：独立分支 `feat/tui-redesign`，六阶段（0 文档基线 → 1 theme/keymap 零视觉 → 2 dialog → 3 布局/cell/滚条/选择 → 4 工具双形态/args/高亮 → 5 缓存 → 6 收尾），每阶段独立 commit + `go test ./...` 全绿；Phase 1 验收标准 = 零测试改动。
+- **理由**：codex/opencode 共性（类型化 cell、语义色主题、统一 dialog、集中 keymap、流式稳定前缀）是 agent TUI 已验证形态，bubbletea 栈与 ADR-030 决策延续可复用全部测试基建；"视觉重构 + 零功能变化"把破坏面限制在渲染层，e2e 契约 + 单测锚定回归；三项追加需求（滚条/选择/args）均为长会话/长内容的可用性刚需，且不触碰核心交互语义。
+- **影响 ADR**：ADR-030 修订——视觉规范升级（边框/标签/主题），命令集/键位/队列语义不变；ADR-031 修订——鼠标命中改为 press/motion/release 三态（点击 vs 拖拽判定）；ADR-032 延续——弹窗几何收敛函数迁移至统一 dialog 框架。
+- **验证**：每阶段 `go test ./...` 全绿 + e2e 六用例断言串保持；Phase 1 零测试改动；人工实测清单（滚条拖拽/文本选择复制/resize/窄屏/中文 IME）Phase 6 交付。
