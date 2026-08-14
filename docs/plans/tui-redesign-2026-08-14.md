@@ -16,7 +16,8 @@
 1. **视觉升级**：层次、留白、边框、颜色系统达到 codex/opencode 同等质感；
 2. **组件化**：theme 包、cell 渲染器、统一 dialog 框架、集中 keymap 表；
 3. **渲染性能**：cell 级渲染缓存（P1）、事件合帧（P2，可选）；
-4. **零功能变化**：命令集、键位、审批流程、队列语义、会话模型一律不变。
+4. **功能边界**：命令集、审批流程、队列语义、会话模型一律不变；除用户明确追加的三项交互增强（§2）外零功能变化；
+5. **用户追加需求**（2026-08-14 补充）：时间线右侧滚动条、鼠标文本选择、工具块展开态完整展示参数。
 
 ## 2. 已确认决策（用户拍板）
 
@@ -27,6 +28,9 @@
 | 功能范围 | 只做视觉与组件化重构；功能集合、命令集、键位**零变化** |
 | 键位 | 维持现状；仅实现层把散落键位收拢到集中 keymap 表（行为不变，不引入前导键） |
 | 分支 | `feat/tui-redesign`，分阶段提交，每阶段 `go test ./...` 全绿 |
+| 滚动条（补充） | 时间线右侧细滚动条（轨道 + 拇指），主题化、可点击跳转、可拖拽，见 §6.2.1 |
+| 文本选择（补充） | 时间线内鼠标左键拖拽选择文本；Ctrl+C 优先复制选区（无选区回退现有行为），见 §6.7 |
+| 工具参数（补充） | 工具块展开态完整展示调用参数（args 不截断）+ 完整结果，见 §6.4 |
 
 ## 3. 参考实现提炼（两份调研的核心结论）
 
@@ -53,6 +57,7 @@
 | 工具双形态（Inline 单行 / Block 边框块） | ✅ 采纳（tools.go，现有 per-tool 分派升级为双形态） |
 | diff 语法高亮（chroma，已在依赖树） | ✅ 采纳（P1 内；渲染层增强，非新功能） |
 | codex 内联视口 + 终端原生 scrollback | ❌ 不采纳（bubbletea alt-screen 模型，改动过深） |
+| 右侧滚动条 + 鼠标文本选择 | ✅ 用户追加需求（2026-08-14）：opencode scrollbox 滚条 / codex 原生选择的等价体验，自实现见 §6.2.1 / §6.7 |
 | `@` 提及 / `!` shell / 外部编辑器 / undo-redo / vim 模式 / 侧栏 / 主题切换命令 | ❌ 本次不做（功能变动，列入二期 §12） |
 
 ## 4. 设计原则
@@ -159,6 +164,24 @@ func tstyle(t Token) lipgloss.Style
 - 窄屏（<56 列）沿用 outerPad 归零策略；弹窗宽度继续用 `modalPanelWidth/modalInnerWidth` 收敛（ADR-032）。
 - 贴底滚动：沿用 `autoScroll` 语义（在底部→新内容自动贴底；向上滚动→脱离贴底），本次只做视觉，不加增量滚动/加速度（二期）。
 
+### 6.2.1 右侧滚动条（用户追加需求）
+
+```
+                                                     ┃   ← 轨道（1 列，TokenBorder 淡化色）
+   ▸ user message                                    █   ← 拇指（TokenAccent；总行数≤视口高时不显示）
+   assistant markdown 正文 …                          ┃
+   [OK] shell_command: ls -la                         ┃
+   …（内容太长时，右侧滚条提供全局位置感）                   █
+                                                     ┃
+```
+
+- **位置**：时间线右侧固定 1 列，不参与内容排版（viewport 宽度减 1 即可）。
+- **轨道**：满高 `│`（或 `┃`），颜色 = TokenBorder 淡化（可读但不抢眼）。
+- **拇指**：`█` 字符；高度 `h = clamp(viewportHeight² / totalLines, 1, viewportHeight)`；位置 ∝ `YOffset / (totalLines - viewportHeight)`；颜色 TokenAccent（滚动/拖拽中）→ TokenMuted（静止）；`totalLines ≤ viewportHeight` 时不渲染。
+- **交互**：左键点击轨道任意处 = 按比例跳转（SetYOffset，配合贴底判定）；按住拇指拖拽 = 连续滚动（Press 记录 → Motion 更新 → Release 结束）；滚轮行为不变；弹窗打开时滚条不响应（与现有点击路由一致）。
+- **实现**：`View()` 内 `lipgloss.JoinHorizontal(viewport.View(), scrollbarView())`；hits 命中坐标保持内容相对（不受滚条影响）；modal 居中按含滚条的总宽计算。
+- **美观要求**：颜色全部走主题 token；拖拽期间无闪烁（Motion 事件统一走 refresh 管线）。
+
 ### 6.3 消息 cell 规范
 
 | 类型 | 现状 | 新视觉 |
@@ -174,6 +197,7 @@ func tstyle(t Token) lipgloss.Style
 
 - **Inline（单行）**：read_file（元信息行）、list_dir、glob、update_todo 概要 → `[OK] read_file path · 42 lines · 1.2KB`（状态徽章 + 摘要单行）。
 - **Block（边框块）**：shell_command 输出、write_file diff、apply_patch diff、失败详情 → 左竖线块 + 状态行 + 内容折叠 + `… +N lines` 展开提示（现有折叠交互不变：点击/Enter）。
+- **展开态完整参数（用户追加需求）**：展开后 = 状态行 + **完整 args**（原始 JSON pretty-print + Hardwrap，可选 chroma JSON 高亮）+ 完整结果（diff/输出/代码），一律**不截断**。头部摘要行（`toolCallSummary`）维持截断——那只是折叠态的块头；展开态正文不再吃 `truncate(...,200)` 类截断。
 - 状态徽章保持 `[RUN]/[OK]/[ERR]` + 黄/绿/红（无 emoji 约束）。
 - diff 渲染（diff.go）：gotextdiff 输出按 +/-/hunk 行着色（现状已做），代码块语言检测 + chroma 高亮（shell/输出不强行高亮，markdown 代码块与 write_file 内容高亮）。
 - 折叠提示行文字从 `[collapsed N lines]` 升级为 `… +N lines`（muted）——**注意**：单测如断言旧文案需同步（§8 契约表）。
@@ -200,6 +224,15 @@ func tstyle(t Token) lipgloss.Style
 - footer：保持单行左右布局；左侧 READY/◌RUNNING（spinner），右侧 `[PLAN] permission · effort · ctx · todo · queued`（内容不变，仅样式统一 muted）。
 - aux：todo 面板化（细边框 + `TODO` 小标题 + ≤5 项 + 统计行，内容与排序不变）；queue 条与 todo 同风格。
 
+### 6.7 鼠标文本选择（用户追加需求）
+
+- **触发**：时间线内左键 Press 记录锚点（内容行/列）；按住拖拽（Motion）扩展选区；Release 结束。**位移为零（或 < 1 格）按"点击"处理**——保留现有工具块/thinking 点击折叠切换语义。
+- **渲染**：选区用选中背景（TokenRaised + TokenText，或 lipgloss Reverse）精确覆盖；跨行选区逐行片段渲染。
+- **复制**：有选区时 Ctrl+C 复制选区纯文本（渲染行经 `ansi.Strip` 取正文）；**无选区时保持现有"复制 composer 内容"行为**；Esc / 在其他区域点击清除选区。
+- **状态机**：鼠标处理重写为 press / motion / release 三态（含"点击 vs 拖拽"判定），替代现有单 press 处理；弹窗打开时时间线选择不生效。
+- **范围**：仅时间线内容；composer 内选择受 bubbles textarea 组件限制，本次不做（二期）。
+- **边界拖动自动滚动**（拖到视口上/下缘自动滚屏）：P2 可选，视实现复杂度决定。
+
 ## 7. 性能策略
 
 - **P1 cell 渲染缓存**：`timelineItem` 增加渲染缓存 `{content string, width, themeRev, selected bool}`；事件处理只标记受影响 cell dirty，`refresh` 重拼时间线字符串时命中缓存的 cell 直接复用。markdown 块级缓存（md.go 现状）保留。
@@ -210,7 +243,9 @@ func tstyle(t Token) lipgloss.Style
 ### 8.1 保持不变（回归红线）
 
 - 命令集：`/switch /model /effort /thinking /permission /plan /usage /compact /rename /help /exit` 及参数语义；
-- 键位：Tab 焦点 / Esc 中断 / Ctrl+C 复制 / PgUp-PgDn / j-k-Enter-Space / Shift+Enter 换行 / ↑↓ 历史 / 审批 y-s-n / ask 键位——全部不变；
+- 键位：Tab 焦点 / Esc 中断 / PgUp-PgDn / j-k-Enter-Space / Shift+Enter 换行 / ↑↓ 历史 / 审批 y-s-n / ask 键位——全部不变；
+- Ctrl+C：**有选区复制选区（新增）**；无选区复制 composer 内容（现有行为不变）；
+- 鼠标点击工具块/thinking 折叠切换：保留（press→release 无位移 = 点击）；press→拖拽 = 文本选择（新增）；
 - 审批三档 + 会话记忆、队列消费规则（runDoneMsg 边界）、懒加载会话、后台唤醒——不动；
 - 事件桥（agentEventMsg/approvalRequestMsg/askRequestMsg/completionWakeMsg）——不动。
 
@@ -231,7 +266,9 @@ func tstyle(t Token) lipgloss.Style
 
 - **单测为主**（ADR-030 策略延续）：
   - Model.Update 状态机测试（键位/队列/审批/ask/命令）全部保留，仅因视觉文案变化的断言同步；
-  - 新增：theme 解析/明暗探测单测、cell 渲染单测（user/assistant/thinking/system）、工具双形态单测、dialog 几何单测（继承 ADR-032 `TestModalsFitPanelWidth`/`TestHitRangesAlignWithRenderedLines` 精神）、keymap 表完整性测试（每 action 有绑定）；
+  - 新增：theme 解析/明暗探测单测、cell 渲染单测（user/assistant/thinking/system）、工具双形态单测（含**展开态 args 完整性**）、dialog 几何单测（继承 ADR-032 `TestModalsFitPanelWidth`/`TestHitRangesAlignWithRenderedLines` 精神）、keymap 表完整性测试（每 action 有绑定）；
+  - 滚动条单测：thumb 高度/位置比例、totalLines ≤ 视口高时隐藏、点击跳转坐标换算；
+  - 文本选择单测：press/motion/release 状态机、点击 vs 拖拽判定（零位移不误触发 toggle）、跨行选区渲染、`ansi.Strip` 复制内容正确性；
   - 渲染缓存正确性测试：改宽度/主题/选中态后缓存失效。
 - **e2e**：`internal/e2e` 6 个 TUI 用例断言串保持（§8.2），跑全绿；若视觉改动触碰断言，只改该断言对应文案并在 commit message 注明。
 - **人工清单**（Phase 6）：鼠标点击/中文 IME/Ctrl+C 复制/resize/窄屏 40 列/长会话滚动性能。
@@ -243,10 +280,10 @@ func tstyle(t Token) lipgloss.Style
 | 0 | 本方案批准；ADR-043 落 DECISIONS.md；TASKS.md 建条目；基线 `go test ./...` 确认 | 无 |
 | 1 | theme.go + keymap.go：样式与键位收拢为表驱动，全部调用点迁移 | **零**（验收：全部测试不因视觉文案变化而改动） |
 | 2 | dialogs.go：统一 modal 框架 + 四实例迁移 | 弹窗视觉升级 |
-| 3 | cells.go + layout/view：header/footer/aux/composer 视觉 + 消息 cell | 主界面视觉升级 |
-| 4 | tools.go + diff.go：工具双形态 + diff/代码高亮 | 工具块视觉升级 |
+| 3 | cells.go + layout/view：header/footer/aux/composer 视觉 + 消息 cell + **右侧滚动条**（§6.2.1）+ **鼠标文本选择状态机**（§6.7） | 主界面视觉升级 + 两项鼠标交互 |
+| 4 | tools.go + diff.go：工具双形态 + **展开态完整 args**（§6.4）+ diff/代码高亮 | 工具块视觉升级 |
 | 5 | render.go：cell 渲染缓存（P1；P2 合帧视评估） | 无 |
-| 6 | 测试迁移收尾 + e2e 全绿 + 文档（ADR-043/IMPLEMENTATION_PLAN.md 状态/PROGRESS.md）+ 人工实测清单交付 | — |
+| 6 | 测试迁移收尾 + e2e 全绿 + 文档（ADR-043/IMPLEMENTATION_PLAN.md 状态/PROGRESS.md）+ 人工实测清单（含滚条拖拽/文本选择复制）交付 | — |
 
 ## 11. 风险与对策
 
