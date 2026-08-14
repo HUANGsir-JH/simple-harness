@@ -9,7 +9,6 @@ import (
 	"github.com/agent-project/harness/internal/events"
 	"github.com/agent-project/harness/internal/messages"
 	"github.com/agent-project/harness/internal/middleware"
-	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -314,129 +313,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 }
 
+// handleKey 按弹窗/焦点上下文查键位表分发（ADR-043：keyBindings 为单一事实
+// 来源，行为与重构前逐字节等价）。无弹窗时先试全局键，未命中降级到焦点上下文。
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.ovl != nil {
-		switch m.ovl.kind {
-		case overlayApproval:
-			return m.handleApprovalKey(msg)
-		case overlaySelect:
-			return m.handlePopupKey(msg)
-		case overlayAsk:
-			return m.handleAskKey(msg)
-		case overlayHelp:
-			if msg.String() == "esc" || msg.String() == "enter" || msg.String() == "/" {
-				return m.closeOverlay()
-			}
-			return m, nil
-		}
+		nm, cmd, _ := dispatchKey(overlayContext(m.ovl.kind), &m, msg)
+		return nm, cmd
 	}
-
-	switch msg.String() {
-	case "ctrl+c":
-		if value := m.input.Value(); value != "" {
-			if err := clipboard.WriteAll(value); err == nil {
-				m.toast = "Composer copied"
-			} else {
-				m.toast = "Clipboard unavailable"
-			}
-			m.refresh(false)
-		}
-		return m, nil
-	case "esc":
-		if m.running && m.c != nil {
-			m.requestInterrupt()
-		}
-		return m, nil
-	case "tab":
-		if m.completionVisible() {
-			m.acceptCompletion()
-			return m, nil
-		}
-		m.toggleFocus()
-		m.refresh(false)
-		return m, nil
-	case "pgup":
-		m.viewport.PageUp()
-		m.autoScroll = false
-		return m, nil
-	case "pgdown":
-		m.viewport.PageDown()
-		m.autoScroll = m.viewport.AtBottom()
-		return m, nil
-	case "home":
-		if m.focus == focusTimeline {
-			m.viewport.GotoTop()
-			m.autoScroll = false
-			return m, nil
-		}
-	case "end":
-		if m.focus == focusTimeline {
-			m.viewport.GotoBottom()
-			m.autoScroll = true
-			return m, nil
-		}
+	if nm, cmd, handled := dispatchKey(ctxGlobal, &m, msg); handled {
+		return nm, cmd
 	}
-
+	ctx := ctxComposer
 	if m.focus == focusTimeline {
-		return m.handleTimelineKey(msg)
+		ctx = ctxTimeline
 	}
-	return m.handleComposerKey(msg)
-}
-
-func (m Model) handleComposerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if m.completionVisible() {
-		switch msg.String() {
-		case "up":
-			m.moveCompletion(-1)
-			return m, nil
-		case "down":
-			m.moveCompletion(1)
-			return m, nil
-		}
-	}
-	if m.input.Value() == "" {
-		switch msg.String() {
-		case "up":
-			m.recallHistory(-1)
-			return m, nil
-		case "down":
-			m.recallHistory(1)
-			return m, nil
-		}
-	}
-	if msg.String() == "shift+enter" || msg.String() == "alt+enter" {
-		m.input.InsertRune('\n')
-		m.updateComposerHeight()
-		m.refresh(false)
-		return m, nil
-	}
-	if msg.Type == tea.KeyEnter && !msg.Alt {
-		if m.completionVisible() {
-			m.acceptCompletion()
-			return m, nil
-		}
-		return m.submit()
-	}
-
-	var cmd tea.Cmd
-	m.input, cmd = m.input.Update(msg)
-	m.historyPos = -1
-	m.completion = normalizeCompletion(m.input.Value(), m.completion)
-	m.updateComposerHeight()
-	m.refresh(false)
-	return m, cmd
-}
-
-func (m Model) handleTimelineKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "up", "k":
-		m.moveSelectedHit(-1)
-	case "down", "j":
-		m.moveSelectedHit(1)
-	case "enter", "space":
-		m.toggleSelectedHit()
-	}
-	return m, nil
+	nm, cmd, _ := dispatchKey(ctx, &m, msg)
+	return nm, cmd
 }
 
 func (m *Model) moveSelectedHit(delta int) {
@@ -493,69 +385,6 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) handleApprovalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	var decision middleware.Decision
-	switch strings.ToLower(msg.String()) {
-	case "y":
-		decision = middleware.DecisionAllow
-	case "s":
-		decision = middleware.DecisionAllowSession
-	case "n":
-		decision = middleware.DecisionDeny
-	case "esc":
-		decision = middleware.DecisionDeny
-		if m.running && m.c != nil {
-			m.requestInterrupt()
-		}
-	default:
-		return m, nil
-	}
-	m.ovl.appr.respCh <- decision
-	return m.closeOverlay()
-}
-
-// handleAskKey 处理 ask 弹窗按键（ADR-036）：
-//   - ↑/↓ 导航选项（可打印字符留作自定义输入，故不用 k/j）
-//   - Space 多选勾选；Enter 提交（自定义文本非空优先）；Esc 取消
-//   - 其它可打印字符追加到自定义输入缓冲（Other）
-func (m Model) handleAskKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	ask := m.ovl.ask
-	switch msg.String() {
-	case "up":
-		if ask.cursor > 0 {
-			ask.cursor--
-		}
-	case "down":
-		if len(ask.req.Options) > 0 && ask.cursor < len(ask.req.Options)-1 {
-			ask.cursor++
-		}
-	case " ": // tea.KeySpace.String() = " "（bubbletea 特例）
-		if ask.req.Multiple && len(ask.selected) > 0 {
-			ask.selected[ask.cursor] = !ask.selected[ask.cursor]
-		}
-	case "enter":
-		return m.finishAsk(ask)
-	case "esc":
-		ask.respCh <- middleware.AskResult{} // 取消 = 空回答
-		return m.closeOverlay()
-	case "backspace":
-		if r := []rune(ask.custom); len(r) > 0 {
-			ask.custom = string(r[:len(r)-1])
-		}
-	case "tab", "shift+enter", "alt+enter", "ctrl+c", "pgup", "pgdown", "home", "end":
-		// 忽略（防误触全局快捷键）
-	default:
-		if !ask.req.AllowCustom {
-			return m, nil // 不允许自定义时不接收打字（ADR-036 修订；对齐 run 模式 ParseAskAnswer）
-		}
-		if len(msg.Runes) > 0 {
-			ask.custom += string(msg.Runes) // 可打印字符 → Other 自定义输入
-		}
-	}
-	m.refresh(false)
-	return m, nil
-}
-
 // finishAsk 提交 ask 回答并关闭弹窗：自定义文本非空 → Custom；否则单选提交
 // 当前高亮 / 多选提交全部勾选项。
 func (m Model) finishAsk(ask *askPopup) (tea.Model, tea.Cmd) {
@@ -575,31 +404,6 @@ func (m Model) finishAsk(ask *askPopup) (tea.Model, tea.Cmd) {
 	}
 	ask.respCh <- middleware.AskResult{Selection: selection}
 	return m.closeOverlay()
-}
-
-func (m Model) handlePopupKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	sel := m.ovl.sel
-	switch msg.String() {
-	case "up", "k":
-		if sel.cursor > 0 {
-			sel.cursor--
-		}
-	case "down", "j":
-		if sel.cursor < len(sel.items)-1 {
-			sel.cursor++
-		}
-	case "enter":
-		message, err := m.confirmPopup()
-		m, _ = m.closeOverlay()
-		if err != nil {
-			return m.sysErr(err), nil
-		}
-		return m.sysOK(message), nil
-	case "esc":
-		return m.closeOverlay()
-	}
-	m.refresh(false)
-	return m, nil
 }
 
 func (m Model) submit() (tea.Model, tea.Cmd) {

@@ -10,48 +10,6 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-var (
-	colorCanvas = lipgloss.Color("234")
-	colorPanel  = lipgloss.Color("235")
-	colorRaised = lipgloss.Color("237")
-	colorBorder = lipgloss.Color("240")
-	colorMuted  = lipgloss.Color("244")
-	colorText   = lipgloss.Color("252")
-	colorCyan   = lipgloss.Color("81")
-	colorGreen  = lipgloss.Color("78")
-	colorYellow = lipgloss.Color("220")
-	colorRed    = lipgloss.Color("203")
-
-	styleBrand     = lipgloss.NewStyle().Foreground(colorCyan).Bold(true)
-	styleText      = lipgloss.NewStyle().Foreground(colorText)
-	styleMuted     = lipgloss.NewStyle().Foreground(colorMuted)
-	styleUser      = lipgloss.NewStyle().Foreground(colorCyan).Bold(true)
-	styleAssistant = lipgloss.NewStyle().Foreground(colorText).Bold(true)
-	styleSystem    = lipgloss.NewStyle().Foreground(colorMuted)
-	styleError     = lipgloss.NewStyle().Foreground(colorRed)
-	styleSuccess   = lipgloss.NewStyle().Foreground(colorGreen)
-	styleRunning   = lipgloss.NewStyle().Foreground(colorYellow)
-	styleAdd       = lipgloss.NewStyle().Foreground(colorGreen)
-	styleDelete    = lipgloss.NewStyle().Foreground(colorRed)
-	styleSelected  = lipgloss.NewStyle().Background(colorRaised).Foreground(colorText)
-	stylePanel     = lipgloss.NewStyle().Background(colorPanel).Foreground(colorText)
-	styleBorder    = lipgloss.NewStyle().Foreground(colorBorder)
-
-	// Compatibility aliases used by tool/markdown tests.
-	styleSys  = styleSystem
-	styleDim  = styleMuted
-	styleErr  = styleError
-	styleOK   = styleSuccess
-	styleHdr  = styleRunning
-	styleAsst = styleAssistant
-	styleDel  = styleDelete
-
-	asciiBorder = lipgloss.Border{
-		Top: "-", Bottom: "-", Left: "|", Right: "|",
-		TopLeft: "+", TopRight: "+", BottomLeft: "+", BottomRight: "+",
-	}
-)
-
 func (m Model) View() string {
 	if m.width <= 0 || m.height <= 0 {
 		return ""
