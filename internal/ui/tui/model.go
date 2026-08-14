@@ -80,6 +80,9 @@ type timelineItem struct {
 	kind itemKind
 	msg  *MessageItem
 	tool *ToolStatus
+	// cache 是该 cell 的渲染缓存（ADR-043 Phase 5）：key = 宽度/选中态/折叠态/
+	// thinking 展示开关；运行中的工具块不缓存（耗时实时变化）。
+	cache cellCache
 }
 
 type hitTarget struct {
