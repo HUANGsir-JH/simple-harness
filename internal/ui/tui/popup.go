@@ -8,8 +8,6 @@ import (
 	"github.com/agent-project/harness/internal/agentstate"
 	"github.com/agent-project/harness/internal/session"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
-	"github.com/charmbracelet/x/ansi"
 )
 
 type popupKind int
@@ -323,42 +321,6 @@ func (m *Model) reloadSession() {
 	loadSessionHistory(m, m.c.active)
 	m.autoScroll = true
 	m.refresh(true)
-}
-
-func renderPopup(sel *selectPopup, screenWidth, availableHeight int) string {
-	panelWidth := modalPanelWidth(screenWidth, 34, 64)
-	maxRows := maxInt(3, availableHeight-6)
-	start := 0
-	if len(sel.items) > maxRows {
-		start = sel.cursor - maxRows/2
-		if start < 0 {
-			start = 0
-		}
-		if start+maxRows > len(sel.items) {
-			start = len(sel.items) - maxRows
-		}
-	}
-	end := start + maxRows
-	if end > len(sel.items) {
-		end = len(sel.items)
-	}
-	listWidth := modalInnerWidth(panelWidth)
-	var rows []string
-	for i := start; i < end; i++ {
-		prefix := "  "
-		if i == sel.cursor {
-			prefix = "> "
-		}
-		row := ansi.Truncate(prefix+sel.items[i].label, maxInt(1, listWidth), "...")
-		if i == sel.cursor {
-			row = styleSelected.Width(listWidth).Render(row)
-		} else {
-			row = lipgloss.NewStyle().Width(listWidth).Render(row)
-		}
-		rows = append(rows, row)
-	}
-	content := styleAssistant.Render(sel.title) + "\n\n" + strings.Join(rows, "\n")
-	return modalStyle(panelWidth).Render(content)
 }
 
 func switchItems(sessions []session.SessionInfo) []popupItem {

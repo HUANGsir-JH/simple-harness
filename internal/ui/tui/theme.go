@@ -11,21 +11,21 @@ import (
 type Token int
 
 const (
-	TokenCanvas Token = iota // 屏幕背景
-	TokenPanel               // 面板背景（todo/弹窗）
-	TokenRaised              // 选中/悬浮背景
-	TokenBorder              // 普通边框
-	TokenBorderFocus         // 焦点边框
-	TokenMuted               // 次级文字
-	TokenText                // 正文
-	TokenAccent              // 品牌/焦点/用户消息
-	TokenUser                // 用户消息
-	TokenSuccess             // 成功
-	TokenWarning             // 运行中
-	TokenError               // 失败
-	TokenDiffAdd             // diff 新增行
-	TokenDiffDelete          // diff 删除行
-	TokenDiffMeta            // diff 元信息行
+	TokenCanvas      Token = iota // 屏幕背景
+	TokenPanel                    // 面板背景（todo/弹窗）
+	TokenRaised                   // 选中/悬浮背景
+	TokenBorder                   // 普通边框
+	TokenBorderFocus              // 焦点边框
+	TokenMuted                    // 次级文字
+	TokenText                     // 正文
+	TokenAccent                   // 品牌/焦点/用户消息
+	TokenUser                     // 用户消息
+	TokenSuccess                  // 成功
+	TokenWarning                  // 运行中
+	TokenError                    // 失败
+	TokenDiffAdd                  // diff 新增行
+	TokenDiffDelete               // diff 删除行
+	TokenDiffMeta                 // diff 元信息行
 )
 
 // Theme 是命名调色板：语义 token → 终端颜色；Border 为边框字形（Phase 2 起
@@ -60,7 +60,7 @@ var (
 			TokenDiffDelete:  lipgloss.Color("203"),
 			TokenDiffMeta:    lipgloss.Color("244"),
 		},
-		Border: asciiBorder,
+		Border: lipgloss.RoundedBorder(),
 	}
 	harnessLight = Theme{
 		Name: "harness-light",
@@ -82,7 +82,7 @@ var (
 			TokenDiffDelete:  lipgloss.Color("160"),
 			TokenDiffMeta:    lipgloss.Color("241"),
 		},
-		Border: asciiBorder,
+		Border: lipgloss.RoundedBorder(),
 	}
 )
 

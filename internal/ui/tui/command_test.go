@@ -287,7 +287,7 @@ func TestModalsFitPanelWidth(t *testing.T) {
 		lines int // 期望的外框总行数（含边框与上下 padding），折行会让它变大
 		build func(screenWidth int) (panel string, width int)
 	}{
-		{"select", 8, func(w int) (string, int) {
+		{"select", 9, func(w int) (string, int) {
 			sel := &selectPopup{title: "MODELS", items: []popupItem{
 				{label: "deepseek-v4-flash", value: "deepseek-v4-flash"},
 				{label: longLabel, value: longLabel},
