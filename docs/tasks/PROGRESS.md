@@ -1,3 +1,18 @@
+## 2026-08-14
+
+### 阶段 7 代码架构整理 ✅ 版本 0.10.0（ADR-041）
+
+- **背景**：ADR-040 实施后复查代码，闭包密集 + 装配逻辑散落（规划文档 `docs/plans/architecture-cleanup-2026-08-13.md`）。架构方向（无状态 agent + per-call rc + middleware + TUI）本身成立，本轮只做低风险可读性整理，为阶段 4 剩余/5（子 agent）/6 铺路。**用户拍板提前启动**（原计划阶段 4/5/6 完成后做）；装配形态经两轮评审定稿：产物命名 `HarnessAgent`（避开 RuntimeContext 的 Runtime，内部持有基础 ReAct agent）、TUI 三阶段逐段解释、`app.Build` 草案确认。
+- **交付**：
+  - **接缝方法值化（行为零变化，可 grep/可跳转）**：`rc.AppendUser = s.AddUser`、`rc.Segment = s.writeSegment`（seed 落盘抽命名方法）、`c.wakeSignal = c.wake`、repl `newSession` 闭包 → `HarnessAgent.defaultNewSession` 方法值。既定取舍线不动（单方法单实现 → 函数字段；Approver 多方法多实现 → 接口）；run 的 onEvent 双转发等普通回调按分类保留并补捕获语义注释。
+  - **rc 注入分层成型**：session 域（`Session.RuntimeContext`）给全量默认；`Controller.newRunContext` 是唯一 UI 覆写点（Approver/Emit），Run/RunWakeup/RunCompact 三处共用——新增接缝只改一处。
+  - **TUI 显式三阶段**：`tui.Assemble → (*App).Run → (*App).Close` 取代 RunTUI 单函数隐式顺序（RunTUI 留薄壳兼容）；装配只接线不运行（可单测），拆除顺序 WaitRuns→SaveActiveState→CloseAll 与装配对称；完整拆除链：tui.Close（CloseAll）→ main defer CleanupBackground。
+  - **Composition Root**：`app.Build(Options) → *HarnessAgent`（ModeRun/ModeTUI/ModeResume 三工厂）；命令层瘦身成"解析 flags + 声明 Options"（run.go ~35 行，repl.go 删除）；runOnce 事件循环原样迁入 `internal/app`；`HarnessAgent.Run()` 内部按模式创建 signal ctx、`Teardown()` 幂等；`session.ProjectForCWD()`（cmd findProject 下沉，Build 与 sessions 共用）。
+  - **ADR-040 审查待办**：03 `BackgroundCompletionMiddleware` 补 `rc.Messages != nil` 守卫（防非会话 rc panic）+ 测试；04 前台 Wait goroutine `notifyCompletion` 加 `transferred` 门控（atomic.Bool，仅超时转后台置位；抽 `waitForeground` 命名函数）+ 回归锚点 `TestWaitForegroundNotifyGate`（旧实现第一段必挂）；05 `runDoneMsg.wakeNotStarted` 标记——未开跑即被打断的唤醒 run 不写伪中断提示（pending 保留）+ 回归锚点；06 四组测试（已启动唤醒 run Esc 中断正常语义 / 非 active 会话事件 MaybeWake 丢弃 / 退出后 Send 安全 / text+json 渲染器忽略 EventNotice）；另议项落地——`handleCompactDone` 成功路径补 `maybeStartWake`（对称 handleRunDone，compact 期间被闸丢弃的 pending 立即补跑）+ 测试；`testCompletionRC` 去 rc.attrs 走私（直接返回注入记录切片）。
+  - **附带**：e2e `TestSessionPersistenceE2E` 解析符号链接（macOS /var→/private/var 物理/逻辑路径分桶错位，HEAD 即存在、与本次改动无关，测试侧修复）。
+- **验证**：全量 build/vet/test + e2e + -race + 交叉编译 + go install（见 T12）。
+- **影响 ADR**：见 DECISIONS.md ADR-041（影响 ADR-030/026/021/040）。
+
 ## 2026-08-13
 
 ### 后台任务完成自动反向通知 + 唤醒器 ✅ 版本 0.9.3（ADR-040）

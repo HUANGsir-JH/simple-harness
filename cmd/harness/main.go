@@ -10,7 +10,7 @@ import (
 
 // version 是 harness 版本号。每次有用户可见变更（功能 → minor、修复 → patch）
 // 随提交 bump，`harness version` 输出。
-const version = "0.9.3"
+const version = "0.10.0"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -19,8 +19,9 @@ func main() {
 	}
 }
 
-// run 分发子命令。配置加载不在本层：需要配置的命令经 app.Load/LoadFrom
-// 惰性初始化一次（进程级单例，见 internal/app）。
+// run 分发子命令。装配不在本层：各命令只解析 flags → 声明 app.Options →
+// appCmd（app.Build → HarnessAgent.Run，Composition Root 见 internal/app，
+// 架构整理 2026-08-14）。
 // defer CleanupBackground：进程退出前杀光全部 background shell 进程树
 // （ADR-038 退出 pre-kill；Windows 另有 KILL_ON_JOB_CLOSE 内核兜底，
 // SIGKILL/crash 也能清树）——覆盖 run/resume/TUI 全部子命令。

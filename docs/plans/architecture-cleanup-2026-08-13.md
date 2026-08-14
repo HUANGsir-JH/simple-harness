@@ -1,6 +1,8 @@
-# 代码架构整理（功能完善后启动，待办）
+# 代码架构整理（已实施，ADR-041）
 
-> 记录日期：2026-08-13 ｜ 状态：待启动（功能阶段 4/5/6 完善后再做）｜ 来源：后台完成通知特性（ADR-040）实施后的代码可读性讨论
+> 记录日期：2026-08-13 ｜ 状态：✅ 已实施（2026-08-14 用户拍板提前启动，版本 0.10.0，ADR-041）｜ 来源：后台完成通知特性（ADR-040）实施后的代码可读性讨论
+>
+> 实施结果：装配收敛为 `app.Build(Options) → *HarnessAgent`（产物命名用户拍板，避开 RuntimeContext）；TUI 拆显式三阶段 `Assemble/Run/Close`；注入闭包全部方法值化；rc 注入分层（session 默认 + `Controller.newRunContext` 单一 UI 覆写点）；ADR-040 审查待办 03/04/05 修复 + 06 测试补齐 + `handleCompactDone` 补唤醒。详见 `docs/tasks/DECISIONS.md` ADR-041 与本文件末尾"已实施核对清单"。
 
 ## 背景
 
@@ -61,3 +63,31 @@ ADR-040 实施后复查代码，用户提出观察：**闭包使用频繁，可�
 - **05**：Esc 打断"已抢占 cancel 但 cmd 尚未真正开跑"的唤醒 run → `handleRunDone` 写伪中断提示 user 消息污染 conversation（低；可考虑"run 未真正启动不写中断提示"的标记）。
 - **06（测试缺口）**：Esc 打断唤醒 run / 非 active 会话事件 / 退出后 Send 安全 / EventNotice 在 text/json 渲染器忽略行为——补测试。
 - 另议：`handleCompactDone` 末尾是否补 `MaybeWake`（compact 期间被 m.running 闸丢弃的 pending 目前留待下一次信号/用户消息，延迟不丢）。
+
+## 已实施核对清单（2026-08-14，ADR-041）
+
+**计划中的低风险改进（第 20 行起）**：
+
+1. ✅ 注入闭包改命名方法值：`rc.AppendUser = s.AddUser`；`rc.Segment = s.writeSegment`（`internal/session/session.go`）；`c.wakeSignal = c.wake`（`internal/ui/tui/controller.go`）；repl `newSession` 闭包 → `HarnessAgent.defaultNewSession`（`internal/app/harness_agent.go`）。rc 其余注入点排查：`rc.Emit`/`rc.Approver` 已是方法值/命名构造，仅收敛注入点；run 的 `onEvent` 双转发、`context.AfterFunc`、Wait goroutine 按分类保留（普通回调），捕获语义注释补强。
+2. ✅ 闭包捕获引用语义：goroutine 处已是显式传参（维持）；runOnce 的 onEvent 补捕获注释。
+
+**补充观察：装配逻辑散乱（第 35 行起）**：
+
+1. ✅ 收敛 Composition Root：`app.Build(Options) → *HarnessAgent`（`internal/app/build.go` + `harness_agent.go`），命令层三入口瘦身为"解析 flags → 声明 Options → appCmd"（run.go ~35 行、resume.go ~45 行、repl.go 删除）；启动/收尾各一段（`HarnessAgent.Run` 内 signal ctx + defer Teardown），拆除顺序显式：WaitRuns→SaveActiveState→CloseAll→CleanupBackground。
+2. ✅ rc 注入一次成型（分层）：session 域全量默认（`Session.RuntimeContext`）+ `Controller.newRunContext` 单一 UI 覆写点（Run/RunWakeup/RunCompact 共用）；run 模式在 `runOnce` 单点注入 channelApprover。新增接缝不再多处登记。
+3. ✅ 阶段 5 子 agent 装配样本：`HarnessAgent`（持有 `reactAgent`/`proj`/`cfg`）与 `Options` 为其装配变体留扩展位——届时在 Build 参数化或新装配工厂派生。
+4. ✅ 与闭包整理同轮做：方法值化 + 装配收敛同步落地。
+
+**功能完善后可一并审视的点（第 29 行起）**：
+
+- ✅ TUI 构造顺序：不推翻（bubbletea 鸡生蛋固有），setSend 补偿登记收敛进 `tui.Assemble` 装配阶段并注释；`RunTUI` 拆显式三阶段 `Assemble → Run → Close`（薄壳保留兼容）。
+- ✅ 每 call 新建 rc 的接缝成本：仅审视，方向不改（ADR-026 既定）。
+- ✅ 中间件测试辅助代码：`testCompletionRC` 去 rc.attrs 走私断言数据，直接返回注入记录切片（`background_completion_test.go`）。
+
+**附带待办（ADR-040 独立审查 03/04/05/06）**：
+
+- ✅ 03：`BackgroundCompletionMiddleware` 补 `rc.Messages != nil` 守卫 + 测试 `TestBackgroundCompletionMessagesNilGuard`。
+- ✅ 04：前台 Wait goroutine `notifyCompletion` 加 `transferred` 门控（atomic.Bool，仅超时转后台置位）+ `waitForeground` 抽名 + 回归锚点 `TestWaitForegroundNotifyGate`。
+- ✅ 05：`runDoneMsg.wakeNotStarted` 标记，未开跑唤醒 run 不写伪中断提示 + 回归锚点 `TestWakeRunPreStartCancelNoInterruptNote`。
+- ✅ 06：四组测试补齐——`TestWakeRunStartedInterruptWritesNote`（05 对照）/ `TestWakeNonActiveSessionEventIgnored` / `TestWakeSendAfterProgramExitSafe` / `TestRenderersIgnoreEventNotice`。
+- ✅ 另议项：`handleCompactDone` 成功路径补 `maybeStartWake`（对称 handleRunDone）+ `TestCompactDoneWakesPending`。

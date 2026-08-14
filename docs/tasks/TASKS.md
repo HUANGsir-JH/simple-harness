@@ -236,7 +236,25 @@
 
 - **状态**：未开始（TUI 已提前为独立阶段；本阶段为压缩/grep/双向通信剩余项）
 
-## 阶段 7（功能完善后）：代码架构整理
+## 阶段 7（2026-08-14 提前启动）：代码架构整理 ✅
 
-- **状态**：⏳ 待启动（阶段 4/5/6 完成后再做；记录见 `docs/plans/architecture-cleanup-2026-08-13.md`）
-- **要点**：① 注入闭包改命名方法值（`AppendUser = s.AddUser`、Segment/wakeSignal 抽命名方法）提升可读性/可跳转；② **收敛散乱的装配逻辑**——命令层三入口（run/resume/repl）各自装配、rc 注入点两处分裂（Session.RuntimeContext 会话域 vs Controller UI 域）、TUI 启停序列隐式、装配根不唯一（agent.Build / app.Load / Controller）→ 显式 Composition Root + 对称启动/拆除；③ TUI 构造顺序（Model→Controller→Program）收敛审视；闭包来源分类已定（框架强制 / 解耦接缝 / 时序生命周期 / 普通回调——架构方向不改，只做可读性整理）
+- **目标**：低风险可读性/可维护性整理（架构方向不改）：① 注入闭包方法值化（可 grep/可跳转）；② Composition Root 收敛——命令层只声明模式与参数，装配全在 `app.Build → HarnessAgent`；③ rc 注入分层（session 域默认 + Controller 单一 UI 覆写点）；④ TUI 启停序列显式三阶段（Assemble → Run → Close），拆除与装配对称；⑤ ADR-040 审查待办 03/04/05 修复 + 06 测试补齐 + handleCompactDone 补唤醒。
+- **状态**：✅ 已完成（2026-08-14，ADR-041，版本 0.10.0）
+- **说明**：用户拍板提前启动（原计划阶段 4/5/6 完成后做，为下一阶段铺路）；装配形态经两轮评审定稿——产物命名 `HarnessAgent`（避开 RuntimeContext 的 Runtime；内部持有基础 ReAct agent `reactAgent` 字段）、TUI 三阶段逐段解释、`app.Build` 草案用户确认。除 03/04/05 防御性修复外行为零变化。
+
+### 任务单元
+
+| # | 单元 | 状态 |
+|---|---|---|
+| T1 | 接缝方法值化：`session.writeSegment`/`AddUser` 方法值 + `controller.wake` 命名方法值 | ✅ 2026-08-14 |
+| T2 | `Controller.newRunContext` 单一 UI 注入点（Run/RunWakeup/RunCompact 共用） | ✅ 2026-08-14 |
+| T3 | tui 显式三阶段 `Assemble/Run/Close` + RunTUI 薄壳 | ✅ 2026-08-14 |
+| T4 | app Composition Root（`build.go`+`harness_agent.go`+runOnce 迁移+`ProjectForCWD`）+ 命令层瘦身（main/run/resume，删 repl.go） | ✅ 2026-08-14 |
+| T5 | 审查 03：`BackgroundCompletionMiddleware` 补 `rc.Messages != nil` 守卫 + 测试 | ✅ 2026-08-14 |
+| T6 | 审查 04：前台 notifyCompletion `transferred` 门控 + `waitForeground` 抽名 + 回归锚点 | ✅ 2026-08-14 |
+| T7 | 审查 05：`runDoneMsg.wakeNotStarted`，未开跑唤醒 run 不写中断提示 + 回归锚点 | ✅ 2026-08-14 |
+| T8 | 审查 06：四组测试（唤醒中断/非 active 事件/退出后 Send/渲染器忽略 EventNotice） | ✅ 2026-08-14 |
+| T9 | `handleCompactDone` 成功路径补 MaybeWake + 测试 | ✅ 2026-08-14 |
+| T10 | 测试基架打磨：`testCompletionRC` 去 rc.attrs 走私 | ✅ 2026-08-14 |
+| T11 | 文档（ADR-041/TASKS/PROGRESS/IMPLEMENTATION_PLAN/规划文档状态）+ 版本 0.10.0 | ✅ 2026-08-14 |
+| T12 | 全量验证：build/vet/test/-race/e2e/交叉编译/go install | ✅ 2026-08-14 |

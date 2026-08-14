@@ -461,3 +461,22 @@
 - **已知局限（记录，不本轮处理）**：`harness run` 单轮模式（主要测试用）无 TUI 唤醒器——"完成会自动通知"只在回合采样期间成立，模型若"结束回合等通知"则通知不会到达（进程最终由 CleanupBackground 清理）；完整承诺仅对 TUI 会话成立。
 - **影响 ADR**：ADR-021——rc 新增 `Completions`/`AppendUser` 注入（防环同 rc.Segment 模式）；ADR-026——无状态 agent 零改动（唤醒是编排层第二个触发源）；ADR-038——bgProcess 条目扩展完成通知字段、Wait goroutine 完成时注销+通知合流；ADR-030——TUI 事件桥新增 completionWakeMsg（复用 program.Send）。
 - **边界**：Drain 落盘清空与逐条注入之间存在极小崩溃窗口（进程崩溃丢这批事件；不重复注入优先——重复通知比丢失更糟）；bubbletea v1.3.10 `Send` 有 `ctx.Done()` 守卫，退出竞态下 Append+Send 为 no-op 不 panic；完成通知成为 conversation 永久 user 消息（压缩时随摘要收敛）。
+
+## ADR-041：阶段 7 代码架构整理（Composition Root + 接缝方法值化 + ADR-040 审查 03/04/05/06，2026-08-14）
+
+- **背景**：ADR-040 实施后复查代码，用户提出"闭包频繁、装配逻辑散落"（规划文档 `docs/plans/architecture-cleanup-2026-08-13.md`）：命令层三入口（run/resume/repl）各自装配、rc 注入点两处分裂（Session.RuntimeContext 会话域 vs Controller UI 域）、TUI 启停序列隐式、装配根不唯一（agent.Build / app.Load / Controller）。结论：架构方向（无状态 agent + per-call rc + middleware + TUI）本身成立，闭包密集是既定决策（框架强制 / 解耦接缝 / 时序生命周期 / 普通回调）叠加的自然产物——本轮只做低风险可读性整理，**用户拍板提前启动**（原计划阶段 4/5/6 完成后做），为阶段 4 剩余/5（子 agent）/6 铺路。
+- **决策**：
+  1. **Composition Root 收敛**：`app.Build(Options) → *HarnessAgent`——命令层只声明模式（ModeRun/ModeTUI/ModeResume）与参数（Options 命名字段，零值 = 未指定），全部接线（配置加载/生效配置解析/agent 装配/项目桶/会话创建或恢复/渲染与输入层）收敛在 `internal/app`。产物命名 `HarnessAgent`（用户拍板：避开 `middleware.RuntimeContext` 的 Runtime；内部持有基础 ReAct agent，字段 `reactAgent`）。`HarnessAgent.Run()` 内部按模式创建 signal ctx（run=Interrupt+SIGTERM，TUI/resume=SIGTERM——SIGINT 由 bubbletea 当按键）并执行；`Teardown()` 幂等对称拆除。完整拆除链：`tui.Run`（WaitRuns→SaveActiveState）→ `tui.Close`（CloseAll）→ cmd main defer `CleanupBackground`。resume 错误优先级保持历史行为（会话解析先于配置加载）。
+  2. **TUI 显式三阶段**：`tui.Assemble → (*tui.App).Run → (*tui.App).Close` 取代 RunTUI 单函数隐式顺序（RunTUI 留薄壳兼容）：Assemble 只接线不运行（接线完整性可单测断言）；setSend 补偿登记（bubbletea 构造鸡生蛋：Program 需初始 Model）收敛进 Assemble 注释记录，不推翻。
+  3. **rc 注入分层成型**：session 域（`Session.RuntimeContext`）给全量默认；`Controller.newRunContext` 是**唯一** UI 覆写点（Approver/Emit），Run/RunWakeup/RunCompact 三处共用；run 单轮模式在 `HarnessAgent.runOnce` 单点注入 channelApprover。新增接缝只改一处，不再多处登记。
+  4. **注入闭包方法值化**（行为零变化，可 grep/可跳转）：`rc.AppendUser = s.AddUser`、`rc.Segment = s.writeSegment`（seed 落盘抽命名方法）、`c.wakeSignal = c.wake`（字段保留作 registerWake 哨兵）、repl `newSession` 闭包 → `HarnessAgent.defaultNewSession` 方法值。既定取舍线不动：单方法、单实现、只用一次 → 函数字段；`Approver` 多方法多实现 → 接口。普通回调（run onEvent 双转发 / context.AfterFunc / Wait goroutine）按分类保留，捕获语义注释补强。
+  5. **ADR-040 审查待办修复**：
+     - **03**：`BackgroundCompletionMiddleware` 补 `rc.Messages != nil` 守卫——非会话构造 rc 挂 Completions 且 drain 非空时会解引用 nil panic；防御性跳过（不 Drain，pending 保留），生产路径恒非 nil 零影响。
+     - **04**：前台 Wait goroutine 的 `notifyCompletion` 加 `transferred` 门控（atomic.Bool，仅超时转后台分支置 true）——纯前台完成路径不再按 pid 查全局注册表，"pid 复用命中刚死未注销旧后台条目发错通知"的理论窗口消除；抽 `waitForeground` 命名函数使门控可单测；`compensateTransferNotify` 补偿不变（两路仍恰好一个拿到 entry，不双通知）。
+     - **05**：`runDoneMsg.wakeNotStarted` 标记——唤醒 run 的 cancel 被 MaybeWake 同步抢占、cmd 尚未真正开跑即被 Esc 打断时，`handleRunDone` 不写"Turn interrupted"系统行与中断提示 AddUser（run 未启动，无事发生，避免污染 conversation），pending 保留待下一次信号。
+     - **06 测试补齐**：Esc 打断已启动唤醒 run（正常中断语义，05 对照锚点）/ 非 active 会话完成事件（信号发出但 MaybeWake 三分支丢弃、pending 保留）/ 退出后 Send 安全（bubbletea v1.3.10 Send 的 ctx.Done 守卫 + "已终止 no-op"语义锚点）/ text+json 渲染器忽略 EventNotice（无输出不 panic，run 模式通知可见性仅靠 transcript 为已知局限）。
+     - **另议项落地**：`handleCompactDone` 成功路径（含 !compacted）末尾补 `maybeStartWake`——对称 handleRunDone 的 err==nil 补唤醒，compact 期间被 m.running 闸丢弃的 pending 立即补跑（延迟不丢）；err 路径不补（防热循环）。
+     - 测试基架：`testCompletionRC` 去 rc.attrs 走私断言数据（直接返回注入记录切片；rc.attrs 只承载生产键）。
+  6. **附带**：`session.ProjectForCWD()`（cmd findProject 下沉 session 包，Build 与 sessions 命令共用）；e2e `TestSessionPersistenceE2E` 解析符号链接（macOS `/var→/private/var` 物理/逻辑路径分桶错位——CLI 子进程 getcwd 返回物理路径、测试用逻辑路径；HEAD 即存在，与本次改动无关的测试侧修复）。
+- **影响 ADR**：ADR-030——RunTUI 拆三阶段（薄壳保留兼容）；ADR-026/021——rc 注入分层（session 默认 + Controller 单一覆写点）+ 闭包方法值化；ADR-040——审查 03/04/05 修复、06 测试补齐、compact 补唤醒；版本 0.10.0。
+- **边界**：行为零变化（03/04/05 防御性修复除外，均已在审查记录）；`harness run` 单轮模式无唤醒器（ADR-040 已知局限）维持；阶段 5 子 agent 不实现——`HarnessAgent`/`Options` 为其装配变体留扩展位（届时在 Build 参数化或新装配工厂派生）；`agent.Build` 仍为 agent 域子工厂（域内工厂，非装配根）。
