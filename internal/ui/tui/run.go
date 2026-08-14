@@ -23,6 +23,8 @@ type App struct {
 
 // Assemble 装配阶段：controller → model → 历史加载 → program → setSend
 // 补偿登记。只接线不运行——接线完整性可在测试中不启动事件循环直接断言。
+// 参数（agent/project/sess/newSession）即装配产物 HarnessAgent 移交的零件
+// （app→tui 接缝；tui 不反向依赖 app，防环，分层见 internal/app 注释）。
 // sess 为已加载会话（resume）或 nil（新入口，懒加载）；newSession 是懒加载
 // 创建器（sess nil 时首动作触发，resume 传 nil 不触发）。
 // 构造鸡生蛋（bubbletea 固有：Program 需初始 Model，send 只能后注入）经

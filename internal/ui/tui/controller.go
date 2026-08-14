@@ -16,8 +16,16 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// Controller 是 TUI 与 agent 运行时的桥（ADR-030 事件桥）。
-// 持 agent + 项目桶 + 配置 + 会话注册表；回合启动/中断/事件转发/命令执行均经它。
+// Controller 是 TUI 模式运行时（ADR-030 事件桥）。持 agent + 项目桶 + 配置
+// + 会话注册表；回合启动/中断/事件转发/命令执行均经它。
+//
+// 与装配产物 HarnessAgent（internal/app）的分层（2026-08-14 复查）：两者表面
+// 相似的字段（agent/proj/会话/newSession）是 HarnessAgent 移交的零件——tui
+// 不能反向依赖 app（成环），故经 Assemble 逐个接收；本结构体只在 TUI 程序
+// 运行期间存在（Assemble→Run→Close），持**注册表**而非单会话（/switch 多会话）。
+// HarnessAgent = 零件生产者（进程级一次一份、模式无关）；Controller = 零件
+// 消费者（TUI 模式运行时）。
+//
 // agent 完全无状态（ADR-026）：会话状态经 rc 传入，切换会话 = 换 active。
 //
 // 会话懒加载（2026-08-11）：新入口（repl）不预创建 session，active 起始为

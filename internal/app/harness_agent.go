@@ -24,6 +24,14 @@ import (
 // Build → Run（内部 Teardown）；Run 幂等由调用方保证（一次装配一次运行）。
 // 阶段 5 子 agent = 本体的装配变体（换工具集/中间件/提示词），届时在 Build
 // 参数化或新装配工厂派生，不再开散装入口。
+//
+// 分层（2026-08-14 复查，用户提问"与 Controller 相似"后定稿）：HarnessAgent
+// 是**装配产物（零件生产者）**，不是模式运行时。与 TUI 的 Controller 表面
+// 相似（同持 agent/proj/会话/创建器）是零件清单跨 app→tui 接缝下传的代价
+// （tui 不能反向 import app，防环）——职责边界：本类型进程级一次一份、模式
+// 无关、持**单**会话；Controller 是 TUI 模式运行时（会话注册表/回合编排/
+// bubbletea 桥，仅在 TUI 程序运行期间存在；run 模式的对位物是 runOnce 函数）。
+// Run() 只做分派：把零件交给对应模式运行时。
 type HarnessAgent struct {
 	mode Mode
 	cfg  *App // 配置装配（进程级共享）
