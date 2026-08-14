@@ -274,3 +274,18 @@
 | I3 | cmd `initCmd`（预检报告 [创建]/[跳过]）+ main 分发/usage | ✅ 2026-08-14 |
 | I4 | 测试：globalConfigPath/EnsureConfig 3 项 + cmd init 2 项 + e2e init（进程外幂等/不覆盖） | ✅ 2026-08-14 |
 | I5 | 文档（TASKS/PROGRESS/IMPLEMENTATION_PLAN）+ 版本 0.11.0 + 全量验证 | ✅ 2026-08-14 |
+
+## 后台日志分配竞态修复（2026-08-14）✅
+
+- **目标**：修复并发启动 background 任务时的日志文件分配竞态（问题文档 `docs/problems/background-log-race-2026-08-14.md`）：临时日志名由 `time.Now().UnixNano()` 合成，并行 tool call 同刻调用返回相同值（本机实测连续调用 93% 同值、8 并发同刻 7~8 个相同）→ 共享 inode 输出互覆/丢失 + rename 竞态致通知路径指向已消失的 `.bg` 文件。统一改用 `os.CreateTemp`（随机后缀 + O_EXCL）保证唯一性；三处同源一并修复（`.bg_` / `.fg_` / eviction `tool_`）；补并发回归测试。
+- **状态**：✅ 已完成（2026-08-14，ADR-042，版本 0.11.1）
+
+### 任务单元
+
+| # | 单元 | 状态 |
+|---|---|---|
+| B1 | 定位 + 复现：UnixNano 碰撞测量（连续 93% 同值、8 并发 7~8 个相同）+ 会话存储证据核对（38763.log 等长行整体覆盖） | ✅ 2026-08-14 |
+| B2 | background.go：startBackground 改 `os.CreateTemp(".bg_*.log")` + rename 降级语义注释同步 | ✅ 2026-08-14 |
+| B3 | shell.go（`.fg_*.log`）+ evict.go（`tool_*.txt`）同源修复 | ✅ 2026-08-14 |
+| B4 | 回归测试 `TestShellCommandBackgroundConcurrentUniqueLogs`（12 轮 × 8 并发屏障；修复前一次运行复现全部四症状） | ✅ 2026-08-14 |
+| B5 | 文档（ADR-042/PROGRESS/TASKS/问题文档状态）+ 版本 0.11.1 + 全量验证 + 交叉编译 | ✅ 2026-08-14 |

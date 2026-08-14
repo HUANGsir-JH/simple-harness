@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -256,6 +257,106 @@ func TestShellCommandFgSpawnedChildSurvives(t *testing.T) {
 	killPidDirect(child)
 	if !waitForProcessDead(child, 3*time.Second) {
 		t.Errorf("清理失败：派生进程 %d 未死", child)
+	}
+}
+
+// TestShellCommandBackgroundConcurrentUniqueLogs 回归锚点（后台日志分配竞态，
+// 2026-08-14）：并发 background 启动的临时日志名曾用 time.Now().UnixNano()
+// 合成——本机实测同刻并发调用 8 个里 7~8 个返回相同值（墙上时钟 tick 粒度粗，
+// 连续调用 93% 相同），两个子进程 os.Create 共享同一 inode：输出在相同偏移
+// 互相覆盖（等长行整体丢失），先 rename 者胜、后 rename 者 ENOENT 降级保留已
+// 不存在的 .bg 路径（通知路径不可读）。修复 = os.CreateTemp（随机名 + O_EXCL，
+// 撞名必然换新文件）。本测试直接并发调 startBackground 多轮（屏障最大化碰撞
+// 窗口，旧实现多轮必败），断言：路径全部唯一且为 <pid>.log、文件存在、内容
+// 仅含本任务输出、目录无 .bg 残留。
+func TestShellCommandBackgroundConcurrentUniqueLogs(t *testing.T) {
+	rc := testRCWithStatePath(t)
+	t.Cleanup(CleanupBackground)
+	logDir := filepath.Join(filepath.Dir(rc.StatePath), "background")
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	const rounds, n = 12, 8
+	type entry struct {
+		pid     int
+		logPath string
+		err     error
+	}
+	all := make([][]entry, rounds)
+	for round := 0; round < rounds; round++ {
+		results := make([]entry, n)
+		var wg sync.WaitGroup
+		start := make(chan struct{}) // 屏障：同刻放行全部 goroutine
+		for i := 0; i < n; i++ {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				<-start
+				marker := fmt.Sprintf("BG-CONC-%02d-%02d", round, i)
+				pid, logPath, err := startBackground(rc,
+					fmt.Sprintf("echo %s-START; %s; echo %s-END", marker, bgSleep(1), marker), "")
+				results[i].pid, results[i].logPath, results[i].err = pid, logPath, err
+			}(i)
+		}
+		close(start)
+		wg.Wait()
+
+		seen := map[string]int{}
+		for i, res := range results {
+			if res.err != nil {
+				t.Fatalf("round %d task %d: %v", round, i, res.err)
+			}
+			want := filepath.Join(logDir, fmt.Sprintf("%d.log", res.pid))
+			if res.logPath != want {
+				t.Errorf("round %d task %d: 日志路径应为 <pid>.log（.bg 泄漏）: got %q want %q", round, i, res.logPath, want)
+			}
+			if seen[res.logPath]++; seen[res.logPath] > 1 {
+				t.Errorf("round %d: 同一路径被多任务共用: %q", round, res.logPath)
+			}
+		}
+		all[round] = results
+	}
+
+	// 等全部进程自然退出（Wait goroutine 注销 + 输出写盘完成）。
+	for _, results := range all {
+		for _, res := range results {
+			if !waitForProcessDead(res.pid, 15*time.Second) {
+				t.Fatalf("pid %d 未在期限内退出", res.pid)
+			}
+		}
+	}
+	// 内容隔离断言：每份日志必须完整含本任务 START/END、不得含他人标记。
+	for round, results := range all {
+		for i, res := range results {
+			data, err := os.ReadFile(res.logPath)
+			if err != nil {
+				t.Errorf("round %d task %d: 日志不可读（通知路径失效）: %v", round, i, err)
+				continue
+			}
+			for r2 := 0; r2 < rounds; r2++ {
+				for j := 0; j < n; j++ {
+					marker := fmt.Sprintf("BG-CONC-%02d-%02d", r2, j)
+					if r2 == round && j == i {
+						if !strings.Contains(string(data), marker+"-START") || !strings.Contains(string(data), marker+"-END") {
+							t.Errorf("round %d task %d: 日志缺本任务输出 %q: %q", round, i, marker, string(data))
+						}
+					} else if strings.Contains(string(data), marker) {
+						t.Errorf("round %d task %d: 日志混入 %q 输出（串扰）: %q", round, i, marker, string(data))
+					}
+				}
+			}
+		}
+	}
+	// 无 .bg 临时文件残留。
+	entries, err := os.ReadDir(logDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".bg_") {
+			t.Errorf("目录残留 .bg 临时文件: %s", e.Name())
+		}
 	}
 }
 

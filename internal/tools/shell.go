@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime"
 	"sync/atomic"
 	"time"
@@ -97,11 +96,14 @@ func (ShellCommandTool) Handle(ctx context.Context, rc *middleware.RuntimeContex
 	if err := os.MkdirAll(logDir, 0o755); err != nil {
 		return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: "shell_command: " + err.Error()}
 	}
-	tmpLog := filepath.Join(logDir, fmt.Sprintf(".fg_%d.log", time.Now().UnixNano()))
-	f, err := os.Create(tmpLog)
+	// 临时名经 os.CreateTemp 唯一化（随机后缀 + O_EXCL）：UnixNano 合成名在并发
+	// tool call 同刻调用时撞名共享 inode（后台日志分配竞态同源，2026-08-14），
+	// 超时转后台的 rename 竞态同样会致通知路径失效。
+	f, err := os.CreateTemp(logDir, ".fg_*.log")
 	if err != nil {
 		return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: "shell_command: " + err.Error()}
 	}
+	tmpLog := f.Name()
 
 	cmd := newShellCmd(p.Command, p.Workdir)
 	cmd.Stdout = f

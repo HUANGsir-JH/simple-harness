@@ -1,5 +1,12 @@
 ## 2026-08-14
 
+### 后台日志分配竞态修复 ✅ 版本 0.11.1（ADR-042）
+
+- **背景**：TUI 实测（问题文档 `docs/problems/background-log-race-2026-08-14.md`）发现并发启动 background 任务时 5/8 轮日志分配竞态：临时日志名用 `time.Now().UnixNano()` 合成，而本机墙上时钟 tick 粒度粗（实测连续调用 **93% 同值**、8 并发同刻放行 **7~8 个相同**）——并行 tool call 同刻 `os.Create` 共享同一 inode：输出同偏移互覆、等长行整体丢失；先 rename 者胜、后 rename 者 ENOENT 降级到已不存在的 `.bg` 路径（完成通知路径不可读）。四种症状（共享 `.bg` 路径 / `.bg` 消失 / 内容串扰 / 输出丢失）一次性全部复现定位。
+- **修复**：临时文件命名统一 `os.CreateTemp`（随机后缀 + O_EXCL，EEXIST 自动换新），唯一性由内核保证而非时间戳概率；三处同源一并修：`background.go`（`.bg_*.log`）、`shell.go`（`.fg_*.log`，超时转后台同源 rename 竞态）、`evict.go`（`tool_*.txt`，并发 eviction 后写者 O_TRUNC 覆盖先写者）；rename 降级语义保留（tmp 由 O_EXCL 唯一创建、降级路径必然存在，注释同步）。
+- **回归锚点**：`TestShellCommandBackgroundConcurrentUniqueLogs`（12 轮 × 8 任务屏障并发直调 `startBackground`；断言路径唯一且为 `<pid>.log`、文件可读、内容仅含本任务、无 `.bg` 残留）——修复前一次运行即复现全部四症状，修复后 3 连跑全绿。
+- **验证**：`go build/vet/test ./...` 全绿 + `tools -race` 绿 + linux/windows/darwin 交叉编译绿。
+
 ### harness init 命令 ✅ 版本 0.11.0
 
 - **背景**：`~/.harness/` 骨架此前只在首次建会话时惰性创建，config.yaml 从不自动生成——新用户上手要读 help 猜目录结构、手写配置。

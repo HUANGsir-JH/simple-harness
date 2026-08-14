@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"time"
 
 	"github.com/agent-project/harness/internal/middleware"
 )
@@ -36,10 +35,22 @@ func EvictContent(rc *middleware.RuntimeContext, s string) string {
 	path := ""
 	if rc != nil && rc.StatePath != "" {
 		dir := filepath.Join(filepath.Dir(rc.StatePath), "evictions")
-		if abs, err := filepath.Abs(filepath.Join(dir, fmt.Sprintf("tool_%d.txt", time.Now().UnixNano()))); err == nil {
-			if mkErr := os.MkdirAll(filepath.Dir(abs), 0o755); mkErr == nil {
-				if os.WriteFile(abs, []byte(s), 0o644) == nil {
-					path = abs
+		if mkErr := os.MkdirAll(dir, 0o755); mkErr == nil {
+			// 唯一临时名（随机后缀 + O_EXCL）：UnixNano 合成名在并发工具结果
+			// 同时超长落盘时撞名——后写者 O_TRUNC 覆盖先写者，多份 eviction
+			// 指向同一文件（后台日志分配竞态同源，2026-08-14）。
+			if f, cErr := os.CreateTemp(dir, "tool_*.txt"); cErr == nil {
+				name := f.Name()
+				if abs, aErr := filepath.Abs(name); aErr == nil {
+					if _, wErr := f.WriteString(s); wErr == nil && f.Close() == nil {
+						path = abs
+					} else {
+						f.Close()
+						os.Remove(name)
+					}
+				} else {
+					f.Close()
+					os.Remove(name)
 				}
 			}
 		}

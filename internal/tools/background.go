@@ -97,7 +97,8 @@ func startForeground(ctx context.Context, cmd *exec.Cmd) (processTreeHandle, fun
 }
 
 // transferToBackground 把前台命令转后台托管（超时转后台，ADR-038 扩展）：
-// 日志临时文件 rename 为 <pid>.log（失败保留临时名，结果显式返回实际路径），
+// 日志临时文件 rename 为 <pid>.log（失败保留临时名——tmpLog 经 os.CreateTemp
+// 唯一创建，降级路径必然存在；结果显式返回实际路径），
 // 进程树句柄移交注册表——之后该进程树与前台回合彻底解耦，仅由 kill_pid /
 // 退出清理 / KILL_ON_JOB_CLOSE 三条路径终止（Esc 不再影响它）。
 // 调用方须负责 go cmd.Wait 回收进程资源（Wait goroutine 在进程死后关闭
@@ -183,11 +184,16 @@ func startBackground(rc *middleware.RuntimeContext, command, workdir string) (pi
 		return 0, "", err
 	}
 	// 临时名先开文件：Start 前必须打开文件才能重定向，而 PID 要 Start 后才有。
-	tmp := filepath.Join(dir, fmt.Sprintf(".bg_%d.log", time.Now().UnixNano()))
-	f, err := os.Create(tmp)
+	// 用 os.CreateTemp 生成唯一临时名（随机后缀 + O_EXCL，撞名必然换新文件）：
+	// 曾用 time.Now().UnixNano() 合成，并发 tool call（agent 并行 goroutine）同刻
+	// 调用会返回相同值（本机实测 8 并发 7~8 个相同，墙上时钟 tick 粒度粗），两个
+	// 子进程共享同一 inode——输出同偏移互覆/整体丢失，且先 rename 者胜、后 rename
+	// 者 ENOENT 降级到已消失的 .bg 路径（后台日志分配竞态，2026-08-14）。
+	f, err := os.CreateTemp(dir, ".bg_*.log")
 	if err != nil {
 		return 0, "", err
 	}
+	tmp := f.Name()
 	cmd := newShellCmd(command, workdir)
 	cmd.Stdout = f
 	cmd.Stderr = f
@@ -210,7 +216,11 @@ func startBackground(rc *middleware.RuntimeContext, command, workdir string) (pi
 	pid = cmd.Process.Pid
 	logPath = filepath.Join(dir, fmt.Sprintf("%d.log", pid))
 	if err := os.Rename(tmp, logPath); err != nil {
-		logPath = tmp // 平台差异降级保留临时名；结果显式返回实际路径，模型不猜文件名
+		// 平台差异降级保留临时名；结果显式返回实际路径，模型不猜文件名。
+		// tmp 由 O_EXCL 唯一创建、他人不可见也不可改：降级后的通知路径必然
+		// 存在（与旧实现的竞态降级不同——旧实现失败恰因对方已把共享文件
+		// rename 走，.bg 路径当时已不存在）。
+		logPath = tmp
 	}
 	f.Close()
 	entry := &bgProcess{PID: pid, Handle: tree}

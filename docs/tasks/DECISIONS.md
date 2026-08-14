@@ -480,3 +480,11 @@
   6. **附带**：`session.ProjectForCWD()`（cmd findProject 下沉 session 包，Build 与 sessions 命令共用）；e2e `TestSessionPersistenceE2E` 解析符号链接（macOS `/var→/private/var` 物理/逻辑路径分桶错位——CLI 子进程 getcwd 返回物理路径、测试用逻辑路径；HEAD 即存在，与本次改动无关的测试侧修复）。
 - **影响 ADR**：ADR-030——RunTUI 拆三阶段（薄壳保留兼容）；ADR-026/021——rc 注入分层（session 默认 + Controller 单一覆写点）+ 闭包方法值化；ADR-040——审查 03/04/05 修复、06 测试补齐、compact 补唤醒；版本 0.10.0。
 - **边界**：行为零变化（03/04/05 防御性修复除外，均已在审查记录）；`harness run` 单轮模式无唤醒器（ADR-040 已知局限）维持；阶段 5 子 agent 不实现——`HarnessAgent`/`Options` 为其装配变体留扩展位（届时在 Build 参数化或新装配工厂派生）；`agent.Build` 仍为 agent 域子工厂（域内工厂，非装配根）。
+
+## ADR-042：后台日志分配竞态修复——临时文件唯一命名（2026-08-14）
+
+- **背景**：TUI 实测发现并发启动 background 任务时日志文件分配竞态（问题文档 `docs/problems/background-log-race-2026-08-14.md`，实测 5/8 轮命中）：临时日志名用 `time.Now().UnixNano()` 合成，而本机墙上时钟 tick 粒度粗（实测连续调用 93% 相同值、8 并发同刻放行 7~8 个相同）——并行 tool call（ADR-024 errgroup goroutine）同刻启动时 `os.Create` 共享同一 inode：输出同偏移互覆、等长行整体丢失；先 rename 者胜、后 rename 者 ENOENT 降级到已不存在的 `.bg` 路径（完成通知路径不可读）。四种症状（.bg 共享 / .bg 消失 / 内容串扰 / 输出丢失）全部复现。
+- **决策**：**临时文件命名机制统一为 `os.CreateTemp`（随机后缀 + O_EXCL，EEXIST 自动换新）**，取代"时间戳合成名 + os.Create 截断打开"——唯一性由内核 O_EXCL 保证而非时间戳概率保证，从构造上消除共享 inode。三处同源一并修复：`background.go`（`.bg_*.log`）、`shell.go`（`.fg_*.log`，超时转后台同源 rename 竞态）、`evict.go`（`tool_*.txt`，并发 eviction 后写者 O_TRUNC 覆盖先写者）。rename 降级语义保留（平台差异兜底）：tmp 由 O_EXCL 唯一创建、他人不可见，降级路径必然存在。
+- **影响 ADR**：ADR-038——日志文件分配实现修正（进程生命周期/注册表/通知链路不变，仅临时命名机制）；ADR-028——eviction 落盘文件命名机制。
+- **回归锚点**：`TestShellCommandBackgroundConcurrentUniqueLogs`（12 轮 × 8 任务屏障并发直调 `startBackground`；断言路径唯一且为 `<pid>.log`、文件可读、内容仅含本任务、无 `.bg` 残留；修复前一次运行即复现全部四症状）。
+- **验证**：`go build/vet/test ./...` 全绿；`tools -race` 绿；linux/windows/darwin 交叉编译绿。版本 0.11.1。
