@@ -507,7 +507,14 @@ func TestSessionPersistenceE2E(t *testing.T) {
 
 	// 3) workspace 文件存在。
 	store := session.NewAt(home)
-	proj, err := store.FindProject(workDir)
+	// macOS 上 /var -> /private/var 符号链接：子进程 getcwd 返回物理路径
+	// （/private/var/...），而 t.TempDir 返回逻辑路径（/var/...）——不解析
+	// 符号链接会分到两个项目桶。先解析再 FindProject（与 CLI 进程内 Getwd 同源）。
+	resolved, err := filepath.EvalSymlinks(workDir)
+	if err != nil {
+		t.Fatalf("eval symlinks: %v", err)
+	}
+	proj, err := store.FindProject(resolved)
 	if err != nil {
 		t.Fatalf("find project: %v", err)
 	}
