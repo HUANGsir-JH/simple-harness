@@ -34,7 +34,8 @@ func (m *Model) layout() {
 	if m.width < 56 {
 		outerPad = 0
 	}
-	m.contentWidth = maxInt(16, m.width-outerPad-4)
+	// 内容宽额外让出 1 列给右侧滚动条（ADR-043 §6.2.1）。
+	m.contentWidth = maxInt(16, m.width-outerPad-5)
 	m.input.SetWidth(maxInt(10, m.width-6))
 	// 高度不由 layout 重置：由 updateComposerHeight 按内容行数管理
 	// （WindowSizeMsg 触发的 layout 不覆盖动态高度）。
@@ -47,7 +48,7 @@ func (m *Model) layout() {
 	if mainHeight < 1 {
 		mainHeight = 1
 	}
-	m.viewport.Width = m.width
+	m.viewport.Width = maxInt(1, m.width-1)
 	m.viewport.Height = mainHeight
 	m.composerTop = headerHeight + mainHeight + auxHeight
 }

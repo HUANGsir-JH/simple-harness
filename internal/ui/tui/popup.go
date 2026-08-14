@@ -318,6 +318,10 @@ func (m *Model) reloadSession() {
 	m.queue = nil
 	m.ovl = nil
 	m.pending = nil // 切换会话：丢弃旧会话的待决请求（其 goroutine 随对应 run 的 ctx 释放）
+	m.clearSelection()
+	m.thinkingSince = nil
+	m.turnStarted = nil
+	m.lastTurn = 0
 	loadSessionHistory(m, m.c.active)
 	m.autoScroll = true
 	m.refresh(true)

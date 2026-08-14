@@ -3,9 +3,10 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/agent-project/harness/internal/agentstate"
-	"github.com/agent-project/harness/internal/messages"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 )
@@ -14,7 +15,7 @@ func (m Model) View() string {
 	if m.width <= 0 || m.height <= 0 {
 		return ""
 	}
-	main := m.viewport.View()
+	main := lipgloss.JoinHorizontal(lipgloss.Top, m.viewport.View(), m.scrollbarView())
 	if m.ovl != nil {
 		main = m.modalArea()
 	}
@@ -45,37 +46,43 @@ func (m Model) headerView() string {
 		right = styleMuted.Render("新会话") // 懒加载：尚未创建
 	}
 	line := alignRow(left, right, m.width, 1)
-	divider := styleBorder.Render(strings.Repeat("-", maxInt(1, m.width)))
+	divider := styleBorder.Render(strings.Repeat("─", maxInt(1, m.width)))
 	return line + "\n" + divider
 }
 
+// composerView 输入框（ADR-043 视觉）：圆角边框块，焦点 accent / 失焦 border；
+// 去掉 MESSAGE 文字标签，焦点状态由边框色表达（Tab 语义不变）。
 func (m Model) composerView() string {
-	label := "MESSAGE"
-	if m.focus == focusTimeline {
-		label = "MESSAGE  [inactive]"
-	}
-	labelLine := styleMuted.Render(label)
 	body := m.input.View()
 	innerWidth := maxInt(1, m.width-4)
 	box := lipgloss.NewStyle().
 		Width(innerWidth).
 		Padding(0, 1).
-		BorderStyle(asciiBorder).
+		BorderStyle(currentTheme().Border).
 		BorderForeground(colorBorder)
 	if m.focus == focusComposer {
 		box = box.BorderForeground(colorCyan)
 	}
-	return box.Render(labelLine + "\n" + body)
+	return box.Render(body)
 }
 
 func (m Model) footerView() string {
 	left := ""
-	if m.toast != "" {
+	switch {
+	case m.toast != "":
 		left = styleMuted.Render(m.toast)
-	} else if m.running {
+	case m.running:
+		// 运行态实时耗时（ADR-043 用户追加需求：回合打点 → 渲染时 time.Since）。
 		left = styleRunning.Render(m.sp.View() + " RUNNING")
-	} else {
+		if m.turnStarted != nil {
+			left += styleMuted.Render(" " + formatDuration(time.Since(*m.turnStarted)))
+		}
+	default:
 		left = styleSuccess.Render("READY")
+		if m.lastTurn > 0 {
+			// 空闲态残留上一回合总耗时（codex elapsed 同款）。
+			left += styleMuted.Render(" · last " + formatDuration(m.lastTurn))
+		}
 	}
 	rightParts := make([]string, 0, 6)
 	if m.status.PlanMode {
@@ -142,7 +149,7 @@ func renderTodoBar(m *Model) string {
 		return ""
 	}
 	var done, doing, pending int
-	lines := []string{styleRunning.Render("TODO")}
+	lines := []string{auxHeader("TODO", styleRunning, m.width)}
 	const maxVisible = 5
 	visible := 0
 	for _, todo := range m.status.Todos {
@@ -186,7 +193,7 @@ func renderQueueBar(m *Model) string {
 	if limit > 3 {
 		limit = 3
 	}
-	lines := make([]string, 0, limit)
+	lines := []string{auxHeader("QUEUED", styleMuted, m.width)}
 	for i := 0; i < limit; i++ {
 		content := strings.ReplaceAll(m.queue[i], "\n", " ")
 		label := "  QUEUED"
@@ -211,6 +218,63 @@ func todoMark(todo agentstate.TodoItem) string {
 	default:
 		return "[ ]"
 	}
+}
+
+// auxHeader 是 todo/queue 面板的统一头部：`TITLE ────…`（标题 + 分隔填充）。
+func auxHeader(title string, style lipgloss.Style, width int) string {
+	fill := maxInt(1, width-lipgloss.Width(title)-1)
+	return style.Render(title) + " " + styleBorder.Render(strings.Repeat("─", fill))
+}
+
+// ---- 右侧滚动条（ADR-043 §6.2.1）----
+
+// scrollbarView 渲染右侧 1 列滚动条：轨道 │（border 淡化）+ 拇指 █（accent）；
+// 内容总行数不超过视口时不显示（返回空串，View 侧 JoinHorizontal 自动收缩）。
+func (m Model) scrollbarView() string {
+	total := m.viewport.TotalLineCount()
+	vis := m.viewport.Height
+	if vis <= 0 || total <= vis {
+		return ""
+	}
+	thumb := clamp(vis*vis/total, 1, vis)
+	pos := 0
+	if maxOff := total - vis; maxOff > 0 {
+		pos = clamp(m.viewport.YOffset*(vis-thumb)/maxOff, 0, vis-thumb)
+	}
+	var sb strings.Builder
+	for i := 0; i < vis; i++ {
+		if i >= pos && i < pos+thumb {
+			sb.WriteString(thumbStyle.Render("█"))
+		} else {
+			sb.WriteString(trackStyle.Render("│"))
+		}
+		sb.WriteString("\n")
+	}
+	return strings.TrimSuffix(sb.String(), "\n")
+}
+
+// scrollbarAt 报告鼠标坐标是否落在滚动条列（仅滚动条可见时）。
+func (m *Model) scrollbarAt(ev tea.MouseEvent) bool {
+	if ev.X != m.width-1 || m.ovl != nil {
+		return false
+	}
+	if ev.Y < m.mainTop || ev.Y >= m.mainTop+m.viewport.Height {
+		return false
+	}
+	return m.viewport.TotalLineCount() > m.viewport.Height
+}
+
+// jumpScrollbar 点击/拖拽滚动条：按 Y 比例设置视口偏移（贴底判定同步）。
+func (m *Model) jumpScrollbar(evY int) {
+	total := m.viewport.TotalLineCount()
+	vis := m.viewport.Height
+	if total <= vis {
+		return
+	}
+	maxOff := total - vis
+	target := clamp(evY-m.mainTop, 0, maxInt(1, vis-1))
+	m.viewport.SetYOffset(clamp(target*maxOff/maxInt(1, vis-1), 0, maxOff))
+	m.autoScroll = m.viewport.AtBottom()
 }
 
 func (m Model) modalArea() string {
@@ -280,7 +344,7 @@ func renderTimeline(m *Model) (string, []hitTarget) {
 		}
 	}
 	if m.stream != nil && (m.stream.Text != "" || (m.showThinking && m.stream.Thinking != "")) {
-		appendCell(renderStream(m.stream, m.contentWidth, m.showThinking), nil, 0, -1)
+		appendCell(renderStream(m.stream, m, m.contentWidth, m.showThinking), nil, 0, -1)
 	}
 	if sb.Len() == 0 {
 		empty := lipgloss.PlaceHorizontal(m.width, lipgloss.Center,
@@ -294,93 +358,6 @@ func renderTimeline(m *Model) (string, []hitTarget) {
 func renderMessages(m *Model) string {
 	content, _ := renderTimeline(m)
 	return content
-}
-
-// messageCell is a rendered message plus the line range (relative to the cell)
-// occupied by its thinking block. thinkingStart < 0 means there is none.
-type messageCell struct {
-	body          string
-	thinkingStart int
-	thinkingEnd   int
-}
-
-func renderMessageItem(item *MessageItem, width int, showThinking, thinkingSelected bool) messageCell {
-	width = maxInt(16, width)
-	if item.Role == "" {
-		label := "SYSTEM"
-		style := styleSystem
-		if item.Err {
-			label = "ERROR"
-			style = styleError
-		}
-		return messageCell{
-			body:          style.Render(label+"  ") + styleMuted.Render(ansi.Hardwrap(item.Content, width-9, true)),
-			thinkingStart: -1,
-			thinkingEnd:   -1,
-		}
-	}
-	content := item.Content
-	if item.Done && item.Rendered != "" {
-		content = item.Rendered
-	}
-	content = ansi.Hardwrap(strings.TrimSpace(content), width-2, true)
-	if item.Role == messages.RoleUser {
-		body := lipgloss.NewStyle().
-			Foreground(colorText).
-			BorderStyle(lipgloss.Border{Left: "|"}).
-			BorderLeft(true).
-			BorderForeground(colorCyan).
-			PaddingLeft(1).
-			Render(content)
-		return messageCell{
-			body:          styleUser.Render("YOU") + "\n" + body,
-			thinkingStart: -1,
-			thinkingEnd:   -1,
-		}
-	}
-
-	var parts []string
-	thinkingStart, thinkingEnd := -1, -1
-	parts = append(parts, styleAssistant.Render("ASSISTANT"))
-	if showThinking && item.Thinking != "" {
-		thinkingLabel := fmt.Sprintf("THINKING  [collapsed]  %d chars", len([]rune(item.Thinking)))
-		if item.ThinkingExpanded {
-			thinkingLabel = "THINKING  [expanded]"
-		}
-		if thinkingSelected {
-			thinkingLabel = styleSelected.Render("> ") + styleMuted.Render(thinkingLabel)
-		} else {
-			thinkingLabel = styleMuted.Render(thinkingLabel)
-		}
-		block := thinkingLabel
-		if item.ThinkingExpanded {
-			thinking := ansi.Hardwrap(strings.TrimSpace(item.Thinking), width-2, true)
-			block = thinkingLabel + "\n" + styleMuted.Render(thinking)
-		}
-		// 前面已有的部分（ASSISTANT 标题）决定 thinking 块的起始行。
-		thinkingStart = lipgloss.Height(strings.Join(parts, "\n"))
-		thinkingEnd = thinkingStart + lipgloss.Height(block) - 1
-		parts = append(parts, block)
-	}
-	if content != "" {
-		parts = append(parts, content)
-	}
-	return messageCell{
-		body:          strings.Join(parts, "\n"),
-		thinkingStart: thinkingStart,
-		thinkingEnd:   thinkingEnd,
-	}
-}
-
-func renderStream(stream *StreamState, width int, showThinking bool) string {
-	parts := []string{styleAssistant.Render("ASSISTANT")}
-	if showThinking && stream.Thinking != "" {
-		parts = append(parts, styleMuted.Render(ansi.Hardwrap(stream.Thinking, width-2, true)))
-	}
-	if stream.Text != "" {
-		parts = append(parts, styleText.Render(ansi.Hardwrap(stream.Text, width-2, true)))
-	}
-	return strings.Join(parts, "\n")
 }
 
 func renderToolBlock(tool *ToolStatus, width int, selected bool) string {

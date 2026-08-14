@@ -14,13 +14,13 @@ import (
 type keyContext uint8
 
 const (
-	ctxGlobal keyContext = iota // 无弹窗、与焦点无关的全局键
-	ctxComposer                 // 输入框焦点
-	ctxTimeline                 // 时间线焦点
-	ctxApproval                 // 审批弹窗
-	ctxAsk                      // 提问弹窗
-	ctxSelect                   // 选择器弹窗（/switch /model /effort /permission /thinking）
-	ctxHelp                     // 帮助弹窗
+	ctxGlobal   keyContext = iota // 无弹窗、与焦点无关的全局键
+	ctxComposer                   // 输入框焦点
+	ctxTimeline                   // 时间线焦点
+	ctxApproval                   // 审批弹窗
+	ctxAsk                        // 提问弹窗
+	ctxSelect                     // 选择器弹窗（/switch /model /effort /permission /thinking）
+	ctxHelp                       // 帮助弹窗
 )
 
 // overlayContext 弹窗类型 → 键位上下文。
@@ -137,8 +137,18 @@ func dispatchKey(ctx keyContext, m *Model, msg tea.KeyMsg) (Model, tea.Cmd, bool
 
 // ---- ctxGlobal 绑定动作 ----
 
-// copyComposerKey Ctrl+C：复制 composer 全文到系统剪贴板（不可用时 toast 提示）。
+// copyComposerKey Ctrl+C：有选区复制选区纯文本（ADR-043 §6.7）；无选区复制
+// composer 全文（既有行为）。不可用时 toast 提示。
 func copyComposerKey(m *Model, _ tea.KeyMsg) (bool, tea.Cmd) {
+	if text := m.selectionText(); text != "" {
+		if err := clipboard.WriteAll(text); err == nil {
+			m.toast = "Selection copied"
+		} else {
+			m.toast = "Clipboard unavailable"
+		}
+		m.refresh(false)
+		return true, nil
+	}
 	if value := m.input.Value(); value != "" {
 		if err := clipboard.WriteAll(value); err == nil {
 			m.toast = "Composer copied"
@@ -150,10 +160,16 @@ func copyComposerKey(m *Model, _ tea.KeyMsg) (bool, tea.Cmd) {
 	return true, nil
 }
 
-// interruptKey Esc：运行中请求中断当前回合。
+// interruptKey Esc：运行中请求中断当前回合；空闲且有选区时清除选区
+// （ADR-043 §6.7）；其余 no-op（既有行为）。
 func interruptKey(m *Model, _ tea.KeyMsg) (bool, tea.Cmd) {
 	if m.running && m.c != nil {
 		m.requestInterrupt()
+		return true, nil
+	}
+	if m.hasSelection() {
+		m.clearSelection()
+		m.refresh(false)
 	}
 	return true, nil
 }

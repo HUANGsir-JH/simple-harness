@@ -135,7 +135,9 @@ func TestMouseTogglesToolBlock(t *testing.T) {
 	}
 	hit := m.hits[0]
 	y := m.mainTop + hit.start - m.viewport.YOffset
+	// 点击 = press + release 无位移（ADR-043 press/motion/release 状态机）。
 	nm, _ = m.Update(tea.MouseMsg{X: 4, Y: y, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	nm, _ = nm.Update(tea.MouseMsg{X: 4, Y: y, Action: tea.MouseActionRelease, Button: tea.MouseButtonLeft})
 	m = nm.(Model)
 	if m.tools[0].Collapsed {
 		t.Fatal("mouse click should expand tool block")
@@ -197,9 +199,11 @@ func TestMouseTargetsExactInterleavedBlock(t *testing.T) {
 	}
 	click := func(index int) {
 		// hit 区间现在精确覆盖可点击块本身，无需再跳过标题行。
+		// 点击 = press + release 无位移（ADR-043 press/motion/release 状态机）。
 		hit := m.hits[index]
 		y := m.mainTop + hit.start - m.viewport.YOffset
 		next, _ := m.Update(tea.MouseMsg{X: 4, Y: y, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+		next, _ = next.Update(tea.MouseMsg{X: 4, Y: y, Action: tea.MouseActionRelease, Button: tea.MouseButtonLeft})
 		m = next.(Model)
 	}
 
@@ -258,8 +262,8 @@ func TestHitRangesAlignWithRenderedLines(t *testing.T) {
 		head := ansi.Strip(lines[hit.start])
 		switch hit.kind {
 		case hitThinking:
-			if !strings.Contains(head, "THINKING") {
-				t.Fatalf("hit %d start line %d is %q, want THINKING header", i, hit.start, head)
+			if !strings.Contains(head, "Thinking") {
+				t.Fatalf("hit %d start line %d is %q, want Thinking header", i, hit.start, head)
 			}
 		case hitTool:
 			if !strings.Contains(head, "[OK]") && !strings.Contains(head, "[RUN]") && !strings.Contains(head, "[ERR]") {

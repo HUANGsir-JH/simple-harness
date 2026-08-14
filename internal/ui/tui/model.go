@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/agent-project/harness/internal/agentstate"
 	"github.com/agent-project/harness/internal/events"
@@ -46,6 +47,9 @@ type MessageItem struct {
 	ThinkingExpanded bool
 	Done             bool
 	Err              bool
+	// ThinkingDuration 是 thinking 块耗时（首个增量 → 块完成，ADR-043 用户
+	// 追加需求，纯 UI 侧计时；历史 resume 无时间戳时为 0 不展示）。
+	ThinkingDuration time.Duration
 }
 
 // StreamState contains the currently streaming assistant block.
@@ -203,6 +207,18 @@ type Model struct {
 	composerTop  int
 	contentWidth int
 	renderWidth  int
+
+	// 时长展示（ADR-043 用户追加需求，纯 UI 侧计时）
+	turnStarted   *time.Time    // 回合开始（EventTurnStart 打点；footer 实时耗时）
+	lastTurn      time.Duration // 上一回合总耗时（footer READY · last Ns）
+	thinkingSince *time.Time    // thinking 首个增量打点（折叠行耗时，流式中实时）
+
+	// 滚动条与文本选择（ADR-043 §6.2.1 / §6.7）
+	scrollbarDrag bool
+	selecting     bool
+	selAnchor     selPoint
+	selEnd        selPoint
+	content       string // 最近一次时间线内容（含选区样式；复制选区取正文）
 }
 
 func New(c *Controller) Model {
@@ -350,8 +366,19 @@ func (m *Model) moveSelectedHit(delta int) {
 	m.refresh(false)
 }
 
+// handleMouse 鼠标三态状态机（ADR-043 §6.2.1/§6.7）：
+//   - 滚轮：滚动（行为不变，保留选区）；
+//   - 时间线左键 press→release 无位移 = 点击（工具块/thinking 折叠切换，旧语义）；
+//   - press→拖拽 = 文本选择（选区渲染 + Ctrl+C 复制）；
+//   - 滚动条列 press/拖拽 = 跳转/连续滚动。
 func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	ev := tea.MouseEvent(msg)
+	if ev.Action == tea.MouseActionMotion {
+		return m.handleMouseMotion(ev)
+	}
+	if ev.Action == tea.MouseActionRelease {
+		return m.handleMouseRelease(ev)
+	}
 	switch ev.Button {
 	case tea.MouseButtonWheelUp:
 		m.viewport.ScrollUp(3)
@@ -365,24 +392,102 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if ev.Button != tea.MouseButtonLeft || ev.Action != tea.MouseActionPress {
 		return m, nil
 	}
+	return m.handleMousePress(ev)
+}
+
+// handleMousePress 左键按下：滚动条 → 跳转并进入拖拽；时间线 → 选区锚点；
+// composer → 聚焦并清除选区；其它区域 → 清除选区。
+func (m Model) handleMousePress(ev tea.MouseEvent) (tea.Model, tea.Cmd) {
+	if m.scrollbarAt(ev) {
+		m.scrollbarDrag = true
+		m.jumpScrollbar(ev.Y)
+		m.refresh(false)
+		return m, nil
+	}
 	if ev.Y >= m.composerTop {
+		m.clearSelection()
 		m.setFocus(focusComposer)
 		m.refresh(false)
 		return m, nil
 	}
 	if ev.Y >= m.mainTop && ev.Y < m.mainTop+m.viewport.Height && m.ovl == nil {
+		m.clearSelection()
 		m.setFocus(focusTimeline)
-		contentY := m.viewport.YOffset + ev.Y - m.mainTop
-		for i, hit := range m.hits {
-			if contentY >= hit.start && contentY <= hit.end {
-				m.selectedHit = i
-				m.toggleHit(hit)
-				break
-			}
-		}
+		m.selecting = true
+		m.selAnchor = m.contentPoint(ev)
+		m.selEnd = m.selAnchor
+		m.refresh(false)
+		return m, nil
+	}
+	m.clearSelection()
+	m.refresh(false)
+	return m, nil
+}
+
+// handleMouseMotion 拖拽中：滚动条拖拽 → 连续滚动；选区拖拽 → 扩展选区。
+func (m Model) handleMouseMotion(ev tea.MouseEvent) (tea.Model, tea.Cmd) {
+	if m.scrollbarDrag {
+		m.jumpScrollbar(ev.Y)
+		m.refresh(false)
+		return m, nil
+	}
+	if m.selecting {
+		m.selEnd = m.contentPoint(ev)
 		m.refresh(false)
 	}
 	return m, nil
+}
+
+// handleMouseRelease 左键释放：滚动条拖拽结束；选区拖拽结束（零位移 = 点击，
+// 保留旧折叠切换语义）。释放坐标直接结算 selEnd——部分终端不保证 Motion 事件，
+// 拖拽不能只依赖 Motion 推进。
+func (m Model) handleMouseRelease(ev tea.MouseEvent) (tea.Model, tea.Cmd) {
+	if m.scrollbarDrag {
+		m.scrollbarDrag = false
+		return m, nil
+	}
+	if !m.selecting {
+		return m, nil
+	}
+	m.selecting = false
+	m.selEnd = m.contentPoint(ev)
+	anchor := m.selAnchor
+	if m.selAnchor == m.selEnd {
+		// 点击（无位移）：工具块/thinking 折叠切换（旧语义，仅触发点从 press 移到 release）。
+		m.clearSelection()
+		m.toggleHitAt(anchor)
+		m.refresh(false)
+	}
+	return m, nil
+}
+
+// contentPoint 把终端鼠标坐标换算为时间线内容坐标（行 = YOffset + 屏幕行）。
+func (m *Model) contentPoint(ev tea.MouseEvent) selPoint {
+	return selPoint{
+		line: m.viewport.YOffset + ev.Y - m.mainTop,
+		col:  ev.X,
+	}
+}
+
+// toggleHitAt 点击内容行反查命中块并折叠切换（原 press 点击语义）。
+func (m *Model) toggleHitAt(p selPoint) {
+	for i, hit := range m.hits {
+		if p.line >= hit.start && p.line <= hit.end {
+			m.selectedHit = i
+			m.toggleHit(hit)
+			break
+		}
+	}
+}
+
+// hasSelection 报告是否存在有效选区。
+func (m *Model) hasSelection() bool { return m.selAnchor != m.selEnd }
+
+// clearSelection 清除选区与拖拽状态（Esc / 点击其它区域）。
+func (m *Model) clearSelection() {
+	m.selecting = false
+	m.selAnchor = selPoint{}
+	m.selEnd = selPoint{}
 }
 
 // finishAsk 提交 ask 回答并关闭弹窗：自定义文本非空 → Custom；否则单选提交
@@ -482,16 +587,28 @@ func (m Model) handleAgentEvent(ev events.Event) (tea.Model, tea.Cmd) {
 	case events.EventTurnStart:
 		m.running = true
 		m.turnDone = false
+		if m.turnStarted == nil {
+			now := time.Now()
+			m.turnStarted = &now // footer 实时耗时打点（ADR-043）
+		}
 		m.ensureStream(ev.MsgID)
 		return m, m.sp.Tick
 	case events.EventThinkingDelta:
 		m.ensureStream(ev.MsgID)
+		if m.thinkingSince == nil {
+			now := time.Now()
+			m.thinkingSince = &now // thinking 实时耗时打点（ADR-043）
+		}
 		m.stream.Thinking += ev.Text
 	case events.EventTextDelta:
 		m.ensureStream(ev.MsgID)
 		m.stream.Text += ev.Text
 	case events.EventThinkingDone:
 		m.ensureStream(ev.MsgID)
+		if m.thinkingSince == nil {
+			now := time.Now()
+			m.thinkingSince = &now
+		}
 		m.stream.Thinking = ev.Text
 	case events.EventTextDone:
 		m.ensureStream(ev.MsgID)
@@ -537,6 +654,10 @@ func (m Model) handleAgentEvent(ev events.Event) (tea.Model, tea.Cmd) {
 func (m Model) handleRunDone(msg runDoneMsg) (tea.Model, tea.Cmd) {
 	m.running = false
 	m.turnDone = false
+	if m.turnStarted != nil {
+		m.lastTurn = time.Since(*m.turnStarted)
+		m.turnStarted = nil
+	}
 	if msg.wakeNotStarted {
 		// 审查 05（2026-08-14）：唤醒 run 未真正启动（cancel 已抢占但 cmd
 		// 未开跑）即被 Esc 打断——无事发生：不写"Turn interrupted"系统行、
@@ -624,13 +745,19 @@ func (m *Model) flushStream() {
 		return
 	}
 	if m.stream.Text != "" || m.stream.Thinking != "" {
+		thinkingDur := time.Duration(0)
+		if m.thinkingSince != nil {
+			thinkingDur = time.Since(*m.thinkingSince)
+			m.thinkingSince = nil
+		}
 		m.appendMessage(&MessageItem{
-			ID:       m.stream.MsgID,
-			Role:     messages.RoleAssistant,
-			Content:  m.stream.Text,
-			Rendered: renderMarkdown(m.stream.Text, m.contentWidth),
-			Thinking: m.stream.Thinking,
-			Done:     true,
+			ID:               m.stream.MsgID,
+			Role:             messages.RoleAssistant,
+			Content:          m.stream.Text,
+			Rendered:         renderMarkdown(m.stream.Text, m.contentWidth),
+			Thinking:         m.stream.Thinking,
+			ThinkingDuration: thinkingDur,
+			Done:             true,
 		})
 	}
 	m.stream = nil
@@ -682,6 +809,8 @@ func (m *Model) refresh(follow ...bool) {
 	}
 	content, hits := renderTimeline(m)
 	m.hits = hits
+	content = m.applySelection(content)
+	m.content = content
 	m.viewport.SetContent(content)
 	if shouldFollow && (m.autoScroll || wasBottom) {
 		m.viewport.GotoBottom()

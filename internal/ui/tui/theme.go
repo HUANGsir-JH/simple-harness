@@ -133,6 +133,10 @@ var (
 	stylePanel     lipgloss.Style
 	styleBorder    lipgloss.Style
 
+	// 滚动条样式（ADR-043 §6.2.1）：轨道 = border 淡化，拇指 = accent。
+	thumbStyle lipgloss.Style
+	trackStyle lipgloss.Style
+
 	// Compatibility aliases used by tool/markdown tests.
 	styleSys  lipgloss.Style
 	styleDim  lipgloss.Style
@@ -194,6 +198,8 @@ func rebuildStyles(t Theme) {
 	styleSelected = lipgloss.NewStyle().Background(c(TokenRaised)).Foreground(c(TokenText))
 	stylePanel = lipgloss.NewStyle().Background(c(TokenPanel)).Foreground(c(TokenText))
 	styleBorder = lipgloss.NewStyle().Foreground(c(TokenBorder))
+	thumbStyle = lipgloss.NewStyle().Foreground(c(TokenAccent))
+	trackStyle = lipgloss.NewStyle().Foreground(c(TokenBorder)).Faint(true)
 
 	styleSys = styleSystem
 	styleDim = styleMuted
