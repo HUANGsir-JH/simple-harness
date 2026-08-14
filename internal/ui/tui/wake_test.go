@@ -2,7 +2,9 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -12,6 +14,7 @@ import (
 	"github.com/agent-project/harness/internal/events"
 	"github.com/agent-project/harness/internal/provider"
 	"github.com/agent-project/harness/internal/session"
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 // --- MaybeWake 三分支 -------------------------------------------------------
@@ -332,5 +335,208 @@ func TestCompactDispatchBlocksWake(t *testing.T) {
 	}
 	if calls.Load() != 0 {
 		t.Errorf("不应有 agent.Run: %d", calls.Load())
+	}
+}
+
+// TestWakeRunPreStartCancelNoInterruptNote 回归锚点（审查 05，2026-08-14）：
+// MaybeWake 已同步抢占 cancel、wake cmd 尚未开跑时 Esc 打断——handleRunDone
+// 不得写伪中断提示污染 conversation（run 未真正启动，无事发生）；pending
+// 保留待下一次信号注入。
+func TestWakeRunPreStartCancelNoInterruptNote(t *testing.T) {
+	var calls atomic.Int32
+	c := newTestController(t, &calls)
+	_ = collectSend(c)
+	c.active.Completions().Append(completion.Event{Result: "x"})
+	m := New(c)
+	m.width = 80
+
+	// wake 消息 → MaybeWake 同步抢占 cancel + 返回 wake cmd（running 置位）。
+	nm, cmd := m.Update(completionWakeMsg{})
+	m = nm.(Model)
+	if cmd == nil {
+		t.Fatal("wake 应返回启动 cmd")
+	}
+	// cmd 尚未执行：Esc → requestInterrupt → cancelRun（cancel 已被抢占）。
+	nm2, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = nm2.(Model)
+	if !m.running {
+		t.Fatal("Esc 前 running 应仍为 true")
+	}
+
+	// 执行被抢占的 wake cmd → runDoneMsg{wakeNotStarted}。
+	raw := cmd()
+	done, ok := raw.(runDoneMsg)
+	if !ok {
+		t.Fatalf("wake cmd 应返回 runDoneMsg，got %T", raw)
+	}
+	if !done.wakeNotStarted {
+		t.Fatal("未开跑即中断的唤醒 run 应标记 wakeNotStarted")
+	}
+
+	before := len(c.active.Conversation().Messages)
+	nm3, cmd3 := m.Update(done)
+	m = nm3.(Model)
+	if after := len(c.active.Conversation().Messages); after != before {
+		t.Errorf("未开跑唤醒 run 不得写中断提示进 conversation（before=%d after=%d）", before, after)
+	}
+	if cmd3 != nil {
+		t.Errorf("不应补唤醒（防热循环）: %v", cmd3)
+	}
+	if m.running || m.interrupted {
+		t.Error("handleRunDone 后 running/interrupted 应复位")
+	}
+	if c.active.Completions().PendingCount() != 1 {
+		t.Error("pending 应保留（留待下一次完成信号/用户消息注入）")
+	}
+	if calls.Load() != 0 {
+		t.Errorf("agent.Run 不应被调用: %d", calls.Load())
+	}
+}
+
+// --- 审查 06 测试补齐（2026-08-14）------------------------------------------------
+
+// TestWakeRunStartedInterruptWritesNote 是审查 05 的对照锚点：唤醒 run 已真正
+// 启动（FakeClient 阻塞至 ctx 取消）后 Esc 打断——handleRunDone 走正常中断
+// 语义：conversation 写入中断提示（run 已启动，提示是真实的）。
+func TestWakeRunStartedInterruptWritesNote(t *testing.T) {
+	sess, proj := newTestSession(t)
+	started := make(chan struct{})
+	client := &provider.FakeClient{
+		StreamFn: func(ctx context.Context, req provider.Request) (provider.EventStream, error) {
+			close(started)
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+	c := NewController(agent.New(client, "test-model"), proj, config.Config{}, sess, nil, context.Background())
+	m := New(c)
+	_ = collectSend(c)
+	c.active.Completions().Append(completion.Event{Result: "x"})
+
+	nm, cmd := m.Update(completionWakeMsg{})
+	m = nm.(Model)
+	if cmd == nil {
+		t.Fatal("wake 应返回启动 cmd")
+	}
+	// 执行 wake cmd（bubbletea 异步执行语义）：阻塞在 StreamFn。
+	doneCh := make(chan tea.Msg, 1)
+	go func() { doneCh <- cmd() }()
+	<-started // run 已真正进入采样
+
+	// Esc 打断在途唤醒 run。
+	nm2, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = nm2.(Model)
+
+	done := (<-doneCh).(runDoneMsg)
+	if done.wakeNotStarted {
+		t.Fatal("已启动的唤醒 run 不得标记 wakeNotStarted")
+	}
+	if !errors.Is(done.err, context.Canceled) {
+		t.Fatalf("应返回 Canceled，got %v", done.err)
+	}
+	nm3, _ := m.Update(done)
+	m = nm3.(Model)
+	msgs := c.active.Conversation().Messages
+	if len(msgs) == 0 || !strings.Contains(msgs[len(msgs)-1].Content, "interrupted") {
+		t.Fatalf("已启动唤醒 run 的中断提示应写入 conversation: %+v", msgs)
+	}
+	if m.running {
+		t.Error("handleRunDone 后 running 应复位")
+	}
+}
+
+// TestWakeNonActiveSessionEventIgnored 验证审查 06：非 active 会话的完成事件
+// 会发出唤起信号（completionWakeMsg），但 MaybeWake 查 active 的 pending →
+// 空 → 丢弃（不打扰当前会话）；pending 保留在非 active 会话队列。
+func TestWakeNonActiveSessionEventIgnored(t *testing.T) {
+	c := newTestController(t, nil) // active = sess1
+	collected := collectSend(c)
+	sess2, err := c.proj.Create("test-model", c.proj.Path, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess2.Close()
+	c.open[sess2.ID] = sess2
+	c.registerWake(sess2) // 非 active 会话同样挂唤起回调
+
+	sess2.Completions().Append(completion.Event{Result: "x"})
+
+	// 唤起信号确实发出。
+	found := false
+	for _, msg := range *collected {
+		if _, ok := msg.(completionWakeMsg); ok {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("非 active 会话 Append 应触发 completionWakeMsg")
+	}
+	// MaybeWake 丢弃：active（sess1）无 pending。
+	if cmd := c.MaybeWake(); cmd != nil {
+		t.Fatal("非 active 会话事件不得拉起唤醒 run")
+	}
+	if sess2.Completions().PendingCount() != 1 {
+		t.Error("pending 应保留在非 active 会话队列（切换过去后仍会注入）")
+	}
+}
+
+// TestWakeSendAfterProgramExitSafe 验证审查 06：program 退出后完成事件 Append
+// → wakeSignal → Send 为 no-op 不 panic（bubbletea v1.3.10 Send 的 ctx.Done
+// 守卫 + "已终止 no-op" 语义，ADR-040 边界记录）。
+func TestWakeSendAfterProgramExitSafe(t *testing.T) {
+	sess, proj := newTestSession(t)
+	c := NewController(nil, proj, config.Config{}, sess, nil, context.Background())
+	m := New(c)
+	p := tea.NewProgram(m, tea.WithContext(context.Background()))
+	c.setSend(p.Send)
+
+	go func() { _, _ = p.Run() }()
+	p.Send(tea.Quit()) // 等 program 启动后退出
+	p.Wait()           // 事件循环完全退出
+
+	// 退出后：完成事件 Append → wake → Send（no-op），不 panic。
+	c.active.Completions().Append(completion.Event{Result: "x"})
+	c.active.Completions().Append(completion.Event{Result: "y"})
+}
+
+// TestCompactDoneWakesPending 验证架构整理另议项（2026-08-14）：compact 期间
+// 被 m.running 闸丢弃的完成事件 pending，在 handleCompactDone 成功路径
+// （compacted=true）补唤醒——与 handleRunDone 的 err==nil 补唤醒对称，延迟
+// 不丢；err 路径不补（防热循环，同 handleRunDone 语义）。
+func TestCompactDoneWakesPending(t *testing.T) {
+	var calls atomic.Int32
+	c := newTestController(t, &calls)
+	m := New(c)
+	_ = collectSend(c)
+	c.active.Completions().Append(completion.Event{Result: "x"})
+
+	// compact 分派同步置 running；期间 wake 消息被闸丢弃（同
+	// TestCompactDispatchBlocksWake 前半）。
+	nm, cmd := m.handleInput("/compact")
+	if cmd == nil {
+		t.Fatal("/compact 应返回压缩 cmd")
+	}
+	m = nm.(Model)
+	nm2, cmd2 := m.Update(completionWakeMsg{})
+	m = nm2.(Model)
+	if cmd2 != nil {
+		t.Fatal("compact 期间 wake 消息不得拉起唤醒 run")
+	}
+	if c.active.Completions().PendingCount() != 1 {
+		t.Fatal("pending 应保留")
+	}
+	// compact 成功完成（直接喂完成消息，不执行真实压缩）。
+	nm3, cmd3 := m.Update(compactDoneMsg{compacted: true})
+	m = nm3.(Model)
+	if cmd3 == nil {
+		t.Fatal("compact 完成后应补唤醒 pending")
+	}
+	if !m.running {
+		t.Fatal("补唤醒后 running 应置位")
+	}
+	// 执行唤醒 run：启动 1 次 agent.Run。
+	_ = cmd3()
+	if calls.Load() != 1 {
+		t.Fatalf("应启动 1 次唤醒 run，got %d", calls.Load())
 	}
 }

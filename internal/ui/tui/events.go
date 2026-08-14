@@ -10,8 +10,13 @@ type (
 	// agentEventMsg 是 agent 回合级事件桥（onEvent → program.Send，ADR-030）。
 	agentEventMsg struct{ ev events.Event }
 
-	// runDoneMsg 标记一个回合结束（含错误）。
-	runDoneMsg struct{ err error }
+	// runDoneMsg 标记一个回合结束（含错误）。wakeNotStarted（审查 05，
+	// 2026-08-14）：唤醒 run 的 cancel 已被 MaybeWake 同步抢占、但 cmd 尚未
+	// 真正开跑即被中断——handleRunDone 据此跳过伪中断提示（不写 conversation）。
+	runDoneMsg struct {
+		err            error
+		wakeNotStarted bool
+	}
 
 	// compactDoneMsg 标记手动 /compact 完成（compacted = 是否真的压缩；err 非
 	// nil = 摘要失败，不重写 conversation）。Update 内 reloadSession + 展示。

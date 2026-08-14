@@ -137,14 +137,14 @@ func (c *Controller) Run(line string) tea.Cmd {
 		defer c.runs.Done()
 		// 懒加载：首条用户消息触发会话创建（失败回 runDoneMsg 走 handleRunDone 报错）。
 		if err := c.ensureActive(); err != nil {
-			return runDoneMsg{err}
+			return runDoneMsg{err: err}
 		}
 		// 首消息自动命名（codex first_user_message 同款）：name 空时取首行预览，
 		// /switch 一眼认出会话。命名落盘（agentstate）。
 		if c.active.Name() == "" {
 			if name := firstLinePreview(line); name != "" {
 				if err := c.active.SetName(name); err != nil {
-					return runDoneMsg{err}
+					return runDoneMsg{err: err}
 				}
 			}
 		}
@@ -154,7 +154,7 @@ func (c *Controller) Run(line string) tea.Cmd {
 		c.setCancel(cancel)
 		defer c.clearCancel()
 		err := c.a.Run(runCtx, rc, c.onEvent)
-		return runDoneMsg{err}
+		return runDoneMsg{err: err}
 	}
 }
 
@@ -177,9 +177,15 @@ func (c *Controller) RunWakeup(runCtx context.Context, cancel context.CancelFunc
 	return func() tea.Msg {
 		defer c.runs.Done()
 		defer c.clearCancel()
+		// 审查 05（2026-08-14）：MaybeWake 返回 cmd 前已同步抢占 cancel，Esc
+		// 可能在本 cmd 开跑前就触发 cancelRun——run 未真正启动即被中断，标记
+		// wakeNotStarted，handleRunDone 不写伪中断提示污染 conversation。
+		if runCtx.Err() != nil {
+			return runDoneMsg{err: runCtx.Err(), wakeNotStarted: true}
+		}
 		rc := c.newRunContext()
 		err := c.a.Run(runCtx, rc, c.onEvent)
-		return runDoneMsg{err}
+		return runDoneMsg{err: err}
 	}
 }
 

@@ -28,7 +28,10 @@ type BackgroundCompletionMiddleware struct {
 }
 
 func (BackgroundCompletionMiddleware) OnReasoning(ctx context.Context, rc *middleware.RuntimeContext, in middleware.ReasoningInput, next middleware.ReasoningHandler) error {
-	if rc != nil && rc.Completions != nil && rc.AppendUser != nil {
+	// rc.Messages != nil 守卫（ADR-040 审查 03，2026-08-14）：非会话构造的 rc
+	// 挂 Completions 且 drain 非空时会解引用 rc.Messages panic；防御性跳过
+	// （不 Drain、pending 保留——生产路径 rc.Messages 恒非 nil，不受影响）。
+	if rc != nil && rc.Messages != nil && rc.Completions != nil && rc.AppendUser != nil {
 		if drained := rc.Completions.Drain(); len(drained) > 0 {
 			for _, ev := range drained {
 				rc.AppendUser(ev.Result)

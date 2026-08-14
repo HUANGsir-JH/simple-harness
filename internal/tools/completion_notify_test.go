@@ -3,9 +3,11 @@ package tools
 import (
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -235,5 +237,67 @@ func TestShellCommandTimeoutRaceCompensation(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 	if extra := q.Drain(); len(extra) != 0 {
 		t.Errorf("不应有第二条通知: %+v", extra)
+	}
+}
+
+// TestWaitForegroundNotifyGate 回归锚点（审查 04，2026-08-14）：注册表里恰好
+// 存在与前台命令同 pid 的旧后台条目（模拟"刚死未注销"的 pid 复用窗口）时，
+// transferred=false（纯前台路径）不得误注销该条目、不得发错通知；transferred=
+// true（超时转后台）才通知。旧实现（无条件 notifyCompletion）在本测试的第一
+// 段会误命中——锚定门控行为。
+func TestWaitForegroundNotifyGate(t *testing.T) {
+	t.Cleanup(CleanupBackground)
+
+	// 第一段：纯前台（transferred=false）。注册同 pid 旧条目 → waitForeground
+	// → 条目仍在、队列空（不误注销、不误通知）。
+	cmd := newShellCmd("exit 0", "")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	qStale := completion.New(filepath.Join(t.TempDir(), "stale.json"))
+	registerBackground(&bgProcess{PID: cmd.Process.Pid, queue: qStale, sessionID: "stale", logPath: "/stale.log"})
+
+	var notTransferred atomic.Bool
+	done := make(chan error, 1)
+	f, err := os.CreateTemp(t.TempDir(), "fg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go waitForeground(cmd, f, &notTransferred, done)
+	if err := <-done; err != nil {
+		t.Fatalf("waitForeground: %v", err)
+	}
+	if ev := qStale.Drain(); ev != nil {
+		t.Fatalf("纯前台不得命中同 pid 旧条目发通知: %+v", ev)
+	}
+	if _, ok := backgroundProcesses.Load(cmd.Process.Pid); !ok {
+		t.Fatal("旧条目不应被前台路径误注销（kill_pid 安全边界依赖注册表条目）")
+	}
+	unregisterBackground(cmd.Process.Pid) // 清理
+
+	// 第二段：转后台（transferred=true）。同 pid 新条目 → 通知命中（exit 0）。
+	cmd2 := newShellCmd("exit 0", "")
+	if err := cmd2.Start(); err != nil {
+		t.Fatal(err)
+	}
+	q2 := completion.New(filepath.Join(t.TempDir(), "xfer.json"))
+	registerBackground(&bgProcess{PID: cmd2.Process.Pid, queue: q2, sessionID: "xfer", logPath: "/xfer.log"})
+	f2, err := os.CreateTemp(t.TempDir(), "fg2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var transferred atomic.Bool
+	transferred.Store(true)
+	done2 := make(chan error, 1)
+	go waitForeground(cmd2, f2, &transferred, done2)
+	if err := <-done2; err != nil {
+		t.Fatalf("waitForeground(transferred): %v", err)
+	}
+	events := q2.Drain()
+	if len(events) != 1 || events[0].ExitCode == nil || *events[0].ExitCode != 0 {
+		t.Fatalf("转后台路径应发 1 条 exit 0 通知: %+v", events)
+	}
+	if _, ok := backgroundProcesses.Load(cmd2.Process.Pid); ok {
+		t.Error("通知后条目应已注销")
 	}
 }

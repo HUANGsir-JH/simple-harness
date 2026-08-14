@@ -291,7 +291,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refresh(false)
 		return m, nil
 	case runDoneMsg:
-		return m.handleRunDone(msg.err)
+		return m.handleRunDone(msg)
 	case completionWakeMsg:
 		// 后台任务完成唤起信号（2026-08-13）：m.running 是第二道同步闸
 		// （第一道 = MaybeWake 同步抢占 cancel）——兜底 handleRunDone 补唤醒
@@ -730,9 +730,20 @@ func (m Model) handleAgentEvent(ev events.Event) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) handleRunDone(err error) (tea.Model, tea.Cmd) {
+func (m Model) handleRunDone(msg runDoneMsg) (tea.Model, tea.Cmd) {
 	m.running = false
 	m.turnDone = false
+	if msg.wakeNotStarted {
+		// 审查 05（2026-08-14）：唤醒 run 未真正启动（cancel 已抢占但 cmd
+		// 未开跑）即被 Esc 打断——无事发生：不写"Turn interrupted"系统行、
+		// 不写中断提示 user 消息（避免污染 conversation）；pending 保留待
+		// 下一次完成信号/用户消息注入（不补唤醒，防热循环）。
+		m.interrupted = false
+		m.eventError = false
+		m.refresh(true)
+		return m, nil
+	}
+	err := msg.err
 	if errors.Is(err, context.Canceled) {
 		if !m.interrupted {
 			m.appendSystem("Turn interrupted", false)
@@ -786,11 +797,16 @@ func (m Model) handleCompactDone(msg compactDoneMsg) (tea.Model, tea.Cmd) {
 		return m.sysErr(msg.err), nil
 	}
 	if !msg.compacted {
-		return m.sysOK("上下文未超阈值，无需压缩"), nil
+		nm := m.sysOK("上下文未超阈值，无需压缩").(Model)
+		// 补唤醒（架构整理另议项，2026-08-14）：compact 期间被 m.running 闸
+		// 丢弃的完成事件 pending 在此立即补跑（对称 handleRunDone 的补唤醒），
+		// 延迟不丢；无 pending 时 MaybeWake 自然 no-op。
+		return nm.maybeStartWake()
 	}
 	// conversation 已重写为单一摘要占位 + transcript 已切新段 → 重载视图。
 	m.reloadSession()
-	return m.sysOK("上下文已压缩"), nil
+	nm := m.sysOK("上下文已压缩").(Model)
+	return nm.maybeStartWake()
 }
 
 func (m *Model) ensureStream(msgID string) {

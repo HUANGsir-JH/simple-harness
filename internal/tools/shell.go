@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sync/atomic"
 	"time"
 
 	"github.com/agent-project/harness/internal/messages"
@@ -127,15 +128,14 @@ func (ShellCommandTool) Handle(ctx context.Context, rc *middleware.RuntimeContex
 
 	// Wait goroutine：Wait 返回（copy goroutine 完成 = 文件写完）后关闭
 	// 日志文件再发 done——转后台后进程可能长活，f 的收尾由这里统一承担。
-	// notifyCompletion（2026-08-13）：前台正常完成 pid 不在注册表 → no-op
-	// 天然正确；超时转后台后进程死 → 命中条目发出完成通知。
+	// transferred 门控（审查 04，2026-08-14）：仅超时转后台分支置 true 后才
+	// 按 pid 查全局注册表通知——纯前台完成路径 pid 从未进注册表，无条件查询
+	// 在 pid 复用窗口可能命中"刚死未注销"的旧后台条目发错通知（理论、概率
+	// 可忽略但可消除）；门控后纯前台彻底不查询，误报窗口消除。转后台场景两
+	// 路仍恰好一个拿到 entry（goroutine 命中注册 / compensate 补偿），不双通知。
+	var transferred atomic.Bool
 	done := make(chan error, 1)
-	go func() {
-		err := cmd.Wait()
-		f.Close()
-		notifyCompletion(cmd.Process.Pid, err)
-		done <- err
-	}()
+	go waitForeground(cmd, f, &transferred, done)
 
 	select {
 	case werr := <-done:
@@ -188,6 +188,7 @@ func (ShellCommandTool) Handle(ctx context.Context, rc *middleware.RuntimeContex
 			// 超时转后台托管（ADR-038 扩展）：不杀树——进程继续跑，日志持续
 			// 写文件，句柄移交注册表；模型轮询日志、kill_pid 终止。竞态：进程
 			// 恰好此时完成也注册无害（杀空 job 无副作用，二次 kill 报未找到）。
+			transferred.Store(true) // 门控先置位：转后台后完成必须通知（审查 04）
 			pid := cmd.Process.Pid
 			logPath := transferToBackground(rc, tree, pid, tmpLog)
 			stopTree() // 回调已在超时瞬间触发（DeadlineExceeded 不杀），此处 no-op 防御
@@ -202,6 +203,19 @@ func (ShellCommandTool) Handle(ctx context.Context, rc *middleware.RuntimeContex
 				timeout, pid, logPath, pid)}
 		}
 	}
+}
+
+// waitForeground 回收前台命令进程资源（Wait goroutine 体，审查 04 抽名，
+// 2026-08-14）：Wait 返回（copy goroutine 完成 = 文件写完）→ 关日志文件 →
+// 仅 transferred 时按 pid 发完成通知（纯前台路径不查注册表，pid 复用窗口
+// 不误命中"刚死未注销"的旧后台条目）→ 回传退出错误。
+func waitForeground(cmd *exec.Cmd, f *os.File, transferred *atomic.Bool, done chan<- error) {
+	err := cmd.Wait()
+	f.Close()
+	if transferred.Load() {
+		notifyCompletion(cmd.Process.Pid, err)
+	}
+	done <- err
 }
 
 // newShellCmd 按平台构造 shell 命令（**无 ctx**：前台经 startForeground 绑定

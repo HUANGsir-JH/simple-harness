@@ -11,26 +11,26 @@ import (
 	"github.com/agent-project/harness/internal/middleware"
 )
 
-// testCompletionRC 构造带完成队列 + AppendUser 的测试 rc（注入中间件最小环境）。
-func testCompletionRC(t *testing.T) *middleware.RuntimeContext {
+// testCompletionRC 构造带完成队列 + AppendUser 的测试 rc（注入中间件最小
+// 环境），并返回注入记录切片供断言（架构整理 2026-08-14：直接返回而非经
+// rc.attrs 走私测试数据——rc.attrs 只承载生产键）。
+func testCompletionRC(t *testing.T) (*middleware.RuntimeContext, *[]string) {
 	t.Helper()
 	rc := middleware.NewRuntimeContext()
 	rc.Messages = messages.NewConversation()
 	rc.Completions = completion.New(filepath.Join(t.TempDir(), "completions.json"))
-	var appended []string
+	appended := &[]string{}
 	rc.AppendUser = func(c string) {
-		appended = append(appended, c)
+		*appended = append(*appended, c)
 		rc.Messages.Add(messages.NewUserMessage(c)) // 生产 = Session.AddUser 的 conversation.Add
 	}
-	// 经 rc.attrs 暂存断言数据（同一 call 内单线程）。
-	rc.Set("test_appended", &appended)
-	return rc
+	return rc, appended
 }
 
 // TestBackgroundCompletionInjects 验证 onReasoning before：Drain 后逐条
 // AppendUser 注入、in.Messages 同步为注入后的 conversation、pending 清空。
 func TestBackgroundCompletionInjects(t *testing.T) {
-	rc := testCompletionRC(t)
+	rc, appended := testCompletionRC(t)
 	rc.Completions.Append(completion.Event{Result: "通知A"})
 	rc.Completions.Append(completion.Event{Result: "通知B"})
 
@@ -45,7 +45,6 @@ func TestBackgroundCompletionInjects(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OnReasoning: %v", err)
 	}
-	appended := rc.Get("test_appended").(*[]string)
 	if len(*appended) != 2 || (*appended)[0] != "通知A" || (*appended)[1] != "通知B" {
 		t.Errorf("AppendUser 应收到两条注入: %v", *appended)
 	}
@@ -61,7 +60,7 @@ func TestBackgroundCompletionInjects(t *testing.T) {
 // TestBackgroundCompletionEmitsNotice 验证注入后经 rc.Emit 推 EventNotice
 // （路径 A 可见性）；Emit nil 时不 panic。
 func TestBackgroundCompletionEmitsNotice(t *testing.T) {
-	rc := testCompletionRC(t)
+	rc, _ := testCompletionRC(t)
 	rc.Completions.Append(completion.Event{Result: "通知C"})
 	var notices []events.Event
 	rc.Emit = func(ev events.Event) { notices = append(notices, ev) }
@@ -79,7 +78,7 @@ func TestBackgroundCompletionEmitsNotice(t *testing.T) {
 	}
 
 	// Emit nil：透传不 panic。
-	rc2 := testCompletionRC(t)
+	rc2, _ := testCompletionRC(t)
 	rc2.Completions.Append(completion.Event{Result: "D"})
 	if err := m.OnReasoning(context.Background(), rc2, middleware.ReasoningInput{Messages: rc2.Messages.Messages},
 		func(ctx context.Context, rc *middleware.RuntimeContext, in middleware.ReasoningInput) error {
@@ -100,12 +99,12 @@ func TestBackgroundCompletionPassthrough(t *testing.T) {
 	}
 
 	// 空队列。
-	rc := testCompletionRC(t)
+	rc, appended := testCompletionRC(t)
 	in := middleware.ReasoningInput{Messages: rc.Messages.Messages}
 	if err := m.OnReasoning(context.Background(), rc, in, next); err != nil {
 		t.Fatalf("空队列: %v", err)
 	}
-	if appended := rc.Get("test_appended").(*[]string); len(*appended) != 0 {
+	if len(*appended) != 0 {
 		t.Error("空队列不应注入")
 	}
 
@@ -127,5 +126,31 @@ func TestBackgroundCompletionPassthrough(t *testing.T) {
 	}
 	if !nextCalled {
 		t.Error("next 应被调用")
+	}
+}
+
+// TestBackgroundCompletionMessagesNilGuard 验证审查 03（2026-08-14）：
+// rc.Completions/AppendUser 已注入但 rc.Messages nil（非会话构造 rc）时不
+// Drain、不 panic，pending 保留（留给真正的会话路径；生产路径 Messages 恒
+// 非 nil，防御性守卫零影响）。
+func TestBackgroundCompletionMessagesNilGuard(t *testing.T) {
+	m := BackgroundCompletionMiddleware{}
+	rc := middleware.NewRuntimeContext()
+	rc.Completions = completion.New(filepath.Join(t.TempDir(), "c.json"))
+	rc.Completions.Append(completion.Event{Result: "X"})
+	rc.AppendUser = func(string) {}
+	nextCalled := false
+	next := func(ctx context.Context, rc *middleware.RuntimeContext, in middleware.ReasoningInput) error {
+		nextCalled = true
+		return nil
+	}
+	if err := m.OnReasoning(context.Background(), rc, middleware.ReasoningInput{}, next); err != nil {
+		t.Fatalf("Messages nil: %v", err)
+	}
+	if !nextCalled {
+		t.Error("next 应被调用")
+	}
+	if rc.Completions.PendingCount() != 1 {
+		t.Error("Messages nil 时不应 Drain（pending 保留）")
 	}
 }
