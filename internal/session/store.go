@@ -82,6 +82,21 @@ func CreateInCWD(model, mode string) (*Session, error) {
 	return proj.Create(model, cwd, mode)
 }
 
+// ProjectForCWD 定位当前工作目录的项目桶（New + Getwd + FindProject 的组合
+// 入口；2026-08-14 从 cmd/harness 下沉——app.Build 与 sessions 命令共用，
+// 消除重复装配）。
+func ProjectForCWD() (*Project, error) {
+	store, err := New()
+	if err != nil {
+		return nil, err
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil, err
+	}
+	return store.FindProject(cwd)
+}
+
 // Root 返回 workspace 根。
 func (s *Store) Root() string { return s.root }
 

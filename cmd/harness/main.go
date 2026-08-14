@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/agent-project/harness/internal/app"
 	"github.com/agent-project/harness/internal/tools"
 )
 
@@ -38,10 +39,10 @@ func run(args []string) error {
 	}
 
 	if len(rest) == 0 {
-		return repl(jsonOut) // 直接 harness（无子命令）→ 交互式
+		return appCmd(app.Options{Mode: app.ModeTUI}) // 直接 harness（无子命令）→ 交互式
 	}
 	if len(rest) == 1 && rest[0] == "--no-thinking-display" {
-		return repl(jsonOut, false)
+		return appCmd(app.Options{Mode: app.ModeTUI, NoThinkingDisplay: true})
 	}
 	switch rest[0] {
 	case "version":
@@ -59,6 +60,16 @@ func run(args []string) error {
 	default:
 		return fmt.Errorf("unknown command %q (try `harness help`)", rest[0])
 	}
+}
+
+// appCmd 执行一个已声明模式的命令：装配与执行全在 app.Build/Run 内
+// （Composition Root，架构整理 2026-08-14）。
+func appCmd(o app.Options) error {
+	h, err := app.Build(o)
+	if err != nil {
+		return err
+	}
+	return h.Run()
 }
 
 func usage() {

@@ -1,9 +1,12 @@
-// Package app 定义进程级共享装配（App 惰性单例）。
-// 一次进程一份，命令按需获取；是后续多使用全局变量的统一入口。
+// Package app 是进程级装配根（Composition Root，架构整理 2026-08-14）：
+//   - App：进程级共享配置装配（惰性单例，Config + 解析后生效的 Provider）；
+//   - Build/Options/HarnessAgent：唯一装配入口——命令层只声明模式与参数，
+//     全部接线（配置/agent/session/TUI）收敛在 Build，产物 HarnessAgent
+//     提供对称的 Run/Teardown。
 //
 // ⚠️ 与 middleware.RuntimeContext 区分：
-//   - App：**进程级**，一次进程一份（配置/默认模型）；未来 client / agent /
-//     subagent 工厂等进程级共享装配作为字段加入——config 只是其一（扩展点）
+//   - App：**进程级**，一次进程一份（配置/默认模型）
+//   - HarnessAgent：**一次装配**一份（App + ReAct agent + 会话/TUI 实例）
 //   - RuntimeContext：**per-call**，每次 agent.Run 新建（会话/消息/状态），
 //     贯穿 middleware 与工具
 package app
