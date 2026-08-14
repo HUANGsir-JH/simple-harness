@@ -289,3 +289,4 @@
 | B3 | shell.go（`.fg_*.log`）+ evict.go（`tool_*.txt`）同源修复 | ✅ 2026-08-14 |
 | B4 | 回归测试 `TestShellCommandBackgroundConcurrentUniqueLogs`（12 轮 × 8 并发屏障；修复前一次运行复现全部四症状） | ✅ 2026-08-14 |
 | B5 | 文档（ADR-042/PROGRESS/TASKS/问题文档状态）+ 版本 0.11.1 + 全量验证 + 交叉编译 | ✅ 2026-08-14 |
+| B6 | 修复后回归验证：场景 A（保持 run）6 轮并发 19 任务实测（零 .bg 泄漏/内容完整无串扰/通知全达）+ 场景 B（结束 run）OnAppend 逐条实时 + 唤醒器全套 + setsid 干净环境全量/race 全绿 + SIGTTIN 环境边界记录 | ✅ 2026-08-14 |

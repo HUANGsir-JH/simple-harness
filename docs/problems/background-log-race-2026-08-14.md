@@ -73,6 +73,43 @@ if err := os.Rename(tmp, logPath); err != nil {
 
 `go build/vet/test ./...` 全绿；`go test -race ./internal/tools/` 绿；linux/windows/darwin 交叉编译绿。版本 0.11.1。
 
+## 修复后回归验证（2026-08-14 晚，多轮实测 + 干净环境全量）
+
+### 场景 A：保持 run（真实 TUI 会话，6 轮并发 19 个任务）
+
+修复后在同一 TUI 会话内重新执行"保持 run"并发测试（标识输出 + sleep 1~6s，并发数 2/3/4/4/2/4，共 19 个任务）：
+
+| 轮次 | 并发数 | PID | 结果 |
+|---|---|---|---|
+| R1 | 2 | 76989、76991 | 全部 `<pid>.log`，内容完整，无串扰 |
+| R2 | 3 | 77112、77113、77114 | 同上 |
+| R3 | 4 | 77354、77355、77356、77358 | 同上 |
+| R4 | 2 | 77482、77483 | 同上 |
+| R5 | 4 | 77764、77765、77766、77767 | 同上 |
+| R6 | 4 | 78723、78724、78725、78726 | 同上 |
+
+**结论**：
+- 返回路径**全部为 `<pid>.log`，零 `.bg` 泄漏**（修复前命中率 5/8 = 62%，修复后 0/19）；
+- 日志运行期间存在、内容完整（START/END 齐全）、无任何串扰（每份日志仅含本任务标识）；
+- 完成通知**全部到达**（exit 0、无遗漏、无重复）；
+- 批量投递符合设计：通知在**下次工具调用返回时**批量注入（R3 返回时一次注入 4 条：76991 + 77112/77113/77114；R4 返回时注入 77354/77356/77358/77355 等）。
+
+### 场景 B：结束 run（逐条实时，代码路径测试）
+
+- `TestQueueOnAppend`：每次 `Append` 触发一次 `OnAppend`（**逐条实时**语义）、Drain 不触发；
+- TUI 唤醒器全套通过：`MaybeWake` 三分支、`completionWakeMsg` 拉起 run、同步抢占防并发、`handleRunDone` 补唤醒、`TestWakeSendAfterProgramExitSafe`（退出后 Send 安全）；
+- 全量测试 `ui/tui` 包 ok。
+
+### 干净环境全量（脱离控制终端，等价 CI）
+
+`go test ./...` 17 包全绿（`internal/tools` 8.4s）+ `go test -race ./internal/tools/ ./internal/completion/` 全绿（含 12 轮 × 8 任务并发回归测试）。
+
+### 环境边界记录（非代码问题）：TUI 会话内后台跑含 tty 访问的程序会被 SIGTTIN 暂停
+
+首次在 TUI 会话内 `background: true` 跑全量测试时，`TestShellCommandTimeoutTransferNotifies` 冻结 259s 失败（等待完成事件超时）。排查：**测试二进制（tools.test/tui.test）被 SIGTTIN 暂停**——tui.test 的 bubbletea Program 打开 `/dev/tty`（fd 6）读取终端输入，而 harness 是控制终端前台组（TPGID=harness），测试进程是独立后台进程组 → **后台进程组读控制终端 → 内核发 SIGTTIN → 暂停**（POSIX 标准行为）。暂停期间 goroutine 冻结，`cmd.Wait()` 回收线程不跑，完成事件永不入队 → 超时。`kill -CONT` 恢复后测试继续；`sample` 显示线程在 `cond_wait`。
+
+**正确做法**：含 bubbletea 的 tui 包测试等需要终端访问的程序，不要在 TUI 会话内后台运行——用普通终端，或脱离控制终端（python 双 fork + `os.setsid()`，无控制终端时打开 `/dev/tty` 失败回退 stdin，等价 CI 行为）。setsid 复跑全绿证明首次失败是环境暂停、非代码问题。
+
 ## 影响
 
 - **模型侧**：通知中的日志路径不可读（read_file 失败），后台任务输出丢失，无法轮询/审计；多任务并发时输出互相污染，模型可能把 B 的输出当作 A 的（信息误导）。

@@ -6,6 +6,11 @@
 - **修复**：临时文件命名统一 `os.CreateTemp`（随机后缀 + O_EXCL，EEXIST 自动换新），唯一性由内核保证而非时间戳概率；三处同源一并修：`background.go`（`.bg_*.log`）、`shell.go`（`.fg_*.log`，超时转后台同源 rename 竞态）、`evict.go`（`tool_*.txt`，并发 eviction 后写者 O_TRUNC 覆盖先写者）；rename 降级语义保留（tmp 由 O_EXCL 唯一创建、降级路径必然存在，注释同步）。
 - **回归锚点**：`TestShellCommandBackgroundConcurrentUniqueLogs`（12 轮 × 8 任务屏障并发直调 `startBackground`；断言路径唯一且为 `<pid>.log`、文件可读、内容仅含本任务、无 `.bg` 残留）——修复前一次运行即复现全部四症状，修复后 3 连跑全绿。
 - **验证**：`go build/vet/test ./...` 全绿 + `tools -race` 绿 + linux/windows/darwin 交叉编译绿。
+- **修复后回归验证（2026-08-14 晚，真实 TUI 会话多轮实测 + 干净环境全量）**：
+  - **场景 A（保持 run）**：6 轮并发 19 个后台任务（并发数 2/3/4/4/2/4，标识输出 + sleep 1~6s）——返回路径全部为 `<pid>.log`（零 `.bg` 泄漏）、日志运行期间存在且内容完整（START/END 齐全）、无任何串扰（每份日志仅含本任务标识）、完成通知全部到达（exit 0、无遗漏、无重复）；批量投递符合设计：通知在**下次工具调用返回时**批量注入（如第 3 轮返回时 4 条通知一次注入，含上轮延迟的 1 条）。
+  - **场景 B（结束 run）**：`TestQueueOnAppend`（每次 Append 触发一次 OnAppend = **逐条实时**）+ TUI 唤醒器全套（MaybeWake 三分支 / completionWakeMsg 拉起 run / 同步抢占防并发 / handleRunDone 补唤醒）通过；全量测试 ui/tui 包 ok。
+  - **干净环境全量**：`go test ./...` 17 包全绿（internal/tools 8.4s）+ `go test -race ./internal/tools/ ./internal/completion/` 全绿（含 12 轮 × 8 任务并发回归测试）。
+  - **环境边界记录（非代码问题）**：harness TUI 会话内 background 运行**会访问控制终端的程序**（如 tui 包测试中 bubbletea 打开 `/dev/tty`）会被 **SIGTTIN** 暂停（POSIX：后台进程组读控制终端）——首次在 TUI 会话内后台跑全量测试时 `TestShellCommandTimeoutTransferNotifies` 因此冻结 259s 失败；脱离控制终端（python 双 fork + setsid，等价 CI）复跑全绿，证明非代码问题。教训：重型测试套件（含 bubbletea 的 tui 测试）不要在 TUI 会话内后台跑，用普通终端或 setsid 方式。
 
 ### harness init 命令 ✅ 版本 0.11.0
 
