@@ -224,6 +224,13 @@ func (m Model) runCommand(cmd command) (tea.Model, tea.Cmd) {
 		if m.c.active == nil {
 			return m.sysErr(fmt.Errorf("无会话（先发一条消息）")), nil
 		}
+		// 审查修复 01（2026-08-14）：/compact 分派**同步**置 running——RunCompact
+		// 的 setCancel 在异步 cmd 内，若不置位，分派后、cmd 执行前的间隙
+		// completionWakeMsg（或用户输入）会穿过双闸并发启动 run，与压缩并发
+		// 读写同一 conversation（data race）。handleCompactDone 复位。
+		m.running = true
+		m.turnDone = false
+		m.eventError = false
 		m.toast = "压缩中…"
 		m.refresh(false)
 		return m, m.c.RunCompact()

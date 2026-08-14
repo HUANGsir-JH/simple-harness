@@ -26,7 +26,7 @@ const powershellUTF8Prefix = "try { [Console]::OutputEncoding=[System.Text.Encod
 //     （Windows Job Object / POSIX 进程组，含派生孙进程）并回填"已中断"；
 //     **正常退出不杀派生进程**（`npm run dev &` 起的服务随命令返回继续运行，
 //     终端式语义）；**超时不杀树，自动转入后台托管**（返回 PID+日志路径，模型轮询日志，
-//     用 kill_pid 终止，不要重试——命令仍在运行）；输出超长时完整版由
+//     用 kill_pid 终止，不要重试——命令可能仍在运行）；输出超长时完整版由
 //     ToolOutputMiddleware 统一落盘 evictions/（工具返回完整结果，ADR-028）。
 //   - background：后台启动立即返回 PID + 日志路径（长任务/服务启动用），
 //     进程不绑定回合（Esc 不杀），用 read_file/grep 轮询日志，配套 kill_pid
@@ -198,7 +198,7 @@ func (ShellCommandTool) Handle(ctx context.Context, rc *middleware.RuntimeContex
 			// 注销+通知，保证"完成会自动通知"的承诺不落空。
 			compensateTransferNotify(done, pid)
 			return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: fmt.Sprintf(
-				"shell_command: 命令运行超过 %v，已自动转入后台：PID %d，日志：%s\n完成会自动通知；可用 read_file/grep 轮询日志观察进度；用 shell_command {\"kill_pid\": %d} 终止；不要重试该命令——它仍在运行",
+				"shell_command: 命令运行超过 %v，已自动转入后台：PID %d，日志：%s\n完成会自动通知；可用 read_file/grep 轮询日志观察进度；用 shell_command {\"kill_pid\": %d} 终止；不要重试该命令——它可能仍在后台运行",
 				timeout, pid, logPath, pid)}
 		}
 	}

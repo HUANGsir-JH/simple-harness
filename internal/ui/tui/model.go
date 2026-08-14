@@ -778,6 +778,10 @@ func (m Model) handleRunDone(err error) (tea.Model, tea.Cmd) {
 // handleCompactDone 处理手动 /compact 完成（ADR-037）。空闲时执行（命令不在
 // run 队列），可安全 reloadSession 显示压缩后的 transcript（摘要占位）。
 func (m Model) handleCompactDone(msg compactDoneMsg) (tea.Model, tea.Cmd) {
+	// 审查修复 01（2026-08-14）：复位 /compact 分派时同步置位的 running
+	// （Esc 打断压缩也可能置 interrupted，一并复位——同 handleRunDone 语义）。
+	m.running = false
+	m.interrupted = false
 	if msg.err != nil {
 		return m.sysErr(msg.err), nil
 	}

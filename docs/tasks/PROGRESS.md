@@ -9,6 +9,7 @@
   - **生产端（tools）**：bgProcess 条目加 queue/sessionID/logPath（rc 捕获，非会话跳过）；`notifyCompletion`（注销 + 拼通知全文 + Append，exit 码 `exec.ExitError.ExitCode()`、signal 杀 = -1）；两处 Wait goroutine 完成时调用；`compensateTransferNotify`（超时瞬间进程已死的竞态窗口非阻塞 done 补偿，两路恰好一个拿 entry 不双通知）；shell 文案/参数 schema 改"完成会自动通知，可等通知也可轮询日志"。9 个新测试（含 4 个集成：自然退出通知 / kill 不通知 / 前台不通知 / 超时转后台通知 / 超时竞态恰好 1 条）。
   - **TUI 唤醒器**：`RunWakeup`（Run 去 AddUser 变体）+ `MaybeWake`（三分支丢弃 + **返回 cmd 前同步抢占 cancel**）+ `isRunning`（复用 cancel 零新增字段）；wake 登记（setSend 遍历 open + ensureActive + SwitchTo 三处）；Model `completionWakeMsg` 双闸（m.running + MaybeWake）+ `handleRunDone` 末尾 `err==nil` 补唤醒 + EventNotice 系统行。13 个新测试（含三处回归锚点：同步抢占防并发 run / 双 wake 消息不并发 / 唤醒失败不热循环）。
 - **验证**：`go build/vet/test ./...` 全绿；completion + tools `-race` 绿；linux/darwin 交叉编译绿。
+- **审查修复（2026-08-14，独立审查报告 `docs/reviews/async-completion-notify-review-2026-08-13.md`）**：6 项缺陷（0 严重/1 中等/4 低/1 测试）——01 `/compact` 分派后 wake 可穿过双闸与压缩并发（data race）已修（/compact 分派同步置 running + handleCompactDone 复位 + 回归锚点 `TestCompactDispatchBlocksWake`）；02 超时转后台文案"它仍在运行"→"可能仍在后台运行"已修；03/04/05 低级别记录进阶段 7 待办；计划三处评审轮修复全部核实落地（40 次竞态压测零双通知、零注册表残留）。
 - **已知局限（ADR-040 记录）**：`harness run` 单轮模式（测试用）无唤醒器，完整通知承诺仅对 TUI 会话成立。
 
 ### shell 进程树审查修复轮（审查报告 01-06）✅ 版本 0.9.2

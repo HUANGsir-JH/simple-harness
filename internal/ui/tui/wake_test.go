@@ -290,3 +290,47 @@ func TestEventNoticeRendersSystemLine(t *testing.T) {
 		t.Fatal("应追加系统行")
 	}
 }
+
+// TestCompactDispatchBlocksWake 回归锚点（审查 01，2026-08-14）：/compact 分派
+// 后、RunCompact cmd 执行前的间隙，completionWakeMsg 不得穿过 m.running 闸
+// 拉起唤醒 run——否则与压缩并发读写同一 conversation（data race）。修复：
+// /compact 分派同步置 running（RunCompact 的 setCancel 在异步 cmd 内，闸
+// 必须更早落下），handleCompactDone 复位。
+func TestCompactDispatchBlocksWake(t *testing.T) {
+	var calls atomic.Int32
+	c := newTestController(t, &calls)
+	m := New(c)
+	_ = collectSend(c)
+	c.active.Completions().Append(completion.Event{Result: "x"})
+
+	nm, cmd := m.handleInput("/compact")
+	if cmd == nil {
+		t.Fatal("/compact 应返回压缩 cmd")
+	}
+	m = nm.(Model)
+	if !m.running {
+		t.Fatal("/compact 分派应同步置 running（防 compact×wake 并发）")
+	}
+	// compact cmd 尚未执行（cancel 未抢占）：wake 消息被 m.running 闸丢弃。
+	nm2, cmd2 := m.Update(completionWakeMsg{})
+	m = nm2.(Model)
+	if cmd2 != nil {
+		t.Fatal("compact 期间 wake 消息不得拉起唤醒 run")
+	}
+	if c.active.Completions().PendingCount() != 1 {
+		t.Error("被丢弃的 pending 应保留（留待下一次信号/用户消息注入）")
+	}
+	// compact 完成（测试装配无 compactor → err）：running 复位、无额外 run。
+	done := cmd().(compactDoneMsg)
+	nm3, cmd3 := m.Update(done)
+	m = nm3.(Model)
+	if m.running {
+		t.Error("compact 完成后 running 应复位")
+	}
+	if cmd3 != nil {
+		t.Errorf("compact 完成不应产生额外 cmd: %v", cmd3)
+	}
+	if calls.Load() != 0 {
+		t.Errorf("不应有 agent.Run: %d", calls.Load())
+	}
+}
