@@ -1,6 +1,7 @@
 # harness 配置文件
 # 复制到项目根目录为 config.local.yaml（不入 git，见 .gitignore）
 # 或复制到 ~/.harness/config.yaml 作为全局配置。
+# 或运行 `harness init` 生成 ~/.harness 骨架 + 全注释 config.yaml 模板。
 # 运行: harness run "你好"
 #
 # 结构：default_provider 指定默认供应商，providers 按名称分组。

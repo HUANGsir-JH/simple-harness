@@ -258,3 +258,19 @@
 | T10 | 测试基架打磨：`testCompletionRC` 去 rc.attrs 走私 | ✅ 2026-08-14 |
 | T11 | 文档（ADR-041/TASKS/PROGRESS/IMPLEMENTATION_PLAN/规划文档状态）+ 版本 0.10.0 | ✅ 2026-08-14 |
 | T12 | 全量验证：build/vet/test/-race/e2e/交叉编译/go install | ✅ 2026-08-14 |
+
+## 工具命令：harness init（2026-08-14）✅
+
+- **目标**：`harness init` 初始化 workspace 根（$HARNESS_HOME 优先，否则 ~/.harness）：目录骨架（workspaces/subagents/memory/logs + agents.md 占位）+ 全局配置模板（config.yaml 不存在时写入**全注释模板**，存在则不动）；幂等可重复执行、不覆盖用户编辑。
+- **状态**：✅ 已完成（2026-08-14，版本 0.11.0）
+- **决策（用户拍板）**：① init 范围 = 骨架 + 注释版 config.yaml 模板（非完整示例——无激活值不误连端点；run 报错从 "no config found" 变为 "providers: no providers configured"，更明确指向填配置）；② 配置查找顺带对齐 HARNESS_HOME（此前写死 ~/.harness，与 session 存储根不一致）。
+
+### 任务单元
+
+| # | 单元 | 状态 |
+|---|---|---|
+| I1 | `config.EnvHome` 规范常量 + `globalConfigPath` 候选对齐（$HARNESS_HOME/config.yaml 优先）+ `session.EnvHome` 别名 | ✅ 2026-08-14 |
+| I2 | config 全注释模板 + `EnsureConfig`（不存在才写、临时名 rename 原子、不覆盖） | ✅ 2026-08-14 |
+| I3 | cmd `initCmd`（预检报告 [创建]/[跳过]）+ main 分发/usage | ✅ 2026-08-14 |
+| I4 | 测试：globalConfigPath/EnsureConfig 3 项 + cmd init 2 项 + e2e init（进程外幂等/不覆盖） | ✅ 2026-08-14 |
+| I5 | 文档（TASKS/PROGRESS/IMPLEMENTATION_PLAN）+ 版本 0.11.0 + 全量验证 | ✅ 2026-08-14 |

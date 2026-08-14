@@ -1,5 +1,13 @@
 ## 2026-08-14
 
+### harness init 命令 ✅ 版本 0.11.0
+
+- **背景**：`~/.harness/` 骨架此前只在首次建会话时惰性创建，config.yaml 从不自动生成——新用户上手要读 help 猜目录结构、手写配置。
+- **交付**：`harness init`（幂等）：建 workspaces/subagents/memory/logs + agents.md 占位 + config.yaml **全注释模板**（不存在才写、临时名 rename 原子、已存在不覆盖用户编辑），输出 `[创建]/[跳过]` 报告 + 填配置提示。**顺带对齐 HARNESS_HOME**：`config.EnvHome` 规范常量（config 最底层）+ `session.EnvHome` 别名引用；`globalConfigPath` 候选改为 $HARNESS_HOME/config.yaml 优先（修复 config 查找与 session 存储根不一致）。
+- **决策（用户拍板）**：init 范围 = 骨架 + 注释版模板（非完整示例——无激活值不误连端点；run 报错从 "no config found" 变为 "providers: no providers configured"）；config 查找顺带对齐 HARNESS_HOME。
+- **测试**：config 3 项（globalConfigPath 候选 / 模板全注释 / EnsureConfig 幂等不覆盖）+ cmd 2 项（initCmd 骨架+幂等 / 拒参数）+ e2e 1 项（进程外 init + 重复 init 不覆盖）。
+- **验证**：build/vet/全量 test/e2e/交叉编译绿（见 I5）。
+
 ### 阶段 7 代码架构整理 ✅ 版本 0.10.0（ADR-041）
 
 - **背景**：ADR-040 实施后复查代码，闭包密集 + 装配逻辑散落（规划文档 `docs/plans/architecture-cleanup-2026-08-13.md`）。架构方向（无状态 agent + per-call rc + middleware + TUI）本身成立，本轮只做低风险可读性整理，为阶段 4 剩余/5（子 agent）/6 铺路。**用户拍板提前启动**（原计划阶段 4/5/6 完成后做）；装配形态经两轮评审定稿：产物命名 `HarnessAgent`（避开 RuntimeContext 的 Runtime，内部持有基础 ReAct agent）、TUI 三阶段逐段解释、`app.Build` 草案确认。

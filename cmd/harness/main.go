@@ -10,7 +10,7 @@ import (
 
 // version 是 harness 版本号。每次有用户可见变更（功能 → minor、修复 → patch）
 // 随提交 bump，`harness version` 输出。
-const version = "0.10.0"
+const version = "0.11.0"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -53,6 +53,8 @@ func run(args []string) error {
 		return runCmd(rest[1:], jsonOut)
 	case "resume":
 		return resumeCmd(rest[1:], jsonOut)
+	case "init":
+		return initCmd(rest[1:])
 	case "sessions":
 		return sessionsCmd(rest[1:])
 	case "help", "-h", "--help":
@@ -79,6 +81,7 @@ func usage() {
 	fmt.Println("  harness                       interactive mode (TUI, multi-turn)")
 	fmt.Println("  harness run <prompt>          run a single turn with the configured model")
 	fmt.Println("  harness resume <id>|--last    resume a session and continue in TUI")
+	fmt.Println("  harness init                  initialize ~/.harness workspace (skeleton + config template)")
 	fmt.Println("  harness sessions              list sessions for this project")
 	fmt.Println("  harness version               print version")
 	fmt.Println("  harness help                  show this help")

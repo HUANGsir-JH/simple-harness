@@ -21,10 +21,13 @@ import (
 	"sort"
 
 	"github.com/agent-project/harness/internal/agentstate"
+	"github.com/agent-project/harness/internal/config"
 )
 
 // EnvHome 覆盖 workspace 根目录（测试/定制；对标 codex CODEX_HOME）。
-const EnvHome = "HARNESS_HOME"
+// 规范定义在 config 包（config.EnvHome，2026-08-14 起 config 查找的全局
+// 配置路径同样尊重它），本别名保持 session 包既有 API 稳定。
+const EnvHome = config.EnvHome
 
 // workspace 布局目录常量。
 const (
