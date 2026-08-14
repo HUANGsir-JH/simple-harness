@@ -38,9 +38,6 @@ type HarnessAgent struct {
 	// ModeResume 传 nil（不触发）。
 	newSession func() (*session.Session, error)
 
-	// tuiApp 是 ModeTUI/ModeResume 装配后的 TUI 实例（runTUI 内 Assemble）。
-	tuiApp *tui.App
-
 	// run 模式执行参数。
 	prompt       string
 	jsonOut      bool
@@ -83,7 +80,6 @@ func (h *HarnessAgent) signals() []os.Signal {
 // runTUI 执行 TUI 模式：显式三阶段（Assemble → Run → Close，见 tui 包）。
 func (h *HarnessAgent) runTUI(ctx context.Context) error {
 	t := tui.Assemble(h.reactAgent, h.proj, h.cfg.Config, h.sess, h.newSession, ctx, h.showThinking)
-	h.tuiApp = t
 	runErr := t.Run() // program.Run → WaitRuns → SaveActiveState
 	t.Close()         // CloseAll（与 Assemble 对称）
 	return runErr
