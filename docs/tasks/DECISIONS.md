@@ -488,3 +488,16 @@
 - **影响 ADR**：ADR-038——日志文件分配实现修正（进程生命周期/注册表/通知链路不变，仅临时命名机制）；ADR-028——eviction 落盘文件命名机制。
 - **回归锚点**：`TestShellCommandBackgroundConcurrentUniqueLogs`（12 轮 × 8 任务屏障并发直调 `startBackground`；断言路径唯一且为 `<pid>.log`、文件可读、内容仅含本任务、无 `.bg` 残留；修复前一次运行即复现全部四症状）。
 - **验证**：`go build/vet/test ./...` 全绿；`tools -race` 绿；linux/windows/darwin 交叉编译绿。版本 0.11.1。
+
+## ADR-043：AGENTS.md 注入 + 基础提示词增强（2026-08-15，阶段 4 剩余）
+
+- **背景**：阶段 4 剩余两项——① `agentsmd`（AGENTS.md 注入）一直待办（ADR-011 原定"注入 developer 消息"，ADR-039 内容通道分类后改为系统提示管道）；② 基础提示词过薄（`DefaultBaseInstructions = "You are a helpful coding agent."` 单行），模型缺"身份/工作方式/交流语气"上下文。调研 codex（`prompt.md` 275 行：身份/AGENTS.md 语义/响应/计划/任务执行/验证/收尾）+ opencode（`default.txt`：身份/语气/主动性/约定）+ deepseek-harness（persona 注入 `{{model}}`/`{{cwd}}`）后落定。
+- **决策**：
+  1. **agentsmd 挂 onSystemPrompt**（修订 ADR-011 的"developer 消息"）：`internal/agentsmd` 纯逻辑包（发现+拼接+截断，只依赖 stdlib）+ `impl.AgentsMdMiddleware` 注入；装配顺序 = 基础 persona（BaseInstructions）→ 项目上下文（AgentsMd）→ 工具引导（ToolInstructions）。
+  2. **发现规则（codex 对齐）**：从 cwd 向上找最近含 `.git`（文件或目录，兼容 worktree/submodule）的目录为项目根；收集根→cwd（含两端）每层一个文件、根→cwd 顺序；**文件名回退 `AGENTS.md` → `CLAUDE.md`**（用户拍板，使 simple-harness 自身的 CLAUDE.md 可自举）；全局 persona `~/.harness/agents.md` 恒在最前；**预算 200KB 硬编码**；**读失败/空文件跳过、非致命**。
+  3. **基础提示词中文 + 动态上下文**（用户拍板）：`DefaultBaseInstructions` 改为中文模板（身份 + `# 环境`/`{{cwd}}`/`{{model}}` + 工作方式 + 交流），`BaseInstructionsMiddleware` 增 `render` 注入动态上下文（cwd 取 `rc.State.CWD` 空回退 Getwd、model 取 `rc.Model` 空回退"默认"）；**只承担身份/通用工作方式/交流，不重复 ToolInstructions 的工具纪律**。
+  4. **路径注入防环**：`session.GlobalAgentsMDPath()` 由 `app.buildAgent` 解析后传入 `agent.Build(res, mode, globalAgentsMD)`（三模式共用），保持"session 知中间件、反之不成立"约定（impl 不反向依赖 session）。
+- **影响 ADR**：ADR-011——"注入 developer 消息"修订为"注入 onSystemPrompt 管道"；ADR-039——onSystemPrompt 管道新增 AgentsMd 中间件、BaseInstructionsMiddleware 增占位符渲染；ADR-033——`agent.Build` 签名 +1 参数（globalAgentsMD）。
+- **验证**：`go build/vet/test ./... -count=1` 全绿（含 e2e）；`internal/agentsmd` 发现/拼接/截断/多字节边界 + `impl` 注入/渲染回归锚点锁定。
+
+

@@ -59,7 +59,7 @@
 
 - **目标**：**`~/.harness/` 统一 workspace**（sessions/快照、subagents/*.md 预留、tools.json、memory/）；`session` 包（JSONL 消息流 + **轻量 AgentState 快照** + resume，落 workspace）；`agentsmd` 包（**作为 onSystemPrompt middleware** 注入 + 系统提示词动态拼接，AGENTS.md 项目级向上搜索保留）；`compact` 包（TokenBudget v1 + 摘要式 + **大工具结果 eviction**，作为 onReasoning middleware，**不做 overflow 安全网**）
 - **成功标准**：`harness resume --last` 能完整恢复（含权限/todo 等非消息状态）；AGENTS.md 注入生效；系统提示词随上下文动态组装；长会话自动压缩；超大工具结果落盘 + read_file 指针
-- **状态**：未开始（2026-08-06 增补系统提示词动态拼接；2026-08-07 确认 workspace/compaction 范围；**2026-08-09 TUI 阶段优先，本阶段剩余 AGENTS.md 注入 + 压缩后置**）
+- **状态**：✅ 已完成（2026-08-15）——workspace/session/compact 分属早前各阶段；剩余 AGENTS.md 注入 + 基础提示词增强经 ADR-043 落地（`internal/agentsmd` + `impl.AgentsMdMiddleware` + 中文基础提示词 + {{cwd}}/{{model}} 动态上下文）
 
 ## 阶段 5：子 Agent（内置 + 并行 + 状态）+ CLI 完善 + 文档
 
@@ -303,3 +303,20 @@
 | B4 | 回归测试 `TestShellCommandBackgroundConcurrentUniqueLogs`（12 轮 × 8 并发屏障；修复前一次运行复现全部四症状） | ✅ 2026-08-14 |
 | B5 | 文档（ADR-042/PROGRESS/TASKS/问题文档状态）+ 版本 0.11.1 + 全量验证 + 交叉编译 | ✅ 2026-08-14 |
 | B6 | 修复后回归验证：场景 A（保持 run）6 轮并发 19 任务实测（零 .bg 泄漏/内容完整无串扰/通知全达）+ 场景 B（结束 run）OnAppend 逐条实时 + 唤醒器全套 + setsid 干净环境全量/race 全绿 + SIGTTIN 环境边界记录 | ✅ 2026-08-14 |
+
+## 阶段 4 剩余：AGENTS.md 注入 + 基础提示词增强（2026-08-15）✅
+
+- **目标**：落地阶段 4 剩余两项——① `agentsmd`：从启动目录向上找项目根（`.git` 标记）收集 AGENTS.md（缺失回退 CLAUDE.md）+ 全局 persona 拼接，作为 onSystemPrompt 中间件注入；② 基础提示词增强：把单行 `"You are a helpful coding agent."` 换成中文成体系基础提示词，并注入工作目录/模型动态上下文。
+- **成功标准**：`harness run` 请求 `Instructions` 含「基础提示词（含工作目录/模型）+ 项目指令 + 工具引导」；`simple-harness` 自身（仅 CLAUDE.md）可自举注入；无指令文件时与现状一致；AGENTS.md 读失败绝不终止回合。
+- **状态**：✅ 已完成（2026-08-15，ADR-043）
+- **决策（用户拍板）**：① 项目根 = `.git` 标记；② 文件名回退 `AGENTS.md` → `CLAUDE.md`；③ 基础提示词中文；④ 注入工作目录 + 模型（仿 deepseek-harness persona）。
+
+### 任务单元
+
+| # | 单元 | 状态 |
+|---|---|---|
+| A1 | `internal/agentsmd` 包（Discover/Compose/.git 项目根/回退/200KB 截断/多字节边界/读失败非致命）+ 单测 | ✅ 2026-08-15 |
+| A2 | `impl.AgentsMdMiddleware`（onSystemPrompt，复用 workspaceOf）+ 单测 | ✅ 2026-08-15 |
+| A3 | `impl.BaseInstructionsMiddleware` 增强（中文模板 + render 注入 {{cwd}}/{{model}}）+ 单测改写 | ✅ 2026-08-15 |
+| A4 | `agent.Build` 签名 + 链注册（base→agentsmd→tools）+ `session.GlobalAgentsMDPath` + `app.buildAgent` 三模式共用 | ✅ 2026-08-15 |
+| A5 | 文档（ADR-043/TASKS/PROGRESS/IMPLEMENTATION_PLAN/CLAUDE.md）+ 全量 build/vet/test | ✅ 2026-08-15 |

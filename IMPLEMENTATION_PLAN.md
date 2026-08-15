@@ -6,7 +6,7 @@
 
 参照 OpenAI Codex CLI（`../codex/codex-rs`，Rust）+ AgentScope Java v2 的架构，用 Go 构建一个**可真实使用**的极简 agent harness（命令行）。定位为**通用框架**，未来可被 resume-agent 等其它项目引用。
 
-**现状（2026-08-14）**：阶段 1（骨架+消息+provider+最小 loop）→ 阶段 2（工具系统+并发+渲染+middleware 骨架+REPL）→ 阶段 2.5（Workspace+AgentState+会话落盘/resume）→ 架构重构（ADR-026 无状态 agent+运行时切换）→ todo 工具（ADR-027）→ 工具结果截断/用户中断/shell 缓解（ADR-028）→ **阶段 3 审批（ADR-029）✅** → 配置层独立 + 装配根 → **Plan Mode（ADR-036）✅ 2026-08-11** → **Plan Mode 审查修复 ✅ 2026-08-12**（写黑名单反向判定 + 纯 Deny / AgentState 锁下沉 / TUI 待决请求队列，见 DECISIONS.md ADR-036 修订）→ **用量展示（ADR-037 第一段）✅ 2026-08-12**（provider 捕获 usage + AgentState 累计 + footer `/usage`，版本 0.7.1）→ **thinking 完整回传（ADR-025 修订，ADR-037 第二段）✅ 2026-08-12**（thinking signature 捕获→存储→重放，版本 0.7.2）→ **LLM 摘要压缩（ADR-037 第三段）✅ 2026-08-12**（compact 包 + Segment 钩子 + CompactMiddleware + /compact，版本 0.8.0）→ **用量+压缩审查修复 ✅ 2026-08-13**（signature_delta 捕获 / 压缩后采样上下文 / Usage 覆盖语义等 11 项，版本 0.8.1）→ **shell 进程树生命周期（ADR-038）✅ 2026-08-13**（Job Object 杀树 + background/kill_pid + 退出 pre-kill，版本 0.9.0）→ **shell 超时转后台托管（ADR-038 勘误）✅ 2026-08-13**（超时不杀树、移交注册表继续运行，版本 0.9.1）→ **系统提示通道重构（ADR-039）✅ 2026-08-13**（内容通道分类 + rc.SystemPrompt + BaseInstructionsMiddleware + 压缩判定实时化）→ **shell 进程树审查修复 ✅ 2026-08-13**（正常退出不杀派生进程 + preserveProcessTree + 自然退出注销 + attach 降级 + POSIX 测试修复，版本 0.9.2）→ **后台任务完成自动反向通知 + 唤醒器（ADR-040）✅ 2026-08-13**（completion 通用 async 通道 + 采样前注入 + TUI 唤醒器，版本 0.9.3）→ **阶段 7 代码架构整理（ADR-041）✅ 2026-08-14**（Composition Root 收敛 `app.Build→HarnessAgent` + TUI 三阶段 + 接缝方法值化 + rc 注入单点 + ADR-040 审查 03/04/05/06，版本 0.10.0）→ **harness init 工具命令 ✅ 2026-08-14**（workspace 骨架 + 全注释 config 模板 + config 查找对齐 HARNESS_HOME，版本 0.11.0）。待办：阶段 4 剩余（**AGENTS.md 注入** + 系统提示词拼接）、阶段 5（子 agent）、阶段 6（可选）。
+**现状（2026-08-15）**：阶段 1（骨架+消息+provider+最小 loop）→ 阶段 2（工具系统+并发+渲染+middleware 骨架+REPL）→ 阶段 2.5（Workspace+AgentState+会话落盘/resume）→ 架构重构（ADR-026 无状态 agent+运行时切换）→ todo 工具（ADR-027）→ 工具结果截断/用户中断/shell 缓解（ADR-028）→ **阶段 3 审批（ADR-029）✅** → 配置层独立 + 装配根 → **Plan Mode（ADR-036）✅ 2026-08-11** → **Plan Mode 审查修复 ✅ 2026-08-12**（写黑名单反向判定 + 纯 Deny / AgentState 锁下沉 / TUI 待决请求队列，见 DECISIONS.md ADR-036 修订）→ **用量展示（ADR-037 第一段）✅ 2026-08-12**（provider 捕获 usage + AgentState 累计 + footer `/usage`，版本 0.7.1）→ **thinking 完整回传（ADR-025 修订，ADR-037 第二段）✅ 2026-08-12**（thinking signature 捕获→存储→重放，版本 0.7.2）→ **LLM 摘要压缩（ADR-037 第三段）✅ 2026-08-12**（compact 包 + Segment 钩子 + CompactMiddleware + /compact，版本 0.8.0）→ **用量+压缩审查修复 ✅ 2026-08-13**（signature_delta 捕获 / 压缩后采样上下文 / Usage 覆盖语义等 11 项，版本 0.8.1）→ **shell 进程树生命周期（ADR-038）✅ 2026-08-13**（Job Object 杀树 + background/kill_pid + 退出 pre-kill，版本 0.9.0）→ **shell 超时转后台托管（ADR-038 勘误）✅ 2026-08-13**（超时不杀树、移交注册表继续运行，版本 0.9.1）→ **系统提示通道重构（ADR-039）✅ 2026-08-13**（内容通道分类 + rc.SystemPrompt + BaseInstructionsMiddleware + 压缩判定实时化）→ **shell 进程树审查修复 ✅ 2026-08-13**（正常退出不杀派生进程 + preserveProcessTree + 自然退出注销 + attach 降级 + POSIX 测试修复，版本 0.9.2）→ **后台任务完成自动反向通知 + 唤醒器（ADR-040）✅ 2026-08-13**（completion 通用 async 通道 + 采样前注入 + TUI 唤醒器，版本 0.9.3）→ **阶段 7 代码架构整理（ADR-041）✅ 2026-08-14**（Composition Root 收敛 `app.Build→HarnessAgent` + TUI 三阶段 + 接缝方法值化 + rc 注入单点 + ADR-040 审查 03/04/05/06，版本 0.10.0）→ **harness init 工具命令 ✅ 2026-08-14**（workspace 骨架 + 全注释 config 模板 + config 查找对齐 HARNESS_HOME，版本 0.11.0）→ **AGENTS.md 注入 + 基础提示词增强（ADR-043）✅ 2026-08-15**（agentsmd 包 + AgentsMdMiddleware + 基础提示词中文 + {{cwd}}/{{model}} 动态上下文，见 DECISIONS.md ADR-043）。待办：阶段 5（子 agent）、阶段 6（可选）。
 
 ## 已确认决策（当前生效）
 
@@ -27,7 +27,7 @@
 | 配置 | YAML（~/.harness/config.yaml + 项目级 config.local.yaml），加载/校验统一在 **internal/config** 包；`app.Load()` 惰性单例（ADR-026，2026-08-09 配置层独立） |
 | thinking | **默认开启**（ADR-034，2026-08-10 删 enabled 配置项）；模型配置只留 efforts（档位集）+ CLI `--effort/--thinking/--no-thinking` 覆盖 + TUI `/thinking` 会话切换（持久化 AgentState，nil = 默认开启）；按 anthropic 标准参数传递 |
 | 内置工具 | 11 个：read_file / list_dir / glob / write_file / shell_command / apply_patch / update_todo + plan 4 个（plan_enter / write_plan / plan_done / ask_user，ADR-036） |
-| 压缩 / 子 agent / AGENTS.md / TUI / Hooks | **压缩 ✅ 2026-08-12（ADR-037 第三段）**；子 agent / AGENTS.md 注入规划中，见"待办阶段" |
+| 压缩 / 子 agent / AGENTS.md / TUI / Hooks | **压缩 ✅ 2026-08-12（ADR-037 第三段）**；**AGENTS.md 注入 ✅ 2026-08-15（ADR-043）**；子 agent 规划中，见"待办阶段" |
 
 ## 架构总览（当前实际目录）
 
@@ -50,7 +50,7 @@ harness/
 │   ├── completion/       # ★ 后台任务通用 async 完成通道（ADR-040，只依赖 stdlib）
 │   ├── config/           # 配置域（只依赖 yaml+stdlib）：Config/ProviderSpec 类型 + YAML 加载/解析/校验
 │   ├── e2e/              # 进程外端到端测试（termtest 真实 TTY + mock HTTP）
-│   └── # 规划中（未实现）：agentsmd / hooks；子 agent（阶段 5，HarnessAgent 装配变体）
+│   └── # 规划中（未实现）：hooks；子 agent（阶段 5，HarnessAgent 装配变体）
 ├── config.example.yaml   # 配置示例
 └── docs/                 # 设计文档（DECISIONS/TASKS/PROGRESS + DATA_STRUCTURES）
 ```
@@ -76,7 +76,7 @@ type Middleware interface {
 }
 ```
 
-- **挂载点映射**：`onActing` = 工具审批（ApprovalMiddleware，ADR-029）；`onToolCall` = 工具结果截断（ToolOutputMiddleware，ADR-028）；`onReasoning` = todo 偏离提醒（TodoReminder，ADR-027）+ 压缩（规划）；`onSystemPrompt` = 工具说明注入（ToolInstructions）+ AGENTS.md（规划）；`onAgent` = 会话状态 load/save（SessionMiddleware）。**以上内置中间件实现全部在 `internal/middleware/impl`**。
+- **挂载点映射**：`onActing` = 工具审批（ApprovalMiddleware，ADR-029）；`onToolCall` = 工具结果截断（ToolOutputMiddleware，ADR-028）；`onReasoning` = todo 偏离提醒（TodoReminder，ADR-027）+ 压缩（规划）；`onSystemPrompt` = 工具说明注入（ToolInstructions）+ AGENTS.md 注入（AgentsMd，ADR-043）；`onAgent` = 会话状态 load/save（SessionMiddleware）。**以上内置中间件实现全部在 `internal/middleware/impl`**。
 - **注入机制**：`RuntimeContext`（rc）per-call 新建承载会话（Messages/State/StatePath/Model/Thinking*/Approver）；中间件从 rc 读写，**无状态可并发**（共享 chain 多 goroutine 安全，ADR-026）。
 - **事件分层**：provider 采样级（delta + 块完成 + tool_call + done/error）→ agent 回合级（带 MsgID 关联块归属）→ 渲染器/transcript 双转发。
 
@@ -167,9 +167,10 @@ type Tool interface {
 - 简化：无 mailbox / wait_agent / 并发上限（semaphore 可选）/ 昵称/路径树。
 - 并行已由无状态 agent + 共享 chain 并发安全支撑（ADR-026）。
 
-### 9. 规划：AGENTS.md 注入（internal/agentsmd/）
+### 9. AGENTS.md 注入（internal/agentsmd/）✅ 2026-08-15（ADR-043）
 
-- 从 cwd 向上找项目根 → 收集 AGENTS.md → 拼接注入（作为 onSystemPrompt middleware）；预算 200KB 截断。
+- 从 cwd 向上找最近含 `.git` 的项目根 → 收集根→cwd 每层 AGENTS.md（缺失回退 CLAUDE.md）→ 作为 onSystemPrompt middleware 注入；全局 persona（~/.harness/agents.md）恒在前；预算 200KB 截断；读失败/空文件跳过、非致命。
+- 基础提示词同轮增强：中文 `DefaultBaseInstructions` + `{{cwd}}`/`{{model}}` 动态上下文（`BaseInstructionsMiddleware.render`）。
 - 与系统提示词动态拼接（ToolInstructions + 后续组装）同属阶段 4。
 
 ### 10. 规划：Hooks（子进程，远期）
@@ -198,12 +199,12 @@ type Tool interface {
 
 ### ⏳ 待办（未完成）
 
-- **阶段 4（剩余）：AGENTS.md 注入 + 系统提示词拼接**
+- **阶段 4（剩余）：AGENTS.md 注入 + 系统提示词拼接 ✅ 2026-08-15**
   - **用量展示 ✅ 2026-08-12（ADR-037 第一段）**：provider 捕获 usage → `messages.Usage` → agent `EventUsage` → AgentState `Usage`/`LastContextTokens` → TUI footer `ctx Nk/Mk` + `/usage`。版本 0.7.1。
   - **thinking 完整回传 ✅ 2026-08-12（ADR-025 修订，ADR-037 第二段）**：捕获 thinking signature → `Message.ThinkingSignature` + transcript Line.Signature → `toAnthropicAssistantMessage` 重放 `ThinkingBlockParam`（仅签名非空）；thinking-only assistant 带签名不再跳过；估算镜像 `compact.EstimateTokens` 含 thinking。DeepSeek 实测通过。版本 0.7.2。
   - **LLM 摘要压缩 ✅ 2026-08-12（ADR-037 第三段）**：`internal/compact`（ShouldCompact 85% 硬编码 + Summarizer codex 方式 + Runner.Run）；`RuntimeContext.Segment` 钩子（NewSegment + seed + Flush）；`impl.CompactMiddleware`（onReasoning before，摘要失败终止 run，Esc 同）；`events.EventCompacted` + `/compact` 手动（Controller.RunCompact 成功显式落盘 AgentState）。版本 0.8.0。
   - **系统提示通道重构 ✅ 2026-08-13（ADR-039）**：内容通道分类原则（对话历史=Messages / 稳定配置=系统提示管道 / 工具定义=toolspec / 即时信号=临时副本，对齐 codex/opencode）；`rc.SystemPrompt`（组合后回写）+ base 中间件化（`BaseInstructionsMiddleware` 链首）+ Build 兜底估算删除 + 压缩判定实时三项估算（CompactMiddleware 持 in.Tools）+ Runner 纯执行器。
-  - `agentsmd`（onSystemPrompt：项目级 AGENTS.md 向上搜索 + 全局拼接 + 动态系统提示词组装）
+  - **agentsmd ✅ 2026-08-15（ADR-043）**：`internal/agentsmd`（.git 项目根向上搜索 + AGENTS.md/CLAUDE.md 回退 + 全局 persona 拼接 + 200KB 截断 + 读失败非致命）+ `impl.AgentsMdMiddleware`（onSystemPrompt）+ `session.GlobalAgentsMDPath` + `app.buildAgent` 注入；基础提示词同轮增强（中文 + `{{cwd}}`/`{{model}}` 动态上下文）。
   - 注：大工具结果 eviction 已完成（ADR-028），不属于本阶段。
 - **阶段 5：子 agent（内置 + 并行 + 状态 + 单向通信）**
   - 内置子 agent + `spawn_agent` + 状态跟踪 + fork 过滤 + `send_message` 单向。

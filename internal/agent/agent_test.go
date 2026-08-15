@@ -166,7 +166,7 @@ func TestRunSystemPromptCompose(t *testing.T) {
 	}}
 	a := noToolsAgent(fc)
 	a.SetMiddleware(middleware.NewChain(
-		impl.BaseInstructionsMiddleware{Text: impl.DefaultBaseInstructions},
+		impl.BaseInstructionsMiddleware{Text: "BASE"},
 		suffixMiddleware{text: "SUFFIX"},
 	))
 	rc := rcFor(newConversation())
@@ -175,7 +175,7 @@ func TestRunSystemPromptCompose(t *testing.T) {
 	if err := a.Run(context.Background(), rc, func(events.Event) {}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	want := impl.DefaultBaseInstructions + "\n\n" + "override" + "SUFFIX"
+	want := "BASE" + "\n\n" + "override" + "SUFFIX"
 	if fc.LastReq == nil || fc.LastReq.Instructions != want {
 		t.Errorf("请求系统提示: got %q want %q", fc.LastReq.Instructions, want)
 	}
@@ -187,7 +187,7 @@ func TestRunSystemPromptCompose(t *testing.T) {
 	if err := a.Run(context.Background(), rc2, func(events.Event) {}); err != nil {
 		t.Fatalf("Run(empty): %v", err)
 	}
-	if rc2.SystemPrompt != impl.DefaultBaseInstructions+"SUFFIX" {
+	if rc2.SystemPrompt != "BASE"+"SUFFIX" {
 		t.Errorf("空起点组合: got %q", rc2.SystemPrompt)
 	}
 }

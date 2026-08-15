@@ -103,6 +103,17 @@ func ProjectForCWD() (*Project, error) {
 // Root 返回 workspace 根。
 func (s *Store) Root() string { return s.root }
 
+// GlobalAgentsMDPath 返回全局 persona 文件路径（~/.harness/agents.md，
+// $HARNESS_HOME 覆盖）。供 app 层解析后注入 agent.Build（ADR-043）——
+// 路径由调用方注入，避免 impl 反向依赖 session（防环约定）。
+func GlobalAgentsMDPath() (string, error) {
+	store, err := New()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(store.Root(), FileAgentsMD), nil
+}
+
 // EnsureDirs 创建目录骨架（全局占位 + workspaces），并建 agents.md 占位文件。
 // 占位文件已存在时跳过（不覆盖用户编辑）。
 func (s *Store) EnsureDirs() error {

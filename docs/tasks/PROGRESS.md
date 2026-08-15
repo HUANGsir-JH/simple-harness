@@ -1,3 +1,17 @@
+## 2026-08-15
+
+### 阶段 4 剩余：AGENTS.md 注入 + 基础提示词增强 ✅（ADR-043）
+
+- **背景**：阶段 4 剩余两项收尾——`agentsmd`（AGENTS.md 注入）一直待办，基础提示词过薄（`"You are a helpful coding agent."` 单行）。调研 codex（`prompt.md` 身份/AGENTS.md 语义/任务执行纪律）+ opencode（`default.txt` 语气/主动性/约定）+ deepseek-harness（persona 注入 `{{model}}`/`{{cwd}}`）后落定方案，用户拍板：项目根 `.git` 标记、文件名回退 `AGENTS.md`→`CLAUDE.md`、基础提示词中文、注入工作目录+模型。
+- **交付**：
+  - **`internal/agentsmd` 包（新，纯逻辑只依赖 stdlib）**：`Discover`（向上找最近含 `.git` 的项目根，收集根→cwd 每层 AGENTS.md 优先/CLAUDE.md 回退，根→cwd 顺序）+ `Compose`（全局 persona 恒在前 + 每项目文件 `来自 <相对路径>：` 标注 + 200KB 预算截断 + 多字节边界 + 读失败/空文件跳过非致命）。
+  - **`impl.AgentsMdMiddleware`**（onSystemPrompt，复用 `workspaceOf` 读 `rc.State.CWD`）：追加到 current、无内容透传、空 current 原样注入。
+  - **`impl.BaseInstructionsMiddleware` 增强**：`DefaultBaseInstructions` 换成中文模板（身份 + `# 环境`/`{{cwd}}`/`{{model}}` + 工作方式 + 交流），新增 `render` 注入动态上下文（cwd 取 `rc.State.CWD` 空回退 Getwd、model 取 `rc.Model` 空回退"默认"）；只承担身份/通用工作方式/交流，不重复 ToolInstructions 的工具纪律。
+  - **装配**：`agent.Build(res, mode, globalAgentsMD)` 签名 +1；链顺序 base→agentsmd→tools；`session.GlobalAgentsMDPath()`；`app.buildAgent` 三模式（run/TUI/resume）共用（Composition Root 收敛）。
+- **测试**：`agentsmd` 发现（无 git/祖先 git/嵌套 git/AGENTS.md 优先/仅 CLAUDE.md 回退/无文件）+ 拼接（全局+项目顺序/仅全局/空白跳过/预算截断/读失败跳过/多字节边界）；`impl` 注入 + 渲染（显式 cwd/model、nil rc 兜底）；`agent_test` `TestRunSystemPromptCompose` 换字面量 "BASE" 解耦占位符。
+- **验证**：`go build/vet ./...` + `go test ./... -count=1` 全绿（含 e2e 17 包）。
+- **影响 ADR**：ADR-011（developer 消息 → onSystemPrompt）；ADR-039（管道新增 AgentsMd + base 占位符）；ADR-033（agent.Build 签名）。
+
 ## 2026-08-14
 
 ### 后台日志分配竞态修复 ✅ 版本 0.11.1（ADR-042）

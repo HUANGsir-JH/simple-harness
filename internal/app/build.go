@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/agent-project/harness/internal/agent"
+	"github.com/agent-project/harness/internal/config"
 	"github.com/agent-project/harness/internal/session"
 	"golang.org/x/term"
 )
@@ -62,6 +63,17 @@ func Build(o Options) (*HarnessAgent, error) {
 	}
 }
 
+// buildAgent 解析全局 persona 路径并装配共享 ReAct agent（AGENTS.md 注入，
+// ADR-043）。三模式共用：路径由 app 层解析后注入 agent.Build，保持"session
+// 知中间件、反之不成立"的防环约定（impl 不反向依赖 session）。
+func buildAgent(res *config.ProviderConfig, defaultMode string) (*agent.Agent, error) {
+	agentsPath, err := session.GlobalAgentsMDPath()
+	if err != nil {
+		return nil, err
+	}
+	return agent.Build(res, defaultMode, agentsPath)
+}
+
 // buildRun 装配单轮模式：配置 → 生效配置（flags 覆盖）→ agent → 会话 →
 // flags→会话 state 覆盖。prompt 校验前置（原 runCmd 文案）。
 func buildRun(o Options) (*HarnessAgent, error) {
@@ -85,7 +97,7 @@ func buildRun(o Options) (*HarnessAgent, error) {
 	if err != nil {
 		return nil, err
 	}
-	a, err := agent.Build(res, rt.DefaultApprovalMode())
+	a, err := buildAgent(res, rt.DefaultApprovalMode())
 	if err != nil {
 		return nil, err
 	}
@@ -138,7 +150,7 @@ func buildTUI(o Options) (*HarnessAgent, error) {
 	if err != nil {
 		return nil, err
 	}
-	a, err := agent.Build(rt.Provider, rt.DefaultApprovalMode())
+	a, err := buildAgent(rt.Provider, rt.DefaultApprovalMode())
 	if err != nil {
 		return nil, err
 	}
@@ -204,7 +216,7 @@ func buildResume(o Options) (*HarnessAgent, error) {
 	if err != nil {
 		return nil, err
 	}
-	a, err := agent.Build(rt.Provider, rt.DefaultApprovalMode())
+	a, err := buildAgent(rt.Provider, rt.DefaultApprovalMode())
 	if err != nil {
 		return nil, err
 	}
