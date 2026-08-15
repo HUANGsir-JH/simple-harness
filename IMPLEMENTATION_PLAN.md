@@ -1,6 +1,6 @@
 # Go Agent Harness — 实施计划
 
-> 本文档是**当前权威状态**（与代码同步）。已定案的架构决策与核心设计写在下面，实现时遵循而非重新讨论；历史决策详情见 `docs/tasks/DECISIONS.md`（ADR-021~029）。实施阶段严格区分 **✅ 已完成** 与 **⏳ 待办**。任务跟踪在 `docs/tasks/{TASKS,PROGRESS}.md`。
+> 本文档是**当前权威状态**（与代码同步）。已定案的架构决策与核心设计写在下面，实现时遵循而非重新讨论；历史决策详情见 `docs/tasks/DECISIONS.md`（ADR-021~044）。实施阶段严格区分 **✅ 已完成** 与 **⏳ 待办**。任务跟踪在 `docs/tasks/{TASKS,PROGRESS}.md`。
 
 ## Context
 
@@ -26,8 +26,8 @@
 | todo 工具 | **update_todo**（ADR-027）：全量替换 + 跨轮偏离提醒（TodoReminderMiddleware） |
 | 配置 | YAML（~/.harness/config.yaml + 项目级 config.local.yaml），加载/校验统一在 **internal/config** 包；`app.Load()` 惰性单例（ADR-026，2026-08-09 配置层独立） |
 | thinking | **默认开启**（ADR-034，2026-08-10 删 enabled 配置项）；模型配置只留 efforts（档位集）+ CLI `--effort/--thinking/--no-thinking` 覆盖 + TUI `/thinking` 会话切换（持久化 AgentState，nil = 默认开启）；按 anthropic 标准参数传递 |
-| 内置工具 | 11 个：read_file / list_dir / glob / write_file / shell_command / apply_patch / update_todo + plan 4 个（plan_enter / write_plan / plan_done / ask_user，ADR-036） |
-| 压缩 / 子 agent / AGENTS.md / TUI / Hooks | **压缩 ✅ 2026-08-12（ADR-037 第三段）**；**AGENTS.md 注入 ✅ 2026-08-15（ADR-043）**；**全局 Skill ✅ 2026-08-15（ADR-044）**；子 agent 规划中，见"待办阶段" |
+| 内置工具 | 12 个：read_file / list_dir / glob / write_file / shell_command / apply_patch / update_todo + ask_user（ADR-036）+ plan 3 个（plan_enter / write_plan / plan_done，ADR-036）+ skill（ADR-044，`Builtins(skillsDir)` 统一注册） |
+| 压缩 / 子 agent / AGENTS.md / TUI / Hooks | **TUI ✅ 2026-08-09（ADR-030，bubbletea 全屏替代 REPL）**；**压缩 ✅ 2026-08-12（ADR-037 第三段）**；**AGENTS.md 注入 ✅ 2026-08-15（ADR-043）**；**全局 Skill ✅ 2026-08-15（ADR-044）**；子 agent 规划中，见"待办阶段" |
 | 全局 Skill（ADR-044） | **SKILL.md 目录包/平铺 + frontmatter（name/description/whenToUse）+ 目录注入 onSystemPrompt + `skill` 工具渐进式披露**（`~/.harness/skills/`，200KB 加载预算，读失败非致命，classRead 放行 + 截断豁免；`agent.Build` 签名重构为 BuildOptions，见 DECISIONS.md ADR-044） |
 
 ## 架构总览（当前实际目录）
@@ -41,10 +41,10 @@ harness/
 │   ├── ui/tui/           # ★ bubbletea 全屏交互 UI：显式三阶段 Assemble/Run/Close + Controller 事件桥/审批桥（ADR-030）
 │   ├── agent/            # ★ 无状态 ReAct loop（采样→工具→回填，消息经 rc.Messages；ADR-026）+ 回合级事件 + Build 域内工厂
 │   ├── middleware/       # ★ 框架 core：6 hook 扩展机制 + 洋葱链 + RuntimeContext（承载会话）+ 契约类型（Approver/ApprovalRequest/DeniedError）
-│   ├── middleware/impl/  # ★ 内置中间件实现（基础提示词/工具说明/会话状态 load-save/todo 提醒/工具截断/审批策略/压缩/后台完成注入）
+│   ├── middleware/impl/  # ★ 内置中间件实现（基础提示词/AGENTS.md 注入/技能目录/工具说明/会话状态 load-save/todo 提醒/工具截断/审批策略/压缩/后台完成注入/用量）
 │   ├── provider/         # 单 anthropic wire + 块事件适配 + per-call 覆盖（Request.Model/ThinkingEnabled/Effort）
 │   ├── messages/         # 统一 Message 模型（含 Thinking）+ JSON 序列化
-│   ├── tools/            # Tool 接口（Handle 带 rc）+ 注册表 + 11 内置工具
+│   ├── tools/            # Tool 接口（Handle 带 rc）+ 注册表 + 12 内置工具（Builtins(skillsDir) 统一注册）
 │   ├── agentstate/       # AgentState 快照（模型/档位/todo/权限/CWD/plan/摘要）+ 原子落盘
 │   ├── session/          # workspace 项目分桶 + 块级 transcript 异步 writer + resume + ProjectForCWD
 │   ├── compact/          # ★ 上下文压缩（ADR-037 第三段）：EstimateTokens/ShouldCompact/Summarizer/Runner
@@ -63,7 +63,7 @@ harness/
 
 ### 0. Middleware（进程内扩展机制，ADR-021）
 
-capabilities 叠加在 reasoning loop 上，不揉进 loop：压缩/权限/提醒/AGENTS.md 注入全部作为 middleware 挂载。
+capabilities 叠加在 reasoning loop 上，不揉进 loop：压缩/权限/提醒/AGENTS.md/技能目录注入全部作为 middleware 挂载。
 
 ```go
 // 6 hook。前五者洋葱（next 前 = before、返回后 = after），onSystemPrompt 是
@@ -78,8 +78,8 @@ type Middleware interface {
 }
 ```
 
-- **挂载点映射**：`onActing` = 工具审批（ApprovalMiddleware，ADR-029）；`onToolCall` = 工具结果截断（ToolOutputMiddleware，ADR-028）；`onReasoning` = todo 偏离提醒（TodoReminder，ADR-027）+ 压缩（规划）；`onSystemPrompt` = 工具说明注入（ToolInstructions）+ AGENTS.md 注入（AgentsMd，ADR-043）；`onAgent` = 会话状态 load/save（SessionMiddleware）。**以上内置中间件实现全部在 `internal/middleware/impl`**。
-- **注入机制**：`RuntimeContext`（rc）per-call 新建承载会话（Messages/State/StatePath/Model/Thinking*/Approver）；中间件从 rc 读写，**无状态可并发**（共享 chain 多 goroutine 安全，ADR-026）。
+- **挂载点映射**：`onActing` = 工具审批（ApprovalMiddleware，ADR-029）；`onToolCall` = 工具结果截断（ToolOutputMiddleware，ADR-028；read_file/skill 豁免）；`onReasoning` = todo 偏离提醒（TodoReminder，ADR-027）+ 上下文压缩（CompactMiddleware，ADR-037）+ 后台完成注入（BackgroundCompletionMiddleware，ADR-040）；`onSystemPrompt` = 工具说明注入（ToolInstructions）+ AGENTS.md 注入（AgentsMd，ADR-043）+ 技能目录注入（SkillsCatalog，ADR-044）+ 基础提示词（BaseInstructions 链首，ADR-039）；`onAgent` = 会话状态 load/save（SessionMiddleware）。**以上内置中间件实现全部在 `internal/middleware/impl`**。
+- **注入机制**：`RuntimeContext`（rc）per-call 新建承载会话（Messages/SystemPrompt/State/StatePath/Model/Thinking*/Approver/Segment/Emit/Completions/AppendUser）；中间件从 rc 读写，**无状态可并发**（共享 chain 多 goroutine 安全，ADR-026）。
 - **事件分层**：provider 采样级（delta + 块完成 + tool_call + done/error）→ agent 回合级（带 MsgID 关联块归属）→ 渲染器/transcript 双转发。
 
 ### 1. 统一消息模型（internal/messages/）
@@ -136,8 +136,8 @@ type Tool interface {
 ```
 
 - 注册表：有序列表（模型可见顺序稳定）；错误 `*ToolError{RespondToModel, Message}`。
-- 内置 7 工具：read_file / list_dir / glob / write_file / shell_command / apply_patch / update_todo。
-- **工具结果截断**：工具返回完整结果，截断策略在 ToolOutputMiddleware（onToolCall after，20K head/tail + evictions/ 落盘，ADR-028）。
+- 内置 12 工具：read_file / list_dir / glob / write_file / shell_command / apply_patch / update_todo + ask_user + plan_enter / write_plan / plan_done + skill（`Builtins(skillsDir string)` 统一注册，skillsDir 仅 SkillTool 使用，ADR-044）。
+- **工具结果截断**：工具返回完整结果，截断策略在 ToolOutputMiddleware（onToolCall after，20K head/tail + evictions/ 落盘，ADR-028；read_file/skill 豁免）。
 
 ### 5. 审批（internal/middleware/impl/，ADR-029）
 
@@ -186,10 +186,10 @@ type Tool interface {
 
 - PreToolUse / PermissionRequest / Stop 三点；子进程模型（stdin/stdout JSON + timeout）。**已被进程内 middleware 承载**（ADR-021），仅作为 middleware 的一种实现方式保留。
 
-### 11. UI（现状：internal/ui 交互层；TUI 规划）
+### 11. UI（internal/ui 交互层 + ui/tui 全屏 TUI）✅ 2026-08-09（ADR-030）
 
 - `internal/ui.Output` 接口（text 渲染器 + `--json` JSONL 事件），事件回调双转发（渲染 + transcript 落盘）。审批交互（ChannelApprover/ApprovalPrompt + 审批 UI）、raw mode 输入（ReadStdinEvents）同在 internal/ui。
-- 完整 TUI（ratatui 式）留阶段 6。
+- **TUI（bubbletea elm，ADR-030）**：`internal/ui/tui` 是唯一交互入口（repl 薄壳），显式三阶段 Assemble/Run/Close + Controller 事件桥/审批桥（Agent 核心零冲击，ADR-026 前提）；队列 = 用户输入（prompt + `/` 命令统一排队）；工具块按工具分派折叠展示（含 skill 加载块，ADR-044）；命令 `/switch /model /effort /thinking /permission /plan /rename /compact /usage /help /exit`；无 emoji 风格；测试单测为主 + e2e 全面。
 
 ## 实施阶段（✅ 已完成 / ⏳ 待办，严格区分）
 
@@ -205,21 +205,21 @@ type Tool interface {
 - **配置层独立 + 装配根**（2026-08-09）：配置域从 provider 拆出为 `internal/config`（类型 + 加载 + 解析 + 校验），provider 回归单 wire；`internal/app` 进程级装配根（`App{Config, Provider}` 惰性单例，替代 cmd defaultApp）；`agent.Build(res, mode)` 装配工厂（buildAgent 从 cmd 下沉）；cmd 薄化为 `app.Load() + agent.Build()`。为 subagent 提供不同装配铺路。
 - **Plan Mode（规划模式）**（2026-08-11，ADR-036）：会话级 `PlanMode` 标记 + 4 工具（plan_enter 自主进 / write_plan 写计划文件 / plan_done 弹 HITL 交接 / ask_user 通用提问）+ `Approver` 增 `Ask` 方法（选项单选/多选 + Other 自定义，复用 rc.Approver）+ `Decide` plan 分支（可见但拒绝，不做工具过滤）+ `isPlanReadonlyShell`（plan 模式 shell 放宽管道）+ plan 指令进入点持久化单次注入 + TUI `/plan` 切换 / `/plan view` / 状态栏 `[PLAN]` / ask 弹窗；版本 0.7.0。plan_done 的 Other = 拒绝 + 反馈回填模型修订计划。
 - **shell 进程树生命周期**（2026-08-13，ADR-038）：Windows Job Object（KILL_ON_JOB_CLOSE）杀树 + POSIX 进程组——Esc/超时在 ctx 取消瞬间杀全树（绕开管道句柄继承卡 Wait 死锁）+ 回填"命令已被中断"；`background`/`kill_pid` 参数（Go 直接启动 + 日志重定向 + 进程级注册表 + kill 仅限注册表 PID）；退出 pre-kill（`CleanupBackground` defer + TUI `SaveActiveState` 兜底 + 内核句柄兜底）；审批 key/摘要/TUI 工具块/系统提示适配。版本 0.9.0。
-
-### ⏳ 待办（未完成）
-
-- **阶段 4（剩余）：AGENTS.md 注入 + 系统提示词拼接 ✅ 2026-08-15**
+- **阶段 4（剩余）：AGENTS.md 注入 + 系统提示词拼接 + 全局 Skill ✅ 2026-08-15**：
   - **用量展示 ✅ 2026-08-12（ADR-037 第一段）**：provider 捕获 usage → `messages.Usage` → agent `EventUsage` → AgentState `Usage`/`LastContextTokens` → TUI footer `ctx Nk/Mk` + `/usage`。版本 0.7.1。
   - **thinking 完整回传 ✅ 2026-08-12（ADR-025 修订，ADR-037 第二段）**：捕获 thinking signature → `Message.ThinkingSignature` + transcript Line.Signature → `toAnthropicAssistantMessage` 重放 `ThinkingBlockParam`（仅签名非空）；thinking-only assistant 带签名不再跳过；估算镜像 `compact.EstimateTokens` 含 thinking。DeepSeek 实测通过。版本 0.7.2。
   - **LLM 摘要压缩 ✅ 2026-08-12（ADR-037 第三段）**：`internal/compact`（ShouldCompact 85% 硬编码 + Summarizer codex 方式 + Runner.Run）；`RuntimeContext.Segment` 钩子（NewSegment + seed + Flush）；`impl.CompactMiddleware`（onReasoning before，摘要失败终止 run，Esc 同）；`events.EventCompacted` + `/compact` 手动（Controller.RunCompact 成功显式落盘 AgentState）。版本 0.8.0。
   - **系统提示通道重构 ✅ 2026-08-13（ADR-039）**：内容通道分类原则（对话历史=Messages / 稳定配置=系统提示管道 / 工具定义=toolspec / 即时信号=临时副本，对齐 codex/opencode）；`rc.SystemPrompt`（组合后回写）+ base 中间件化（`BaseInstructionsMiddleware` 链首）+ Build 兜底估算删除 + 压缩判定实时三项估算（CompactMiddleware 持 in.Tools）+ Runner 纯执行器。
   - **agentsmd ✅ 2026-08-15（ADR-043）**：`internal/agentsmd`（.git 项目根向上搜索 + AGENTS.md/CLAUDE.md 回退 + 全局 persona 拼接 + 200KB 截断 + 读失败非致命）+ `impl.AgentsMdMiddleware`（onSystemPrompt）+ `session.GlobalAgentsMDPath` + `app.buildAgent` 注入；基础提示词同轮增强（中文 + `{{cwd}}`/`{{model}}` 动态上下文）。
-  - **全局 Skill ✅ 2026-08-15（ADR-044）**：`internal/skills`（SKILL.md 目录包/平铺发现 + frontmatter 校验 + 200KB 预算 + 渲染）+ `impl.SkillsCatalogMiddleware`（onSystemPrompt 目录注入）+ `tools.SkillTool`（渐进式披露）+ `session.GlobalSkillsDir` + `agent.Build` 签名重构 BuildOptions + init `skills/` 骨架 + 审批 classRead + 截断豁免 + TUI 分派；e2e `TestSkillToolE2E` 锁定全链路。
+  - **全局 Skill ✅ 2026-08-15（ADR-044，版本 0.12.0）**：`internal/skills`（SKILL.md 目录包/平铺发现 + frontmatter 校验 + 200KB 预算 + 渲染）+ `impl.SkillsCatalogMiddleware`（onSystemPrompt 目录注入）+ `tools.SkillTool`（渐进式披露，`Builtins(skillsDir)` 统一注册）+ `session.GlobalSkillsDir` + `agent.Build` 签名重构 BuildOptions + init `skills/` 骨架 + 审批 classRead + 截断豁免 + TUI 分派；e2e `TestSkillToolE2E` 锁定全链路。
   - 注：大工具结果 eviction 已完成（ADR-028），不属于本阶段。
+
+### ⏳ 待办（未完成）
+
 - **阶段 5：子 agent（内置 + 并行 + 状态 + 单向通信）**
   - 内置子 agent + `spawn_agent` + 状态跟踪 + fork 过滤 + `send_message` 单向。
   - 注：Renderer/config/CLI 子命令/docs 已由前述阶段完成，不属于本阶段。
-- **阶段 6（可选）：TUI 渲染器 / 摘要式压缩 / grep 工具 / 双向通信**
+- **阶段 6（可选）：grep 工具 / 双向通信**（TUI 渲染器、摘要式压缩已随前述阶段完成，剩余仅此两项）
 
 ### 明确不做 / 降级
 
@@ -231,7 +231,7 @@ type Tool interface {
 
 ## 验证方案
 
-- **单元测试**：各包 `go test ./...`；中间件/策略纯函数优先（approval.Decide、evictContent 等）。
+- **单元测试**：各包 `go test ./...`；中间件/策略/纯函数优先（approval.Decide、evictContent、skills.Discover/CatalogLine 等）。
 - **进程外 e2e**：`go test ./internal/e2e/ -count=1`（termtest 真实 TTY + mock HTTP，确定性）；锚点 = `turn_done` 事件；审批交互 SendLine y/s/n。
 - **真实 API 冒烟**（CI 末尾 2-3 条，宽松断言）：`harness run` 基础对话 / 工具闭环 / `resume --last` / `--json` 结构化事件 / 危险命令触发审批（按 config 模式）。
 - **测试隔离**：workspace 相关测试用 `HARNESS_HOME=<临时目录>`。
