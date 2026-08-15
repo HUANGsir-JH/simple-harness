@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -487,7 +488,11 @@ func TestWakeSendAfterProgramExitSafe(t *testing.T) {
 	sess, proj := newTestSession(t)
 	c := NewController(nil, proj, config.Config{}, sess, nil, context.Background())
 	m := New(c)
-	p := tea.NewProgram(m, tea.WithContext(context.Background()))
+	p := tea.NewProgram(m,
+		tea.WithContext(context.Background()),
+		tea.WithInput(nil),
+		tea.WithOutput(io.Discard),
+	)
 	c.setSend(p.Send)
 
 	go func() { _, _ = p.Run() }()

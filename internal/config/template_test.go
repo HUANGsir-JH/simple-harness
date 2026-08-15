@@ -15,8 +15,12 @@ func TestGlobalConfigPath(t *testing.T) {
 		t.Errorf("HARNESS_HOME 优先: %q", got)
 	}
 	t.Setenv(EnvHome, "")
-	t.Setenv("HOME", filepath.Join("tmp", "homex"))
-	if got := globalConfigPath(); got != filepath.Join("tmp", "homex", ".harness", "config.yaml") {
+	home := filepath.Join("tmp", "homex")
+	// os.UserHomeDir uses USERPROFILE on Windows and HOME on POSIX. Set both
+	// so this test controls the same input on every supported platform.
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	if got := globalConfigPath(); got != filepath.Join(home, ".harness", "config.yaml") {
 		t.Errorf("默认 ~/.harness: %q", got)
 	}
 }

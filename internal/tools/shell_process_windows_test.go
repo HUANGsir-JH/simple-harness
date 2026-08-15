@@ -9,10 +9,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/windows"
 )
 
 // spawnChildPowerShell 构造"起孙进程（写 pidfile）+ 主进程挂起"的 PowerShell
@@ -41,14 +42,20 @@ func readChildPID(t *testing.T, pidfile string) int {
 	return 0
 }
 
-// processAliveWindows 用 tasklist 判定进程存活：有匹配进程时输出含 PID 行；
-// 无匹配只输出 "INFO: No tasks are running..."。
+// processAliveWindows 通过进程句柄判定存活，不依赖 tasklist 文本输出。
+// 受限 CI/沙箱中 tasklist 可能返回 ERROR: Access denied，不能把查询失败
+// 误判成进程已退出。
 func processAliveWindows(pid int) bool {
-	out, err := exec.Command("tasklist", "/FI", fmt.Sprintf("PID eq %d", pid)).Output()
+	if pid <= 0 {
+		return false
+	}
+	h, err := windows.OpenProcess(windows.SYNCHRONIZE|windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
 	if err != nil {
 		return false
 	}
-	return strings.Contains(string(out), fmt.Sprintf("%d", pid))
+	defer windows.CloseHandle(h)
+	status, err := windows.WaitForSingleObject(h, 0)
+	return err == nil && status == uint32(windows.WAIT_TIMEOUT)
 }
 
 // isProcessAlive Windows 版：tasklist 判定（background_test.go 跨平台用例用）。
@@ -167,5 +174,7 @@ func readSpawnedPID(t *testing.T, pidfile string) int { return readChildPID(t, p
 // killPidDirect 直接杀单个进程（01 语义：派生进程不被注册表追踪，测试清理
 // 用 taskkill 直接杀）。
 func killPidDirect(pid int) {
-	_ = exec.Command("taskkill", "/PID", strconv.Itoa(pid), "/F").Run()
+	if proc, err := os.FindProcess(pid); err == nil {
+		_ = proc.Kill()
+	}
 }

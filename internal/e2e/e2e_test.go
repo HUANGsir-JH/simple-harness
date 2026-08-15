@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -507,12 +508,16 @@ func TestSessionPersistenceE2E(t *testing.T) {
 
 	// 3) workspace 文件存在。
 	store := session.NewAt(home)
-	// macOS 上 /var -> /private/var 符号链接：子进程 getcwd 返回物理路径
-	// （/private/var/...），而 t.TempDir 返回逻辑路径（/var/...）——不解析
-	// 符号链接会分到两个项目桶。先解析再 FindProject（与 CLI 进程内 Getwd 同源）。
-	resolved, err := filepath.EvalSymlinks(workDir)
-	if err != nil {
-		t.Fatalf("eval symlinks: %v", err)
+	resolved := workDir
+	// macOS 上 /var -> /private/var：子进程 getcwd 返回物理路径，而 t.TempDir
+	// 可能返回逻辑路径。Windows 沙箱对 EvalSymlinks 可返回 Access denied，且
+	// 不存在这条 /var 映射，因此仅在 macOS 解析。
+	if runtime.GOOS == "darwin" {
+		var err error
+		resolved, err = filepath.EvalSymlinks(workDir)
+		if err != nil {
+			t.Fatalf("eval symlinks: %v", err)
+		}
 	}
 	proj, err := store.FindProject(resolved)
 	if err != nil {
