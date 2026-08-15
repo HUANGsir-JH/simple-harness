@@ -94,6 +94,19 @@
 | R3 | ASCII/颜色视觉层、窄屏布局、鼠标命中与工具/思考展开 | 已完成 2026-08-09 |
 | R4 | 单测、PTY e2e、race/vet/build 收尾 | 已完成 2026-08-09 |
 
+### TUI v3 全面替换（Claude Code 设计参考）
+
+- **目标**：以 Claude Code 的内容优先原则全面替换旧 TUI 视觉与信息架构，不改变 controller/session/agent 协议。
+- **设计计划**：`docs/plans/tui-v3-2026-08-15.md`。
+- **状态**：✅ 已完成（2026-08-15，`feat/tui-v3`）。
+
+| 单元 | 内容 | 状态 |
+|---|---|---|
+| V3-1 | 暖色语义主题 + 单行会话条 + 开放式消息流 + 上下边线 composer | ✅ 2026-08-15 |
+| V3-2 | thinking/stream/工具活动/diff/Todo/queue/命令补全统一呈现 | ✅ 2026-08-15 |
+| V3-3 | approval/Ask/selector/help 底部内联 overlay + 当前项/描述/滚动提示 | ✅ 2026-08-15 |
+| V3-4 | 48×18 响应式回归 + ConPTY E2E + race/vet/build/full test | ✅ 2026-08-15 |
+
 ## Plan Mode（规划模式，ADR-036）
 
 - **目标**：会话级 plan 模式——先只读调研、产出计划文件、批准后执行。4 工具（`plan_enter` 自主进 / `write_plan` 写 `<会话>/plans/plan.md` / `plan_done` 弹 HITL 交接 / `ask_user` 通用提问）；`Approver` 增 `Ask` 方法（选项单选/多选 + Other 自定义文本，复用 rc.Approver）；`Decide` plan 分支（可见但拒绝，不做工具过滤）+ `isPlanReadonlyShell`（plan 模式 shell 放宽管道）；plan 指令进入点持久化单次注入；TUI `/plan` 切换 + `/plan view` + 状态栏 `[PLAN]` + ask 弹窗。版本 0.7.0。

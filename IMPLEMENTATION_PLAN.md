@@ -6,7 +6,7 @@
 
 参照 OpenAI Codex CLI（`../codex/codex-rs`，Rust）+ AgentScope Java v2 的架构，用 Go 构建一个**可真实使用**的极简 agent harness（命令行）。定位为**通用框架**，未来可被 resume-agent 等其它项目引用。
 
-**现状（2026-08-13）**：阶段 1（骨架+消息+provider+最小 loop）→ 阶段 2（工具系统+并发+渲染+middleware 骨架+REPL）→ 阶段 2.5（Workspace+AgentState+会话落盘/resume）→ 架构重构（ADR-026 无状态 agent+运行时切换）→ todo 工具（ADR-027）→ 工具结果截断/用户中断/shell 缓解（ADR-028）→ **阶段 3 审批（ADR-029）✅** → 配置层独立 + 装配根 → **Plan Mode（ADR-036）✅ 2026-08-11** → **Plan Mode 审查修复 ✅ 2026-08-12**（写黑名单反向判定 + 纯 Deny / AgentState 锁下沉 / TUI 待决请求队列，见 DECISIONS.md ADR-036 修订）→ **用量展示（ADR-037 第一段）✅ 2026-08-12**（provider 捕获 usage + AgentState 累计 + footer `/usage`，版本 0.7.1）→ **thinking 完整回传（ADR-025 修订，ADR-037 第二段）✅ 2026-08-12**（thinking signature 捕获→存储→重放，版本 0.7.2）→ **LLM 摘要压缩（ADR-037 第三段）✅ 2026-08-12**（compact 包 + Segment 钩子 + CompactMiddleware + /compact，版本 0.8.0）→ **用量+压缩审查修复 ✅ 2026-08-13**（signature_delta 捕获 / 压缩后采样上下文 / Usage 覆盖语义等 11 项，版本 0.8.1）→ **shell 进程树生命周期（ADR-038）✅ 2026-08-13**（Job Object 杀树 + background/kill_pid + 退出 pre-kill，版本 0.9.0）→ **shell 超时转后台托管（ADR-038 勘误）✅ 2026-08-13**（超时不杀树、移交注册表继续运行，版本 0.9.1）→ **系统提示通道重构（ADR-039）✅ 2026-08-13**（内容通道分类 + rc.SystemPrompt + BaseInstructionsMiddleware + 压缩判定实时化）→ **shell 进程树审查修复 ✅ 2026-08-13**（正常退出不杀派生进程 + preserveProcessTree + 自然退出注销 + attach 降级 + POSIX 测试修复，版本 0.9.2）。待办：阶段 4 剩余（**AGENTS.md 注入** + 系统提示词拼接）、阶段 5（子 agent）、阶段 6（可选）。
+**现状（2026-08-15）**：阶段 1（骨架+消息+provider+最小 loop）→ 阶段 2（工具系统+并发+渲染+middleware 骨架+REPL）→ 阶段 2.5（Workspace+AgentState+会话落盘/resume）→ 架构重构（ADR-026 无状态 agent+运行时切换）→ todo 工具（ADR-027）→ 工具结果截断/用户中断/shell 缓解（ADR-028）→ **阶段 3 审批（ADR-029）✅** → 配置层独立 + 装配根 → **Plan Mode（ADR-036）✅ 2026-08-11** → **Plan Mode 审查修复 ✅ 2026-08-12**（写黑名单反向判定 + 纯 Deny / AgentState 锁下沉 / TUI 待决请求队列，见 DECISIONS.md ADR-036 修订）→ **用量展示（ADR-037 第一段）✅ 2026-08-12**（provider 捕获 usage + AgentState 累计 + footer `/usage`，版本 0.7.1）→ **thinking 完整回传（ADR-025 修订，ADR-037 第二段）✅ 2026-08-12**（thinking signature 捕获→存储→重放，版本 0.7.2）→ **LLM 摘要压缩（ADR-037 第三段）✅ 2026-08-12**（compact 包 + Segment 钩子 + CompactMiddleware + /compact，版本 0.8.0）→ **用量+压缩审查修复 ✅ 2026-08-13**（signature_delta 捕获 / 压缩后采样上下文 / Usage 覆盖语义等 11 项，版本 0.8.1）→ **shell 进程树生命周期（ADR-038）✅ 2026-08-13**（Job Object 杀树 + background/kill_pid + 退出 pre-kill，版本 0.9.0）→ **shell 超时转后台托管（ADR-038 勘误）✅ 2026-08-13**（超时不杀树、移交注册表继续运行，版本 0.9.1）→ **系统提示通道重构（ADR-039）✅ 2026-08-13**（内容通道分类 + rc.SystemPrompt + BaseInstructionsMiddleware + 压缩判定实时化）→ **shell 进程树审查修复 ✅ 2026-08-13**（正常退出不杀派生进程 + preserveProcessTree + 自然退出注销 + attach 降级 + POSIX 测试修复，版本 0.9.2）→ **TUI v3 全面替换 ✅ 2026-08-15**（Claude Code 内容优先设计参考；视觉/布局/消息/工具/overlay 全面重写，业务协议不变）。待办：阶段 4 剩余（**AGENTS.md 注入** + 系统提示词拼接）、阶段 5（子 agent）、阶段 6（可选）。
 
 ## 已确认决策（当前生效）
 
@@ -172,10 +172,10 @@ type Tool interface {
 
 - PreToolUse / PermissionRequest / Stop 三点；子进程模型（stdin/stdout JSON + timeout）。**已被进程内 middleware 承载**（ADR-021），仅作为 middleware 的一种实现方式保留。
 
-### 11. UI（现状：internal/ui 交互层；TUI 规划）
+### 11. UI（现状：Bubble Tea TUI v3 + 非交互 output）
 
-- `internal/ui.Output` 接口（text 渲染器 + `--json` JSONL 事件），事件回调双转发（渲染 + transcript 落盘）。审批交互（ChannelApprover/ApprovalPrompt + 审批 UI）、raw mode 输入（ReadStdinEvents）同在 internal/ui。
-- 完整 TUI（ratatui 式）留阶段 6。
+- `internal/ui.Output` 保留 text 渲染器 + `--json` JSONL 事件供 `run` 非交互模式使用，事件回调双转发（渲染 + transcript 落盘）。
+- `internal/ui/tui` 是唯一交互入口：Bubble Tea 全屏消息流、多行 composer、工具/thinking 渐进披露、审批/Ask/selector overlay、队列/Todo/运行时命令；v3（2026-08-15）按 Claude Code 内容优先原则全面替换视觉与信息架构，controller/session/agent 协议不变。
 
 ## 实施阶段（✅ 已完成 / ⏳ 待办，严格区分）
 

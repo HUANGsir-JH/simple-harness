@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	headerHeight = 2
+	headerHeight = 1
 	footerHeight = 1
 	// maxComposerHeight 是输入框最大高度（行）：内容行数增长至此为止，超出
 	// textarea 内部跟随光标滚动查看（MaxHeight 同步设为 5）。
@@ -30,12 +30,12 @@ func (m *Model) layout() {
 	if m.height < 1 {
 		m.height = 1
 	}
-	outerPad := 2
+	outerPad := 4
 	if m.width < 56 {
-		outerPad = 0
+		outerPad = 2
 	}
-	m.contentWidth = maxInt(16, m.width-outerPad-4)
-	m.input.SetWidth(maxInt(10, m.width-6))
+	m.contentWidth = maxInt(16, m.width-outerPad)
+	m.input.SetWidth(maxInt(10, m.width-3))
 	// 高度不由 layout 重置：由 updateComposerHeight 按内容行数管理
 	// （WindowSizeMsg 触发的 layout 不覆盖动态高度）。
 

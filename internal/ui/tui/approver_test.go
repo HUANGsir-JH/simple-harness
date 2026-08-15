@@ -74,7 +74,7 @@ func TestApprovalRender(t *testing.T) {
 	respCh := make(chan middleware.Decision, 1)
 	nm, _ = m.Update(approvalRequestMsg{req: middleware.ApprovalRequest{ToolName: "shell_command", Summary: "rm -rf x", Mode: "readonly"}, respCh: respCh})
 	m = nm.(Model)
-	if !strings.Contains(m.View(), "PERMISSION REQUIRED") || !strings.Contains(m.View(), "[Y] Allow once") {
+	if !strings.Contains(m.View(), "Permission required") || !strings.Contains(m.View(), "[Y] Allow once") {
 		t.Fatalf("View 应含审批条")
 	}
 }

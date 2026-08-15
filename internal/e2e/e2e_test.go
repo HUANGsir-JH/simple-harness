@@ -198,7 +198,7 @@ func TestTUIInteractiveE2E(t *testing.T) {
 	}
 	defer cp.Close()
 
-	if _, err := cp.Expect("Ask anything"); err != nil {
+	if _, err := cp.Expect("Ask Harness anything"); err != nil {
 		t.Fatalf("expect TUI 输入区: %v", err)
 	}
 	sendKeys(cp, "你好")
@@ -231,12 +231,12 @@ func TestTUIApprovalE2E(t *testing.T) {
 	}
 	defer cp.Close()
 
-	if _, err := cp.Expect("Ask anything"); err != nil {
+	if _, err := cp.Expect("Ask Harness anything"); err != nil {
 		t.Fatalf("expect TUI 输入区: %v", err)
 	}
 	sendKeys(cp, "写一个文件")
 	// 审批弹窗出现（readonly 下 write_file 询问）。
-	if _, err := cp.Expect("PERMISSION REQUIRED"); err != nil {
+	if _, err := cp.Expect("Permission required"); err != nil {
 		t.Fatalf("expect approval popup: %v", err)
 	}
 	sendKeys(cp, "y")
@@ -273,7 +273,7 @@ func TestTUIPlanModeE2E(t *testing.T) {
 	}
 	defer cp.Close()
 
-	if _, err := cp.Expect("Ask anything"); err != nil {
+	if _, err := cp.Expect("Ask Harness anything"); err != nil {
 		t.Fatalf("expect TUI 输入区: %v", err)
 	}
 	// 进入 plan 模式。
@@ -367,7 +367,7 @@ func TestTUIExitsE2E(t *testing.T) {
 	defer cp.Close()
 
 	// TUI 输入区占位符渲染后，/exit 退出（退出仅此命令，ADR-030）。
-	if _, err := cp.Expect("Ask anything"); err != nil {
+	if _, err := cp.Expect("Ask Harness anything"); err != nil {
 		t.Fatalf("expect TUI 输入区: %v", err)
 	}
 	sendKeys(cp, "/exit")

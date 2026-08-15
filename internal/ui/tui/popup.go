@@ -8,7 +8,6 @@ import (
 	"github.com/agent-project/harness/internal/agentstate"
 	"github.com/agent-project/harness/internal/session"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -23,15 +22,17 @@ const (
 )
 
 type popupItem struct {
-	label string
-	value string
+	label       string
+	value       string
+	description string
 }
 
 type selectPopup struct {
-	kind   popupKind
-	title  string
-	items  []popupItem
-	cursor int
+	kind    popupKind
+	title   string
+	items   []popupItem
+	cursor  int
+	current string
 }
 
 type commandItem struct {
@@ -101,7 +102,7 @@ func (m Model) runCommand(cmd command) (tea.Model, tea.Cmd) {
 			m.reloadSession()
 			return m.sysOK("Switched to " + shortSession(m.c.active.ID)), nil
 		}
-		return m.openPopup(popupSwitch, "SESSIONS", switchItems(m.c.Sessions()), m.c.ActiveID()), nil
+		return m.openPopup(popupSwitch, "Sessions", switchItems(m.c.Sessions()), m.c.ActiveID()), nil
 	case "model":
 		if cmd.arg != "" {
 			if err := m.c.SetModel(cmd.arg); err != nil {
@@ -109,7 +110,7 @@ func (m Model) runCommand(cmd command) (tea.Model, tea.Cmd) {
 			}
 			return m.sysOK("Model set to " + cmd.arg), nil
 		}
-		return m.openPopup(popupModel, "MODELS", modelItems(m.c.Models()), m.c.ActiveModel()), nil
+		return m.openPopup(popupModel, "Models", modelItems(m.c.Models()), m.c.ActiveModel()), nil
 	case "effort":
 		if cmd.arg != "" {
 			if err := m.c.SetEffort(cmd.arg); err != nil {
@@ -121,7 +122,7 @@ func (m Model) runCommand(cmd command) (tea.Model, tea.Cmd) {
 		if st := m.c.ActiveState(); st != nil {
 			current = st.ThinkingEffort
 		}
-		return m.openPopup(popupEffort, "REASONING EFFORT", effortItems(m.c.Efforts()), current), nil
+		return m.openPopup(popupEffort, "Reasoning effort", effortItems(m.c.Efforts()), current), nil
 	case "permission":
 		if cmd.arg != "" {
 			if err := m.c.SetPermission(cmd.arg); err != nil {
@@ -133,7 +134,7 @@ func (m Model) runCommand(cmd command) (tea.Model, tea.Cmd) {
 		if state := m.c.ActiveState(); state != nil {
 			current = state.PermissionMode()
 		}
-		return m.openPopup(popupPermission, "PERMISSION", permissionItems(m.c.PermissionModes()), current), nil
+		return m.openPopup(popupPermission, "Permission", permissionItems(m.c.PermissionModes()), current), nil
 	case "thinking":
 		if cmd.arg != "" {
 			switch cmd.arg {
@@ -151,7 +152,7 @@ func (m Model) runCommand(cmd command) (tea.Model, tea.Cmd) {
 				return m.sysErr(fmt.Errorf("unknown /thinking arg %q (on|off)", cmd.arg)), nil
 			}
 		}
-		return m.openPopup(popupThinking, "THINKING", thinkingItems(), thinkingCurrent(m.c.ActiveState())), nil
+		return m.openPopup(popupThinking, "Thinking", thinkingItems(), thinkingCurrent(m.c.ActiveState())), nil
 	case "plan":
 		// /plan [on|off|view]；无参 toggle。on 时注入一次 plan 指令（Controller
 		// SetPlanMode 处理）；view 在 timeline 显示计划文件内容（ADR-036）。
@@ -163,7 +164,7 @@ func (m Model) runCommand(cmd command) (tea.Model, tea.Cmd) {
 			if content == "" {
 				return m.sysOK("暂无计划文件（plan 模式下用 write_plan 写入）"), nil
 			}
-			m.appendSystem("PLAN FILE  "+m.c.active.PlanFile()+"\n"+content, false)
+			m.appendSystem("Plan file  "+m.c.active.PlanFile()+"\n"+content, false)
 			m.refresh(true)
 			return m, nil
 		}
@@ -182,7 +183,7 @@ func (m Model) runCommand(cmd command) (tea.Model, tea.Cmd) {
 		if err := m.c.SetPlanMode(on); err != nil {
 			return m.sysErr(err), nil
 		}
-		m.refreshStatus() // 状态栏 [PLAN] 即时更新
+		m.refreshStatus() // 会话条 plan 标记即时更新
 		if on {
 			return m.sysOK("Plan 模式已开启（只读规划；/plan view 查看计划）"), nil
 		}
@@ -214,7 +215,7 @@ func (m Model) runCommand(cmd command) (tea.Model, tea.Cmd) {
 		if cw := m.c.ActiveContextWindow(); cw > 0 {
 			parts = append(parts, fmt.Sprintf("ctx=%s/%s", fmtTokens(m.c.active.State().CurrentContextTokens()), fmtTokens(int64(cw))))
 		}
-		m.appendSystem("USAGE  "+strings.Join(parts, "  "), false)
+		m.appendSystem("Usage  "+strings.Join(parts, "  "), false)
 		m.refresh(false)
 		return m, nil
 	case "compact":
@@ -244,7 +245,7 @@ func (m Model) openPopup(kind popupKind, title string, items []popupItem, curren
 		}
 	}
 	var opened bool
-	m, opened = m.openOverlay(&overlay{kind: overlaySelect, sel: &selectPopup{kind: kind, title: title, items: items, cursor: cursor}})
+	m, opened = m.openOverlay(&overlay{kind: overlaySelect, sel: &selectPopup{kind: kind, title: title, items: items, cursor: cursor, current: current}})
 	if !opened {
 		return m // 已有覆盖层未决：不叠开（Bug10 守卫）
 	}
@@ -320,7 +321,7 @@ func (m *Model) reloadSession() {
 
 func renderPopup(sel *selectPopup, screenWidth, availableHeight int) string {
 	panelWidth := modalPanelWidth(screenWidth, 34, 64)
-	maxRows := maxInt(3, availableHeight-6)
+	maxRows := maxInt(3, availableHeight-4)
 	start := 0
 	if len(sel.items) > maxRows {
 		start = sel.cursor - maxRows/2
@@ -340,18 +341,29 @@ func renderPopup(sel *selectPopup, screenWidth, availableHeight int) string {
 	for i := start; i < end; i++ {
 		prefix := "  "
 		if i == sel.cursor {
-			prefix = "> "
+			prefix = "❯ "
 		}
-		row := ansi.Truncate(prefix+sel.items[i].label, maxInt(1, listWidth), "...")
+		mark := "  "
+		if sel.items[i].value == sel.current {
+			mark = "✓ "
+		}
+		row := ansi.Truncate(prefix+mark+sel.items[i].label, maxInt(1, listWidth), "...")
 		if i == sel.cursor {
-			row = styleSelected.Width(listWidth).Render(row)
-		} else {
-			row = lipgloss.NewStyle().Width(listWidth).Render(row)
+			row = styleSelected.Render(fitLine(row, listWidth))
 		}
 		rows = append(rows, row)
+		if sel.items[i].description != "" && listWidth >= 38 {
+			rows = append(rows, styleMuted.Render("      "+ansi.Truncate(sel.items[i].description, listWidth-6, "...")))
+		}
 	}
-	content := styleAssistant.Render(sel.title) + "\n\n" + strings.Join(rows, "\n")
-	return modalStyle(panelWidth).Render(content)
+	if start > 0 {
+		rows = append([]string{styleMuted.Render(fmt.Sprintf("  ↑ %d more", start))}, rows...)
+	}
+	if end < len(sel.items) {
+		rows = append(rows, styleMuted.Render(fmt.Sprintf("  ↓ %d more", len(sel.items)-end)))
+	}
+	rows = append(rows, "", styleMuted.Render("↑/↓ move · Enter select · Esc cancel"))
+	return renderInlinePanel(sel.title, rows, panelWidth, styleAssistant)
 }
 
 func switchItems(sessions []session.SessionInfo) []popupItem {
@@ -387,15 +399,24 @@ func effortItems(efforts []string) []popupItem {
 func permissionItems(modes []string) []popupItem {
 	items := make([]popupItem, 0, len(modes))
 	for _, mode := range modes {
-		items = append(items, popupItem{label: mode, value: mode})
+		description := "Ask before operations that need approval"
+		switch mode {
+		case "readonly":
+			description = "Allow reads; ask before changes and commands"
+		case "accept-edits":
+			description = "Allow workspace edits; ask before risky commands"
+		case "full-access":
+			description = "Allow all supported operations without prompting"
+		}
+		items = append(items, popupItem{label: mode, value: mode, description: description})
 	}
 	return items
 }
 
 func thinkingItems() []popupItem {
 	return []popupItem{
-		{label: "enabled", value: "on"},
-		{label: "disabled", value: "off"},
+		{label: "enabled", value: "on", description: "Show model reasoning in the timeline"},
+		{label: "disabled", value: "off", description: "Hide reasoning from the timeline"},
 	}
 }
 

@@ -5,8 +5,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/agent-project/harness/internal/agentstate"
 	"github.com/agent-project/harness/internal/events"
 	"github.com/agent-project/harness/internal/messages"
+	"github.com/agent-project/harness/internal/middleware"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
@@ -48,7 +50,7 @@ func TestUpdateAltEnterAddsNewline(t *testing.T) {
 // TestViewContainsInput View 应渲染输入区（含占位符）。
 func TestViewContainsInput(t *testing.T) {
 	m := New(nil)
-	if !strings.Contains(m.View(), "Ask anything") {
+	if !strings.Contains(m.View(), "Ask Harness anything") {
 		t.Fatalf("View 应包含输入区占位符")
 	}
 }
@@ -76,6 +78,26 @@ func TestCommandCompletion(t *testing.T) {
 	m = nm.(Model)
 	if got := m.input.Value(); got != "/model " {
 		t.Fatalf("completion = %q, want /model ", got)
+	}
+}
+
+func TestCommandCompletionWindowFollowsSelection(t *testing.T) {
+	m := New(nil)
+	m.input.SetValue("/")
+	m.completion = 0
+	for range 6 {
+		nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+		m = nm.(Model)
+	}
+	view := ansi.Strip(m.completionView())
+	if !strings.Contains(view, "❯ /usage") {
+		t.Fatalf("completion window should follow selected /usage command:\n%s", view)
+	}
+	if strings.Contains(view, "/switch") {
+		t.Fatalf("completion window should have scrolled past /switch:\n%s", view)
+	}
+	if got := lipgloss.Height(view); got != 5 {
+		t.Fatalf("completion window height = %d, want 5", got)
 	}
 }
 
@@ -122,6 +144,62 @@ func TestResponsiveView(t *testing.T) {
 	}
 }
 
+func TestV3VisualLanguage(t *testing.T) {
+	m := New(nil)
+	nm, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = nm.(Model)
+	m.appendMessage(&MessageItem{Role: messages.RoleUser, Content: "hello", Rendered: "hello", Done: true})
+	m.appendMessage(&MessageItem{Role: messages.RoleAssistant, Content: "answer", Rendered: "answer", Done: true})
+	tc := &messages.ToolCall{ID: "v3-tool", Name: "shell_command", Args: []byte(`{"command":"echo hi"}`)}
+	m.onToolCall(tc)
+	m.onToolResult(events.Event{ToolCall: tc, ToolResult: &messages.ToolResult{Success: true, Content: "hi"}})
+	m.refresh(true)
+
+	view := ansi.Strip(m.View())
+	for _, want := range []string{"Harness", "─ message", "❯ hello", "● answer", "✓ Ran echo hi"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("v3 view missing %q:\n%s", want, view)
+		}
+	}
+	for _, legacy := range []string{"ASSISTANT", "YOU\n", "[OK]", "+---"} {
+		if strings.Contains(view, legacy) {
+			t.Errorf("v3 view still contains legacy chrome %q:\n%s", legacy, view)
+		}
+	}
+}
+
+func TestV3DenseStateFitsSmallTerminal(t *testing.T) {
+	m := New(nil)
+	nm, _ := m.Update(tea.WindowSizeMsg{Width: 48, Height: 18})
+	m = nm.(Model)
+	m.status.Todos = sortTodos([]agentstate.TodoItem{
+		{Description: "Implement the responsive message timeline", Status: agentstate.TodoInProgress},
+		{Description: "Verify narrow terminal rendering", Status: agentstate.TodoPending},
+		{Description: "Run all tests", Status: agentstate.TodoPending},
+	})
+	m.queue = []string{"Second prompt with a long explanation", "/usage", "/compact"}
+	m.appendMessage(&MessageItem{Role: messages.RoleUser, Content: "A long user prompt that must remain inside the terminal width", Rendered: "A long user prompt that must remain inside the terminal width", Done: true})
+	m.refresh(true)
+
+	assertFits := func(label string, view string) {
+		t.Helper()
+		if got := lipgloss.Width(view); got > 48 {
+			t.Fatalf("%s width %d exceeds 48:\n%s", label, got, ansi.Strip(view))
+		}
+		if got := lipgloss.Height(view); got > 18 {
+			t.Fatalf("%s height %d exceeds 18:\n%s", label, got, ansi.Strip(view))
+		}
+	}
+	assertFits("dense", m.View())
+
+	m.ovl = &overlay{kind: overlayApproval, appr: &approvalPopup{req: middleware.ApprovalRequest{
+		ToolName: "shell_command",
+		Summary:  "Run a deliberately long command that must wrap safely in a narrow terminal",
+	}}}
+	m.refresh(false)
+	assertFits("approval", m.View())
+}
+
 func TestMouseTogglesToolBlock(t *testing.T) {
 	m := New(nil)
 	nm, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
@@ -139,6 +217,54 @@ func TestMouseTogglesToolBlock(t *testing.T) {
 	m = nm.(Model)
 	if m.tools[0].Collapsed {
 		t.Fatal("mouse click should expand tool block")
+	}
+}
+
+func TestMouseSelectsTextAndCtrlCCopiesSelection(t *testing.T) {
+	m := New(nil)
+	nm, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = nm.(Model)
+	m.appendSystem("alpha\nbeta", false)
+	m.refresh(true)
+	lines := strings.Split(m.timelineText, "\n")
+	if len(lines) < 2 || !strings.Contains(lines[0], "alpha") {
+		t.Fatalf("unexpected timeline text: %q", m.timelineText)
+	}
+	start := strings.Index(lines[0], "alpha")
+	end := strings.Index(lines[1], "beta") + 2
+	if start < 0 || end < 2 {
+		t.Fatalf("could not locate selectable text in %q", m.timelineText)
+	}
+
+	nm, _ = m.Update(tea.MouseMsg{X: maxInt(0, start-1), Y: m.mainTop, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	m = nm.(Model)
+	nm, _ = m.Update(tea.MouseMsg{X: end, Y: m.mainTop + 1, Action: tea.MouseActionMotion, Button: tea.MouseButtonLeft})
+	m = nm.(Model)
+	nm, _ = m.Update(tea.MouseMsg{X: end, Y: m.mainTop + 1, Action: tea.MouseActionRelease, Button: tea.MouseButtonLeft})
+	m = nm.(Model)
+	if got := m.selection.text; got != "alpha\nbe" {
+		t.Fatalf("selection text = %q, want %q", got, "alpha\nbe")
+	}
+
+	var copied string
+	oldWriter := writeClipboard
+	writeClipboard = func(value string) error { copied = value; return nil }
+	defer func() { writeClipboard = oldWriter }()
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	m = nm.(Model)
+	if copied != m.selection.text || m.toast != "Selected text copied" {
+		t.Fatalf("Ctrl+C copied %q with toast %q, want %q", copied, m.toast, m.selection.text)
+	}
+}
+
+func TestSelectionHighlightPreservesANSI(t *testing.T) {
+	content := "\x1b[38;5;209malpha beta\x1b[0m"
+	got := highlightANSISelection(content, 0, 5)
+	if !strings.Contains(got, "\x1b[38;5;209m") || !strings.Contains(got, "\x1b[7m") || !strings.Contains(got, "\x1b[27m") {
+		t.Fatalf("selection highlight should preserve existing ANSI styles: %q", got)
+	}
+	if plain := ansi.Strip(got); plain != "alpha beta" {
+		t.Fatalf("selection highlight changed text: %q", plain)
 	}
 }
 
@@ -258,11 +384,11 @@ func TestHitRangesAlignWithRenderedLines(t *testing.T) {
 		head := ansi.Strip(lines[hit.start])
 		switch hit.kind {
 		case hitThinking:
-			if !strings.Contains(head, "THINKING") {
-				t.Fatalf("hit %d start line %d is %q, want THINKING header", i, hit.start, head)
+			if !strings.Contains(head, "Thinking") {
+				t.Fatalf("hit %d start line %d is %q, want Thinking header", i, hit.start, head)
 			}
 		case hitTool:
-			if !strings.Contains(head, "[OK]") && !strings.Contains(head, "[RUN]") && !strings.Contains(head, "[ERR]") {
+			if !strings.Contains(head, "✓") && !strings.Contains(head, "●") && !strings.Contains(head, "×") {
 				t.Fatalf("hit %d start line %d is %q, want tool header", i, hit.start, head)
 			}
 		}

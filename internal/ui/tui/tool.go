@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -32,10 +33,38 @@ type ToolStatus struct {
 
 // Expandable reports whether the block has detail beyond its compact view.
 func (t *ToolStatus) Expandable() bool {
-	if t == nil || t.Full == "" {
+	if t == nil {
+		return false
+	}
+	if strings.TrimSpace(string(t.Args)) != "" {
+		return true
+	}
+	if t.Full == "" {
 		return false
 	}
 	return t.Full != t.Content || len(strings.Split(strings.TrimSpace(t.Full), "\n")) > 6
+}
+
+func formatToolArgs(args []byte) string {
+	if len(args) == 0 {
+		return "{}"
+	}
+	var value any
+	if err := json.Unmarshal(args, &value); err != nil {
+		return string(args)
+	}
+	var buf bytes.Buffer
+	encoder := json.NewEncoder(&buf)
+	encoder.SetEscapeHTML(false)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(value); err != nil {
+		return string(args)
+	}
+	formatted := strings.TrimSuffix(buf.String(), "\n")
+	if formatted == "" {
+		return string(args)
+	}
+	return formatted
 }
 
 // toolCallSummary 按工具提取块头摘要（只含关键参数，body 参数不展示）。
@@ -98,7 +127,7 @@ func prepareTool(ts *ToolStatus) {
 }
 
 // applyToolResult 在 ToolResult 时按工具分派生成折叠态/展开态内容。
-// 失败（错误/审批拒绝）时 Content 含错误信息（对齐失败态红 [ERR] + 错误 + 输出）。
+// 失败（错误/审批拒绝）时 Content 含错误信息（对齐失败态红色 × + 错误 + 输出）。
 func applyToolResult(ts *ToolStatus, res *messages.ToolResult) {
 	ts.Done = true
 	ts.Failed = !res.Success

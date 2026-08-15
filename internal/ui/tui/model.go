@@ -14,6 +14,8 @@ import (
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 type itemKind uint8
@@ -63,7 +65,7 @@ type StatusBar struct {
 	SessionID      string
 	Permission     string
 	ThinkingEffort string
-	PlanMode       bool // [PLAN] 状态栏标记（ADR-036）
+	PlanMode       bool // 会话条 plan 模式标记（ADR-036）
 	TodoCount      int
 	Todos          []agentstate.TodoItem
 	// ContextTokens / ContextWindow 是当前上下文占用（token）与模型窗口
@@ -86,6 +88,20 @@ type hitTarget struct {
 	start   int
 	end     int
 }
+
+type selectionPoint struct {
+	line   int
+	column int
+}
+
+type textSelection struct {
+	anchor   selectionPoint
+	focus    selectionPoint
+	dragging bool
+	text     string
+}
+
+var writeClipboard = clipboard.WriteAll
 
 type approvalPopup struct {
 	req    middleware.ApprovalRequest
@@ -196,6 +212,8 @@ type Model struct {
 	showThinking bool
 
 	hits         []hitTarget
+	timelineText string
+	selection    textSelection
 	selectedHit  int
 	autoScroll   bool
 	width        int
@@ -208,7 +226,7 @@ type Model struct {
 
 func New(c *Controller) Model {
 	ta := textarea.New()
-	ta.Placeholder = "Ask anything or type / for commands"
+	ta.Placeholder = "Ask Harness anything"
 	ta.Prompt = ""
 	ta.ShowLineNumbers = false
 	ta.CharLimit = 0
@@ -220,7 +238,7 @@ func New(c *Controller) Model {
 	ta.Focus()
 
 	sp := spinner.New()
-	sp.Spinner = spinner.Line
+	sp.Spinner = spinner.Dot
 	sp.Style = styleRunning
 
 	vp := viewport.New(80, 12)
@@ -325,8 +343,17 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	switch msg.String() {
 	case "ctrl+c":
+		if m.selection.text != "" {
+			if err := writeClipboard(m.selection.text); err == nil {
+				m.toast = "Selected text copied"
+			} else {
+				m.toast = "Clipboard unavailable"
+			}
+			m.refresh(false)
+			return m, nil
+		}
 		if value := m.input.Value(); value != "" {
-			if err := clipboard.WriteAll(value); err == nil {
+			if err := writeClipboard(value); err == nil {
 				m.toast = "Composer copied"
 			} else {
 				m.toast = "Clipboard unavailable"
@@ -462,16 +489,38 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		m.autoScroll = m.viewport.AtBottom()
 		return m, nil
 	}
+	if m.ovl != nil {
+		return m, nil
+	}
+	if ev.Action == tea.MouseActionMotion && m.selection.dragging {
+		m.selection.focus = m.timelinePoint(ev.X, ev.Y)
+		m.updateSelectionText()
+		m.refresh(false)
+		return m, nil
+	}
+	if ev.Action == tea.MouseActionRelease && m.selection.dragging {
+		point := m.timelinePoint(ev.X, ev.Y)
+		changed := point != m.selection.focus
+		m.selection.focus = point
+		m.selection.dragging = false
+		m.updateSelectionText()
+		if changed {
+			m.refresh(false)
+		}
+		return m, nil
+	}
 	if ev.Button != tea.MouseButtonLeft || ev.Action != tea.MouseActionPress {
 		return m, nil
 	}
 	if ev.Y >= m.composerTop {
+		m.selection.dragging = false
 		m.setFocus(focusComposer)
 		m.refresh(false)
 		return m, nil
 	}
 	if ev.Y >= m.mainTop && ev.Y < m.mainTop+m.viewport.Height && m.ovl == nil {
 		m.setFocus(focusTimeline)
+		m.selection = textSelection{anchor: m.timelinePoint(ev.X, ev.Y), focus: m.timelinePoint(ev.X, ev.Y), dragging: true}
 		contentY := m.viewport.YOffset + ev.Y - m.mainTop
 		for i, hit := range m.hits {
 			if contentY >= hit.start && contentY <= hit.end {
@@ -483,6 +532,66 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		m.refresh(false)
 	}
 	return m, nil
+}
+
+func (m Model) timelinePoint(x, y int) selectionPoint {
+	line := m.viewport.YOffset + y - m.mainTop
+	lines := strings.Split(m.timelineText, "\n")
+	if len(lines) == 0 {
+		return selectionPoint{}
+	}
+	line = clamp(line, 0, len(lines)-1)
+	column := runeColumnAtWidth(lines[line], x)
+	return selectionPoint{line: line, column: column}
+}
+
+func runeColumnAtWidth(line string, x int) int {
+	if x <= 0 {
+		return 0
+	}
+	runes := []rune(line)
+	for i := range runes {
+		width := lipgloss.Width(string(runes[i]))
+		if width < 1 {
+			width = 1
+		}
+		if x < width {
+			return i
+		}
+		x -= width
+	}
+	return len(runes)
+}
+
+func (m *Model) updateSelectionText() {
+	if m.timelineText == "" {
+		m.selection.text = ""
+		return
+	}
+	start, end := m.selection.anchor, m.selection.focus
+	if start.line > end.line || (start.line == end.line && start.column > end.column) {
+		start, end = end, start
+	}
+	if start == end {
+		m.selection.text = ""
+		return
+	}
+	lines := strings.Split(m.timelineText, "\n")
+	start.line = clamp(start.line, 0, len(lines)-1)
+	end.line = clamp(end.line, 0, len(lines)-1)
+	parts := make([]string, 0, end.line-start.line+1)
+	for line := start.line; line <= end.line; line++ {
+		runes := []rune(lines[line])
+		from, to := 0, len(runes)
+		if line == start.line {
+			from = clamp(start.column, 0, len(runes))
+		}
+		if line == end.line {
+			to = clamp(end.column, from, len(runes))
+		}
+		parts = append(parts, string(runes[from:to]))
+	}
+	m.selection.text = strings.TrimSpace(strings.Join(parts, "\n"))
 }
 
 func (m Model) handleApprovalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -816,6 +925,11 @@ func (m *Model) refresh(follow ...bool) {
 		m.renderWidth = m.contentWidth
 	}
 	content, hits := renderTimeline(m)
+	m.timelineText = ansi.Strip(content)
+	if m.selection.dragging || m.selection.text != "" {
+		m.updateSelectionText()
+		content = renderSelectedTimeline(content, m.selection)
+	}
 	m.hits = hits
 	m.viewport.SetContent(content)
 	if shouldFollow && (m.autoScroll || wasBottom) {

@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/agent-project/harness/internal/messages"
 	"github.com/agent-project/harness/internal/middleware"
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -29,7 +30,7 @@ func TestOverlayMutuallyExclusive(t *testing.T) {
 	if m.ovl == nil || m.ovl.kind != overlayApproval {
 		t.Fatalf("审批挂起时不应被 help 覆盖，ovl = %+v", m.ovl)
 	}
-	if !strings.Contains(m.View(), "PERMISSION REQUIRED") {
+	if !strings.Contains(m.View(), "Permission required") {
 		t.Fatal("审批弹窗应仍在渲染")
 	}
 
@@ -50,5 +51,29 @@ func TestOverlayMutuallyExclusive(t *testing.T) {
 	m = nm.(Model)
 	if m.ovl == nil || m.ovl.kind != overlayApproval {
 		t.Fatalf("审批挂起时队列 /model 不应叠开选择器，ovl = %+v", m.ovl)
+	}
+}
+
+func TestOverlayKeepsTimelineVisible(t *testing.T) {
+	m := New(nil)
+	nm, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = nm.(Model)
+	m.appendMessage(&MessageItem{Role: messages.RoleAssistant, Content: "existing transcript", Rendered: "existing transcript", Done: true})
+	m.refresh(true)
+	before := m.viewport.Height
+
+	respCh := make(chan middleware.Decision, 1)
+	nm, _ = m.Update(approvalRequestMsg{req: middleware.ApprovalRequest{
+		ToolName: "shell_command",
+		Summary:  "git push",
+	}, respCh: respCh})
+	m = nm.(Model)
+
+	view := m.View()
+	if !strings.Contains(view, "existing transcript") || !strings.Contains(view, "Permission required") {
+		t.Fatalf("overlay and timeline should render together:\n%s", view)
+	}
+	if m.viewport.Height >= before {
+		t.Fatalf("overlay should take layout space: viewport height %d, before %d", m.viewport.Height, before)
 	}
 }

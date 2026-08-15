@@ -118,6 +118,12 @@ func (c *Controller) SetModel(name string) error {
 
 // Efforts 当前模型支持的推理档位（/effort 弹窗数据源，实时解析）。
 func (c *Controller) Efforts() []string {
+	if err := c.ensureActive(); err != nil {
+		return nil
+	}
+	if c.active == nil {
+		return nil
+	}
 	res, err := config.Resolve(c.cfg, c.active.Model())
 	if err != nil {
 		return nil

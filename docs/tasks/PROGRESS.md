@@ -1,3 +1,14 @@
+## 2026-08-15
+
+### TUI v3 全面替换 ✅
+
+- **背景**：参照 `../claude-code-source-code/src/components` 的内容优先 TUI 设计，全面替换原常驻双行顶栏、全屏深色画布、四边 ASCII composer、显式 `YOU/ASSISTANT` 标签与居中盒式 modal；完整计划先行落盘到 `docs/plans/tui-v3-2026-08-15.md`。
+- **交付**：暖橙主强调 + 青/绿/黄/红语义色；单行会话/模型/plan 条；用户 surface 与开放式助手消息；thinking/工具渐进披露；Claude Code 风格上下边线 composer；紧凑 footer、Todo、queue、命令补全；approval/Ask/selector/help 改为靠近输入区的底部内联 overlay，并为 selector 增加当前项、说明和滚动提示。
+- **响应式**：辅助区统一高度预算，低高度时优先保留交互建议与队列并保证 timeline 至少 3 行；overlay 限制在 viewport；所有横向内容使用 ANSI-aware 截断/填充。新增 48×18 密集状态 + 审批回归、v3 视觉契约与 legacy chrome 移除断言，修复移除旧助手标题后 thinking hit range 偏移一行的问题。
+- **修复回归**：overlay 改为参与布局而非替换 viewport，历史文本持续可见；工具块展开增加完整格式化 JSON 参数与结果；命令补全维持五行但随选择滚动；`/effort` 选择器移除重复说明。
+- **边界**：controller、session、agent event bridge、middleware 审批/Ask 契约、transcript 格式和 slash command 业务语义均未改变；只替换 TUI 呈现与布局。
+- **验证**：`go test ./... -count=1`（含完整 E2E）✅；`go vet ./...` ✅；`go build ./cmd/harness` ✅；`go test -race ./internal/ui/tui -count=1` ✅；定向 ConPTY `TestTUIInteractiveE2E|TestTUIApprovalE2E` ✅。
+
 ## 2026-08-13
 
 ### shell 进程树审查修复轮（审查报告 01-06）✅ 版本 0.9.2

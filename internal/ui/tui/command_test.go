@@ -15,6 +15,7 @@ import (
 	"github.com/agent-project/harness/internal/middleware"
 	"github.com/agent-project/harness/internal/middleware/impl"
 	"github.com/agent-project/harness/internal/provider"
+	"github.com/agent-project/harness/internal/session"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
@@ -64,6 +65,33 @@ func TestCommandPopupModel(t *testing.T) {
 	}
 	if !strings.Contains(m.View(), "Model set to m2") {
 		t.Fatalf("View 应含系统行")
+	}
+}
+
+func TestEffortCommandLazyLoadsSession(t *testing.T) {
+	c := newTestController(t, nil)
+	sess := c.active
+	c.active = nil
+	c.newSession = func() (*session.Session, error) { return sess, nil }
+	c.cfg = config.Config{Providers: map[string]config.ProviderSpec{
+		"p": {APIKey: "test-key", Models: map[string]config.Model{
+			"test-model": {Thinking: &config.Thinking{Efforts: []string{"low", "high"}}},
+		}},
+	}}
+	m := New(c)
+	m.input.SetValue("/effort")
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("/effort must not panic with a lazy session: %v", r)
+		}
+	}()
+	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = nm.(Model)
+	if m.ovl == nil || m.ovl.sel.kind != popupEffort {
+		t.Fatalf("/effort should open effort selector, overlay=%+v", m.ovl)
+	}
+	if len(m.ovl.sel.items) != 2 || m.ovl.sel.items[0].description != "" {
+		t.Fatalf("effort selector should show names without descriptions: %+v", m.ovl.sel.items)
 	}
 }
 
@@ -160,6 +188,15 @@ func TestCommandThinkingPopup(t *testing.T) {
 	}
 }
 
+func TestEffortItemsHaveNoDescriptions(t *testing.T) {
+	items := effortItems([]string{"low", "medium", "high"})
+	for _, item := range items {
+		if item.description != "" {
+			t.Fatalf("effort %q should not have a description, got %q", item.value, item.description)
+		}
+	}
+}
+
 // TestCommandThinkingArg /thinking off 直接设（参数分支，对齐 /permission 双通道）。
 func TestCommandThinkingArg(t *testing.T) {
 	c := newTestController(t, nil)
@@ -225,12 +262,12 @@ func TestTodoBarRender(t *testing.T) {
 		{Position: 3, Description: "提交", Status: "completed"},
 	})
 	v := m.View()
-	todoAt := strings.Index(v, "TODO")
-	activeAt := strings.Index(v, "[>] 写代码")
-	if todoAt < 0 || activeAt < 0 || !strings.Contains(v[todoAt:activeAt], "\n") || !strings.Contains(v, "[ ] 测试") {
+	todoAt := strings.Index(v, "Tasks")
+	activeAt := strings.Index(v, "● 写代码")
+	if todoAt < 0 || activeAt < 0 || !strings.Contains(v[todoAt:activeAt], "\n") || !strings.Contains(v, "○ 测试") {
 		t.Fatalf("todo 条应含进行中项，got:\n%s", v)
 	}
-	if !strings.Contains(v, "1 active  1 pending  1 done") {
+	if !strings.Contains(v, "1 active · 1 pending · 1 done") {
 		t.Fatalf("todo 条应含统计小字")
 	}
 }
@@ -241,7 +278,7 @@ func TestQueueBarRender(t *testing.T) {
 	nm, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = nm.(Model)
 	m.queue = []string{"第二条", "/model"}
-	if !strings.Contains(m.View(), "QUEUED  1  第二条") || !strings.Contains(m.View(), "2  /model") {
+	if !strings.Contains(m.View(), "Queued  1. 第二条") || !strings.Contains(m.View(), "2. /model") {
 		t.Fatalf("队列条应含待发送内容")
 	}
 }
@@ -273,21 +310,20 @@ func TestPopupRender(t *testing.T) {
 		{label: "m2", value: "m2"},
 	}}}
 	v := m.View()
-	if !strings.Contains(v, "切换模型") || !strings.Contains(v, "> m1") {
+	if !strings.Contains(v, "切换模型") || !strings.Contains(v, "❯   m1") {
 		t.Fatalf("弹窗应含标题与光标项，got:\n%s", v)
 	}
 }
 
-// 弹窗内容宽度必须与外框一致：任何一行超过外框宽度都会在真实终端折行，
-// 导致选项被拆成两行（modalStyle 的 Width 含 padding 但不含 border）。
+// 内联 overlay 每一行都必须与面板宽度一致；超宽会在真实终端产生额外折行。
 func TestModalsFitPanelWidth(t *testing.T) {
 	longLabel := "deepseek-v4-flash-preview-extra-long-model-name"
 	cases := []struct {
 		name  string
-		lines int // 期望的外框总行数（含边框与上下 padding），折行会让它变大
+		lines int // 0 表示只校验宽度；v3 允许提示在窄屏换行
 		build func(screenWidth int) (panel string, width int)
 	}{
-		{"select", 8, func(w int) (string, int) {
+		{"select", 0, func(w int) (string, int) {
 			sel := &selectPopup{title: "MODELS", items: []popupItem{
 				{label: "deepseek-v4-flash", value: "deepseek-v4-flash"},
 				{label: longLabel, value: longLabel},
@@ -355,7 +391,7 @@ func TestUsageCommandShowsTotals(t *testing.T) {
 	m = nm.(Model)
 
 	view := m.View()
-	for _, want := range []string{"USAGE", "input=100k", "cache_read=20k", "output=5k", "ctx=100k/128k"} {
+	for _, want := range []string{"Usage", "input=100k", "cache_read=20k", "output=5k", "ctx=100k/128k"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("/usage 应显示 %q，got:\n%s", want, view)
 		}

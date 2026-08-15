@@ -9,6 +9,7 @@ import (
 	"github.com/agent-project/harness/internal/events"
 	"github.com/agent-project/harness/internal/messages"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // TestToolStateMachine tool_call → pending，tool_result → done + 分派内容。
@@ -43,6 +44,38 @@ func TestReadFileToolCanExpand(t *testing.T) {
 	}
 	if !strings.Contains(m.tools[0].Full, "second") {
 		t.Fatalf("read_file full output = %q", m.tools[0].Full)
+	}
+}
+
+func TestExpandedToolShowsCompleteArgumentsAndResult(t *testing.T) {
+	ts := &ToolStatus{
+		Name:      "shell_command",
+		Summary:   "shell_command: go test ./...",
+		Args:      []byte(`{"command":"go test ./...","timeout_ms":120000,"background":false}`),
+		Done:      true,
+		Content:   "exit 0",
+		Full:      "all packages passed",
+		Collapsed: false,
+	}
+	view := ansi.Strip(renderToolBlock(ts, 120, false))
+	for _, want := range []string{"Arguments", `"command": "go test ./..."`, `"timeout_ms": 120000`, `"background": false`, "Result", "all packages passed"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("expanded tool missing %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestFormatToolArgsPreservesHTMLCharacters(t *testing.T) {
+	formatted := formatToolArgs([]byte(`{"command":"echo a&b","query":"<tag>","quote":"a'b"}`))
+	for _, escaped := range []string{`\u0026`, `\u003c`, `\u003e`} {
+		if strings.Contains(formatted, escaped) {
+			t.Fatalf("formatted args should not contain HTML escapes %q: %s", escaped, formatted)
+		}
+	}
+	for _, want := range []string{"a&b", "<tag>", "a'b"} {
+		if !strings.Contains(formatted, want) {
+			t.Fatalf("formatted args missing %q: %s", want, formatted)
+		}
 	}
 }
 
@@ -137,7 +170,7 @@ func TestToolBackgroundResult(t *testing.T) {
 	}
 }
 
-// TestToolFailed 失败态：红 [ERR] + 错误信息。
+// TestToolFailed 失败态：红色 × + 错误信息。
 func TestToolFailed(t *testing.T) {
 	ts := &ToolStatus{Name: "shell_command", Args: []byte(`{"command":"rm -rf x"}`), Collapsed: true}
 	res := &messages.ToolResult{Success: false, Content: "shell_command: 权限拒绝"}

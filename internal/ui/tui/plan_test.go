@@ -11,7 +11,7 @@ import (
 )
 
 // TestPlanCommandToggle /plan 无参 toggle：on → PlanMode=true + 注入 PlanInstructions
-// 一次 + 状态栏 [PLAN]；再触发 → off。
+// 一次 + 会话条 plan 标记；再触发 → off。
 func TestPlanCommandToggle(t *testing.T) {
 	c := newTestController(t, nil)
 	m := New(c)
@@ -31,8 +31,8 @@ func TestPlanCommandToggle(t *testing.T) {
 	if len(conv) == 0 || !strings.Contains(conv[0].Content, "Plan 模式已激活") {
 		t.Errorf("进入 plan 模式应注入 PlanInstructions，conv 首条 = %.40q", conv[0].Content)
 	}
-	if !strings.Contains(m.View(), "[PLAN]") {
-		t.Error("状态栏应有 [PLAN] 标记")
+	if !strings.Contains(m.headerView(), "plan") {
+		t.Error("会话条应有 plan 标记")
 	}
 
 	// 第二次 /plan → off。
@@ -42,8 +42,8 @@ func TestPlanCommandToggle(t *testing.T) {
 	if c.active.State().PlanMode {
 		t.Error("再次 /plan 应关闭 plan 模式")
 	}
-	if strings.Contains(m.View(), "[PLAN]") {
-		t.Error("关闭后状态栏应无 [PLAN]")
+	if strings.Contains(m.headerView(), "plan") {
+		t.Error("关闭后会话条应无 plan")
 	}
 }
 
