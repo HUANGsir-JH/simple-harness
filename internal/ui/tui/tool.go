@@ -75,6 +75,7 @@ func toolCallSummary(name string, args []byte) string {
 		Command    string `json:"command"`
 		KillPID    int    `json:"kill_pid"`
 		Background bool   `json:"background"`
+		Name       string `json:"name"`
 	}
 	_ = json.Unmarshal(args, &p)
 	switch name {
@@ -95,6 +96,8 @@ func toolCallSummary(name string, args []byte) string {
 		return "update_todo"
 	case "apply_patch":
 		return "apply_patch"
+	case "skill":
+		return "skill " + p.Name
 	default:
 		return name + " " + truncate(string(args), 60)
 	}
@@ -162,6 +165,11 @@ func applyToolResult(ts *ToolStatus, res *messages.ToolResult) {
 	case "update_todo":
 		ts.Content = res.Content // 完整 checklist
 		ts.Full = res.Content
+	case "skill":
+		// 技能指令：折叠态只显示加载摘要（指令全文不进折叠行，避免刷屏），
+		// 展开可见全文（ADR-044 渐进式披露的 UI 对位）。
+		ts.Content = fmt.Sprintf("loaded %s  |  %s", skillName(ts.Args), humanSize(len(res.Content)))
+		ts.Full = res.Content
 	case "shell_command":
 		// background 模式（ADR-038）：结果是"已后台启动 PID xxx"，不是命令
 		// 输出——原文展示，不拼 "exit 0" 前缀（会误导为命令已完成）。
@@ -204,6 +212,18 @@ func readFilePath(args []byte) string {
 		return "?"
 	}
 	return p.Path
+}
+
+// skillName 提取 skill 工具的 name 参数。
+func skillName(args []byte) string {
+	var p struct {
+		Name string `json:"name"`
+	}
+	_ = json.Unmarshal(args, &p)
+	if p.Name == "" {
+		return "?"
+	}
+	return p.Name
 }
 
 // writeFileContent 提取 write_file 的 content 参数。

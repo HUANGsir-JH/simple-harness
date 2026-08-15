@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -123,6 +124,90 @@ func mockLLMServer(t *testing.T) *httptest.Server {
 		sb.WriteString(sse("message_stop", `{"type":"message_stop"}`))
 		_, _ = w.Write([]byte(sb.String()))
 	}))
+}
+
+// mockLLMSkillServer 模拟全局 skill 闭环（ADR-044）：首轮 skill 工具调用
+// （demo-skill），次轮文本回复。捕获每次请求体（bodies，调用方持锁）供断言：
+// 首轮系统提示含技能目录行、次轮含 <skill_content 回填。
+func mockLLMSkillServer(t *testing.T, bodies *[]string, mu *sync.Mutex) *httptest.Server {
+	t.Helper()
+	var reqCount atomic.Int32
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		*bodies = append(*bodies, string(body))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		var sb strings.Builder
+		sb.WriteString(sse("message_start", msgStart))
+		if reqCount.Add(1) == 1 {
+			writeToolUse(&sb, "call_skill", "skill", `{"name":"demo-skill"}`)
+		} else {
+			writeText(&sb, "技能已加载并执行。")
+		}
+		sb.WriteString(sse("message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":5}}`))
+		sb.WriteString(sse("message_stop", `{"type":"message_stop"}`))
+		_, _ = w.Write([]byte(sb.String()))
+	}))
+}
+
+// TestSkillToolE2E 验证全局 skill 全链路（进程外，HARNESS_HOME 隔离）：
+// 技能文件在 home/skills/demo-skill/SKILL.md → 系统提示注入目录行 → 模型调用
+// skill 工具 → 完整指令回填（次轮请求可见）→ turn_done 锚点 → 退出码 0。
+func TestSkillToolE2E(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "home")
+	skillDir := filepath.Join(home, "skills", "demo-skill")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir skill: %v", err)
+	}
+	skillBody := "---\nname: demo-skill\ndescription: \"做演示用\"\n---\n## 步骤\n1. 执行\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(skillBody), 0o644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+
+	var bodies []string
+	var mu sync.Mutex
+	srv := mockLLMSkillServer(t, &bodies, &mu)
+	defer srv.Close()
+	cfg := writeTestConfig(t, srv.URL)
+
+	cp, err := termtest.NewTest(t, termtest.Options{
+		CmdName:        harnessExe,
+		Args:           []string{"run", "--config", cfg, "--json", "用演示技能完成任务"},
+		WorkDirectory:  t.TempDir(),
+		DefaultTimeout: 30 * time.Second,
+		Environment:    []string{"HARNESS_HOME=" + home},
+	})
+	if err != nil {
+		t.Fatalf("newtest: %v", err)
+	}
+	defer cp.Close()
+
+	if _, err := cp.Expect("tool_call"); err != nil {
+		t.Fatalf("expect tool_call: %v", err)
+	}
+	if _, err := cp.Expect("turn_done"); err != nil {
+		t.Fatalf("expect turn_done: %v", err)
+	}
+	if _, err := cp.ExpectExitCode(0); err != nil {
+		t.Fatalf("expect exit 0: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(bodies) < 2 {
+		t.Fatalf("应收到 2 次请求，got %d", len(bodies))
+	}
+	if !strings.Contains(bodies[0], "# Skills") || !strings.Contains(bodies[0], "- demo-skill: 做演示用") {
+		t.Errorf("首轮系统提示应含技能目录行:\n%s", bodies[0])
+	}
+	if strings.Contains(bodies[0], "## 步骤") {
+		t.Errorf("目录不得含技能正文（渐进式披露）:\n%s", bodies[0])
+	}
+	// JSON 请求体中 < > 被转义为 \u003c / \u003e，用标签名断言。
+	if !strings.Contains(bodies[1], "skill_content") || !strings.Contains(bodies[1], "1. 执行") {
+		t.Errorf("次轮请求应含 skill 工具结果回填:\n%s", bodies[1])
+	}
 }
 
 // writeTestConfig 写一个指向 mock 端点的测试配置（thinking 关闭，简化流式），
@@ -562,7 +647,8 @@ func TestInitE2E(t *testing.T) {
 	for _, p := range []string{
 		filepath.Join(home, "workspaces"), filepath.Join(home, "subagents"),
 		filepath.Join(home, "memory"), filepath.Join(home, "logs"),
-		filepath.Join(home, "agents.md"), filepath.Join(home, "config.yaml"),
+		filepath.Join(home, "skills"), filepath.Join(home, "agents.md"),
+		filepath.Join(home, "config.yaml"),
 	} {
 		if _, err := os.Stat(p); err != nil {
 			t.Errorf("缺 %s: %v", p, err)

@@ -6,6 +6,7 @@
 //	~/.harness/                      # 全局根（$HARNESS_HOME 覆盖）
 //	├── config.yaml                  # 全局配置（已有查找逻辑）
 //	├── agents.md                    # 全局 persona（总是加载，叠加项目级 AGENTS.md）
+//	├── skills/                      # 全局技能（SKILL.md 目录包 / 平铺 md，ADR-044）
 //	├── workspaces/<项目转义>/       # 项目分桶
 //	│   └── <session-id>/            # 目录名即会话 id（时间戳-随机）
 //	│       ├── agentstate.json      # AgentState 快照
@@ -35,6 +36,9 @@ const (
 	DirSubagents  = "subagents"
 	DirMemory     = "memory"
 	DirLogs       = "logs"
+	// DirSkills 是全局技能根（ADR-044）：每个子目录的 SKILL.md 是一个技能
+	// （目录包，可带 references/scripts/assets），*.md 平铺文件也是技能。
+	DirSkills = "skills"
 	// 会话内子目录。
 	DirHistorys = "historys"
 	DirPlans    = "plans"
@@ -114,8 +118,19 @@ func GlobalAgentsMDPath() (string, error) {
 	return filepath.Join(store.Root(), FileAgentsMD), nil
 }
 
-// EnsureDirs 创建目录骨架（全局占位 + workspaces），并建 agents.md 占位文件。
-// 占位文件已存在时跳过（不覆盖用户编辑）。
+// GlobalSkillsDir 返回全局技能根目录（~/.harness/skills，$HARNESS_HOME
+// 覆盖）。供 app 层解析后注入 agent.BuildOptions（ADR-044）——与
+// GlobalAgentsMDPath 同款防环模式（impl/tools 不反向依赖 session）。
+func GlobalSkillsDir() (string, error) {
+	store, err := New()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(store.Root(), DirSkills), nil
+}
+
+// EnsureDirs 创建目录骨架（全局占位 + workspaces），并建 agents.md 占位文件
+// 与 skills/ 占位说明。占位文件已存在时跳过（不覆盖用户编辑）。
 func (s *Store) EnsureDirs() error {
 	dirs := []string{
 		s.root,
@@ -123,14 +138,24 @@ func (s *Store) EnsureDirs() error {
 		filepath.Join(s.root, DirSubagents),
 		filepath.Join(s.root, DirMemory),
 		filepath.Join(s.root, DirLogs),
+		filepath.Join(s.root, DirSkills),
 	}
 	for _, d := range dirs {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return fmt.Errorf("session: mkdir %s: %w", d, err)
 		}
 	}
-	return ensurePlaceholder(filepath.Join(s.root, FileAgentsMD),
-		"# 全局 persona（总是加载，叠加项目级 AGENTS.md）\n")
+	if err := ensurePlaceholder(filepath.Join(s.root, FileAgentsMD),
+		"# 全局 persona（总是加载，叠加项目级 AGENTS.md）\n"); err != nil {
+		return err
+	}
+	return ensurePlaceholder(filepath.Join(s.root, DirSkills, "README.md"),
+		"# 全局技能（skills/）\n\n"+
+			"此目录下的技能对全部会话可见（ADR-044）。两种形态：\n"+
+			"- 目录包：<技能名>/SKILL.md（可带 references/、scripts/、assets/ 辅助资源）\n"+
+			"- 平铺：<技能名>.md\n\n"+
+			"SKILL.md 需以 YAML frontmatter 开头：\n"+
+			"```\n---\nname: <kebab-case 技能名>\ndescription: <必填，简短说明>\nwhenToUse: <可选，适用场景>\n---\n<指令正文>\n```\n")
 }
 
 func ensurePlaceholder(path, content string) error {

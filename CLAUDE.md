@@ -6,9 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 一个参照 OpenAI Codex CLI（`../codex/codex-rs`，Rust 源码）+ AgentScope Java v2 架构、用 Go 构建的**可真实使用**的极简 agent harness（命令行形式）。定位为通用框架，未来可被其它项目（如 resume-agent）引用。
 
-**当前状态**：阶段 1（骨架+统一消息模型+Provider+最小 loop）✅ 2026-08-04；阶段 2（工具系统 + 并发执行 + 终端渲染 + middleware 骨架 + 交互式 CLI）✅ 2026-08-07；阶段 2.5（Workspace + AgentState + 会话落盘/resume）✅ 2026-08-08；**架构重构（ADR-026 无状态 agent + 运行时切换 + 配置统一 init）**✅ 2026-08-08；**todo 工具（update_todo 全量替换 + 跨轮偏离提醒，ADR-027）**✅ 2026-08-08；**工具结果截断中间件 + Esc 用户中断 + shell 长任务缓解 + state.CWD 修正（ADR-028）**✅ 2026-08-09；**工具审批（三档权限 + onActing middleware + 会话级记忆，ADR-029）**✅ 2026-08-09；**TUI（bubbletea 全屏交互 UI 替代 REPL，ADR-030）**🔨 2026-08-09；**用量展示（ADR-037 第一段，footer ctx + /usage）✅ 2026-08-12**；**thinking 完整回传（ADR-025 修订，ADR-037 第二段）✅ 2026-08-12**；**LLM 摘要压缩（ADR-037 第三段，compact 包 + /compact）✅ 2026-08-12（版本 0.8.0）**。**规划文档 `IMPLEMENTATION_PLAN.md` 是权威来源**（含已确认决策表与实施阶段状态，**已完成/待办严格区分**）；架构决策在 `docs/tasks/DECISIONS.md`（ADR-021~037 为核心）；任务跟踪在 `docs/tasks/{TASKS,PROGRESS}.md`。实现前先读 `IMPLEMENTATION_PLAN.md`。
+**当前状态**：阶段 1（骨架+统一消息模型+Provider+最小 loop）✅ 2026-08-04；阶段 2（工具系统 + 并发执行 + 终端渲染 + middleware 骨架 + 交互式 CLI）✅ 2026-08-07；阶段 2.5（Workspace + AgentState + 会话落盘/resume）✅ 2026-08-08；**架构重构（ADR-026 无状态 agent + 运行时切换 + 配置统一 init）**✅ 2026-08-08；**todo 工具（update_todo 全量替换 + 跨轮偏离提醒，ADR-027）**✅ 2026-08-08；**工具结果截断中间件 + Esc 用户中断 + shell 长任务缓解 + state.CWD 修正（ADR-028）**✅ 2026-08-09；**工具审批（三档权限 + onActing middleware + 会话级记忆，ADR-029）**✅ 2026-08-09；**TUI（bubbletea 全屏交互 UI 替代 REPL，ADR-030）**🔨 2026-08-09；**用量展示（ADR-037 第一段，footer ctx + /usage）✅ 2026-08-12**；**thinking 完整回传（ADR-025 修订，ADR-037 第二段）✅ 2026-08-12**；**LLM 摘要压缩（ADR-037 第三段，compact 包 + /compact）✅ 2026-08-12（版本 0.8.0）**。**规划文档 `IMPLEMENTATION_PLAN.md` 是权威来源**（含已确认决策表与实施阶段状态，**已完成/待办严格区分**）；架构决策在 `docs/tasks/DECISIONS.md`（ADR-021~044 为核心）；任务跟踪在 `docs/tasks/{TASKS,PROGRESS}.md`。实现前先读 `IMPLEMENTATION_PLAN.md`。
 
-**实施顺序**：~~阶段 3 审批~~ → **todo 工具**（挂 state，已完）→ **工具结果落盘/中断/shell 缓解**（ADR-028，已完）→ **工具审批（ADR-029，已完）**→ **TUI（bubbletea 替代 REPL，ADR-030，进行中）**→ **用量展示 + thinking 回传 + LLM 摘要压缩（ADR-037，已完 0.8.0）**→ **阶段 4 剩余（AGENTS.md 注入 + 基础提示词增强，ADR-043，已完 2026-08-15）** → 阶段 5（子 agent，并行已由无状态 agent 架构支撑）→ 阶段 6 剩余（grep/双向通信）。
+**实施顺序**：~~阶段 3 审批~~ → **todo 工具**（挂 state，已完）→ **工具结果落盘/中断/shell 缓解**（ADR-028，已完）→ **工具审批（ADR-029，已完）**→ **TUI（bubbletea 替代 REPL，ADR-030，进行中）**→ **用量展示 + thinking 回传 + LLM 摘要压缩（ADR-037，已完 0.8.0）**→ **阶段 4 剩余（AGENTS.md 注入 + 基础提示词增强，ADR-043，已完 2026-08-15）** → **全局 Skill 支持（ADR-044，已完 0.12.0 2026-08-15：`~/.harness/skills/` SKILL.md 目录 + 系统提示目录注入 + `skill` 工具渐进式披露；`agent.Build` 签名重构为 BuildOptions）** → 阶段 5（子 agent，并行已由无状态 agent 架构支撑）→ 阶段 6 剩余（grep/双向通信）。
 
 ## 常用命令
 
@@ -43,13 +43,14 @@ internal/
   ui/                 # ★ 用户交互层：渲染（text/json，run 单轮用）+ 审批解析（ParseApprovalDecision）+ **tui/**（bubbletea 全屏交互 UI 替代 REPL：Model/View/Update 纯函数 + 事件桥 + 审批桥，ADR-030）
   agent/              # ★ 无状态 ReAct loop（采样→工具→回填，消息序列经 rc.Messages；ADR-026）+ 回合级事件（turn_done 为测试锚点）+ Build 装配工厂（client+工具+标准中间件链）
   middleware/         # ★ 框架 core：6 hook 扩展机制（onAgent/onReasoning/onToolCall/onActing/onModelCall onion + onSystemPrompt 管道）+ RuntimeContext（承载会话）+ 契约（Approver/ApprovalRequest/DeniedError，ADR-029）
-  middleware/impl/    # ★ 内置中间件实现：基础提示词注入（链首，含 {{cwd}}/{{model}}）/ AGENTS.md 注入（AgentsMd，ADR-043）/ 工具说明注入 / 会话状态 load-save / todo 跨轮提醒（ADR-027）/ 工具结果截断 head/tail + evictions 落盘（ADR-028）/ 工具审批三档 + 黑白名单 + 会话记忆（ADR-029）
+  middleware/impl/    # ★ 内置中间件实现：基础提示词注入（链首，含 {{cwd}}/{{model}}）/ AGENTS.md 注入（AgentsMd，ADR-043）/ 技能目录注入（SkillsCatalog，ADR-044）/ 工具说明注入 / 会话状态 load-save / todo 跨轮提醒（ADR-027）/ 工具结果截断 head/tail + evictions 落盘（ADR-028）/ 工具审批三档 + 黑白名单 + 会话记忆（ADR-029）
   provider/           # 单 anthropic wire（ADR-022）+ 块事件适配 + per-call 覆盖（Request.Model/ThinkingEnabled/Effort，ADR-026）；配置已拆至 config
   messages/           # 统一 Message 模型（含 Thinking）+ JSON 序列化
-  tools/              # Tool 接口（Handle 带 rc）+ 注册表 + 7 内置工具（含 update_todo，ADR-027）
+  tools/              # Tool 接口（Handle 带 rc）+ 注册表 + 12 内置工具（含 update_todo ADR-027、skill ADR-044）
   agentstate/         # AgentState 快照（模型/thinking 档位/todo/权限/plan/摘要/用量）+ 原子落盘
   compact/            # ★ 上下文压缩（ADR-037 第三段）：EstimateTokens/ShouldCompact/Summarizer/Runner.Run
   agentsmd/           # ★ AGENTS.md/CLAUDE.md 发现与拼接（ADR-043）：.git 项目根向上搜索 + 200KB 截断 + 读失败非致命
+  skills/             # ★ 全局技能（ADR-044）：SKILL.md 目录包/平铺发现 + frontmatter 校验 + 200KB 预算 + <skill_content> 渲染（叶子包，只依赖 stdlib+yaml）
   session/            # workspace 项目分桶 + 块级 transcript 异步 writer + resume
   e2e/                # 进程外端到端测试（termtest）
   # 规划中（未实现）：hooks（子进程，远期）
@@ -68,7 +69,7 @@ internal/
 7. **thinking 完整回传**（ADR-025 修订，2026-08-12）：`Message.Thinking` + `Message.ThinkingSignature`（数字签名）存审计；provider 重放 assistant 时**仅签名非空才重放** `ThinkingBlockParam`（严格端点校验签名；DeepSeek 兼容端点恒返回签名，实测回传 200）。thinking-only assistant 带签名不再跳过。
 8. **UI 抽象**：`output` 接口（text 渲染器 + `--json` JSONL 事件）；事件回调双转发（渲染 + session 落盘）。
 9. **子 agent = 独立 session**（远期）：fork 只继承 user 消息 + 最终答案。并行已由无状态 agent + 共享 chain 并发安全支撑（ADR-026）。
-10. **无状态 agent + 运行时切换**（ADR-026）：agent 不持有会话，`Run(ctx, rc, onEvent)` 消息序列经 `rc.Messages`；**每 Run 新建 rc**，切换会话 = 换 active（REPL `/switch`）、并行 = 每 goroutine 一个 rc（共享 agent/chain 并发安全）。模型/thinking 档位 per-call 经 `Request.Model/ThinkingEnabled/ThinkingEffort` 覆盖（nil/空 = client 默认），会话级持久化在 AgentState（resume 恢复）；`/model`、`/effort` 运行时切换。配置统一 `app.Load()` 惰性单例（`config.LoadConfig` + `config.Resolve` → `app.App{Config, Provider}`；agent 经 `agent.Build(res, mode)` 装配）。
+10. **无状态 agent + 运行时切换**（ADR-026）：agent 不持有会话，`Run(ctx, rc, onEvent)` 消息序列经 `rc.Messages`；**每 Run 新建 rc**，切换会话 = 换 active（REPL `/switch`）、并行 = 每 goroutine 一个 rc（共享 agent/chain 并发安全）。模型/thinking 档位 per-call 经 `Request.Model/ThinkingEnabled/ThinkingEffort` 覆盖（nil/空 = client 默认），会话级持久化在 AgentState（resume 恢复）；`/model`、`/effort` 运行时切换。配置统一 `app.Load()` 惰性单例（`config.LoadConfig` + `config.Resolve` → `app.App{Config, Provider}`；agent 经 `agent.Build(agent.BuildOptions{...})` 装配——Provider/DefaultMode/GlobalAgentsMD/GlobalSkillsDir，ADR-044 起结构体收拢）。
 11. **TUI 交互**（ADR-030）：`internal/ui/tui`（bubbletea elm：Model/Update/View 纯函数可测）是唯一交互入口（`repl()` 留薄壳，REPL 已删）；agent 事件经 `onEvent → program.Send` 桥接（agent 核心零冲击，ADR-026 前提）；审批 `rc.Approver` 换 `TUIApprover`（接口不变，run 继续用 channelApprover）；**队列 = 用户输入**（prompt + `/` 命令统一排队，消费按前缀分派命令/发 agent）；命令落盘 transcript `command` 行但不进 conversation（模型不可见）；工具块按工具分派折叠展示；无 emoji 风格（`[OK]/[ERR]/[RUN]` + 颜色）；测试单测为主 + e2e 全面。
 
 ## 工作流约定

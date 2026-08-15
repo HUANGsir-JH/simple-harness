@@ -55,7 +55,7 @@ const (
 )
 
 var (
-	readTools = map[string]bool{"read_file": true, "list_dir": true, "glob": true}
+	readTools = map[string]bool{"read_file": true, "list_dir": true, "glob": true, "skill": true}
 	editTools = map[string]bool{"write_file": true, "apply_patch": true}
 	planTools = map[string]bool{"plan_enter": true, "write_plan": true, "plan_done": true}
 )

@@ -1,5 +1,18 @@
 ## 2026-08-15
 
+### 全局 Skill 支持 ✅ 版本 0.12.0（ADR-044）
+
+- **背景**：用户要求给 harness 加 skill 支持（仅全局）。调研 codex（`codex-rs/skills`：`$CODEX_HOME/skills/<name>/SKILL.md` + frontmatter + `### Available skills` 目录 + 模型自读文件；插件/别名/MCP 依赖等机制超范围）+ opencode（多根扫描 + `<available_skills>` 摘要）+ deepseek-harness（与 harness 架构最接近：注册表 + filesystem 提供者 + 模型侧 `skill` 工具按需加载 + `<skill_content>` 包装 + kebab-case 校验 + 非法跳过非致命）后落定。
+- **交付**：
+  - **`internal/skills` 包（新，叶子只依赖 stdlib + yaml.v3）**：`Discover`（扫描 `$HARNESS_HOME/skills`：目录包 `<name>/SKILL.md` 优先 / 平铺 `<name>.md` 回退 + 同名去重 + frontmatter 校验（name kebab-case + description 必填 + whenToUse 可选）+ 按名排序 + 读失败/非法跳过非致命）+ `Load`（现读 + 200KB 预算截断 + 多字节安全）+ `IsSkillName`/`RenderContent`（`<skill_content name>` 包装 + 资源基目录提示 + 属性转义）/`CatalogLine`（目录行，描述截断 200）。
+  - **`tools.SkillTool`**（`skill` 工具，`tools.Builtins(skillsDir)` 统一注册——技能目录随 Builtins 参数注入，与其它内置工具同一装配入口）：按名定位复用 `Discover` 判定（与目录单一来源不漂移）→ `Load` 现读 → `<skill_content>` 包装回填；未知/非法/未配置/读失败 → `*ToolError{RespondToModel}` 回填。
+  - **`impl.SkillsCatalogMiddleware`**（onSystemPrompt，链序 base→agentsmd→**skills**→tools）：有技能才注入 `# Skills（技能）` 摘要段（每行 `- <name>: <description>（适用：<whenToUse>）` + 触发引导"先调用 skill 工具加载完整指令再行动；目录仅摘要"）；空目录/失败透传。
+  - **装配签名重构（用户拍板）**：`agent.Build(res, mode, globalAgentsMD)` → `agent.Build(agent.BuildOptions{Provider, DefaultMode, GlobalAgentsMD, GlobalSkillsDir})`（对齐 app.Options/compact.Options 惯例，签名不再随新能力 +1）；`session.DirSkills` + `session.GlobalSkillsDir()`（镜像 GlobalAgentsMDPath，防环注入不变）；`app.buildAgent` 三模式共用。
+  - **适配**：`session.EnsureDirs` + `harness init` 建 `skills/` + README 占位说明（幂等）；审批 `skill` 归类 classRead（只读放行，plan 模式同）；`ToolOutputMiddleware` 豁免 skill 截断（read_file 同款：指令语义不可丢中段，200KB 预算兜底）；TUI 分派（摘要 `skill <name>` / 折叠态 `loaded <name> | N` / `Loaded skill <name>` 文案）。
+- **测试**：`skills` 16 项（发现/加载/校验/截断/转义/CRLF）；`SkillTool` 8 项；`SkillsCatalogMiddleware` 4 项；policy `skill` 放行；TUI 分派 2 项；init 单测 + e2e `TestInitE2E` 扩展；**`TestSkillToolE2E`**（进程外全链路：HARNESS_HOME 建技能 → 断言首轮请求系统提示含目录行且无正文 → 模型 skill 调用 → 次轮请求含 `<skill_content` 回填 → turn_done 锚点）。
+- **验证**：`go build/vet/test ./... -count=1` 全绿（19 包含 e2e）。
+- **影响 ADR**：ADR-039（管道新增 SkillsCatalog）；ADR-033（agent.Build → BuildOptions）；ADR-028（截断豁免 +skill）；ADR-029（classRead +skill）。
+
 ### 阶段 4 剩余：AGENTS.md 注入 + 基础提示词增强 ✅（ADR-043）
 
 - **背景**：阶段 4 剩余两项收尾——`agentsmd`（AGENTS.md 注入）一直待办，基础提示词过薄（`"You are a helpful coding agent."` 单行）。调研 codex（`prompt.md` 身份/AGENTS.md 语义/任务执行纪律）+ opencode（`default.txt` 语气/主动性/约定）+ deepseek-harness（persona 注入 `{{model}}`/`{{cwd}}`）后落定方案，用户拍板：项目根 `.git` 标记、文件名回退 `AGENTS.md`→`CLAUDE.md`、基础提示词中文、注入工作目录+模型。

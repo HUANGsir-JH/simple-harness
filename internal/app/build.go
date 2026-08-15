@@ -63,15 +63,25 @@ func Build(o Options) (*HarnessAgent, error) {
 	}
 }
 
-// buildAgent 解析全局 persona 路径并装配共享 ReAct agent（AGENTS.md 注入，
-// ADR-043）。三模式共用：路径由 app 层解析后注入 agent.Build，保持"session
-// 知中间件、反之不成立"的防环约定（impl 不反向依赖 session）。
+// buildAgent 解析全局 persona 与技能目录路径并装配共享 ReAct agent
+// （AGENTS.md 注入 ADR-043 + 全局 skill 支持 ADR-044）。三模式共用：路径由
+// app 层解析后经 agent.BuildOptions 注入 agent.Build，保持"session 知中间件、
+// 反之不成立"的防环约定（impl 不反向依赖 session）。
 func buildAgent(res *config.ProviderConfig, defaultMode string) (*agent.Agent, error) {
 	agentsPath, err := session.GlobalAgentsMDPath()
 	if err != nil {
 		return nil, err
 	}
-	return agent.Build(res, defaultMode, agentsPath)
+	skillsDir, err := session.GlobalSkillsDir()
+	if err != nil {
+		return nil, err
+	}
+	return agent.Build(agent.BuildOptions{
+		Provider:        res,
+		DefaultMode:     defaultMode,
+		GlobalAgentsMD:  agentsPath,
+		GlobalSkillsDir: skillsDir,
+	})
 }
 
 // buildRun 装配单轮模式：配置 → 生效配置（flags 覆盖）→ agent → 会话 →

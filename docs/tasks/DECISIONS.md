@@ -500,4 +500,18 @@
 - **影响 ADR**：ADR-011——"注入 developer 消息"修订为"注入 onSystemPrompt 管道"；ADR-039——onSystemPrompt 管道新增 AgentsMd 中间件、BaseInstructionsMiddleware 增占位符渲染；ADR-033——`agent.Build` 签名 +1 参数（globalAgentsMD）。
 - **验证**：`go build/vet/test ./... -count=1` 全绿（含 e2e）；`internal/agentsmd` 发现/拼接/截断/多字节边界 + `impl` 注入/渲染回归锚点锁定。
 
+## ADR-044：全局 Skill 支持——SKILL.md 目录 + skill 工具渐进式披露（2026-08-15，阶段 4 剩余收尾）
+
+- **背景**：用户要求给 harness 加 skill 支持（仅全局）。调研三个参考源：codex（`codex-rs/skills`：全局 `$CODEX_HOME/skills/<name>/SKILL.md` 目录包 + YAML frontmatter，`### Available skills` 目录 + 使用规则，progressive disclosure 模型自读文件；插件/别名/MCP 依赖/动态选择等机制超出"仅全局"范围）、opencode（`~/.config/opencode/skills/**/SKILL.md` 等根扫描，frontmatter 仅 name+description，`<available_skills>` 摘要列表）、deepseek-harness（与 harness 架构最接近：skill 注册表 + filesystem 提供者 + 模型侧 `skill` 工具按需加载，`<skill_content>` 包装，会话目录注入 `<available_skills>` 摘要，kebab-case 名校验，非法文件跳过非致命）后落定。
+- **决策**：
+  1. **技能格式（三个参考源公共子集）**：技能根 `$HARNESS_HOME/skills`（默认 `~/.harness/skills`）；两种形态——目录包 `<name>/SKILL.md`（可带 references/、scripts/、assets/ 辅助资源，相对路径以该目录为基准）与平铺 `<name>.md`；YAML frontmatter 必填 `name`（kebab-case `/^[a-z0-9]+(?:-[a-z0-9]+)*$/`）与 `description`，可选 `whenToUse`；同名冲突目录包优先（按名排序确定性判重）；正文 = frontmatter 之后 TrimSpace，**加载预算 200KB**（对齐 agentsmd）；无效/读失败文件跳过（发现阶段）或回填错误（加载阶段），**绝不终止回合**。
+  2. **模型侧暴露 = 目录摘要 + `skill` 工具（deepseek-harness 模式，非 codex 读文件模式）**：`impl.SkillsCatalogMiddleware` 挂 onSystemPrompt 注入 `# Skills（技能）` 目录段（每行 `- <name>: <description>（适用：<whenToUse>）`，描述截断 200 字符 + 触发引导"用户点名或任务匹配 → 先调用 skill 工具加载完整指令再行动；目录仅摘要，未加载前不要推断技能内容"）；`tools.SkillTool` 按名现读 SKILL.md 全文，以 `<skill_content name="...">`（含资源基目录提示）包装回填——渐进式披露：正文只在模型明确加载时进上下文。选择工具而非读文件：路径不外泄、无 roots 表、与 anthropic wire 的 tool_result 通道自然契合、为未来项目/远程技能留位。定位规则复用 `skills.Discover` 判定（目录包优先/同名去重），工具与中间件单一来源不漂移。
+  3. **新包 `internal/skills`（叶子，只依赖 stdlib + yaml.v3）**：`Discover`（扫描 + 校验 + 排序，Content 不加载）/ `Load`（现读 + 校验 + 预算截断）/ `IsSkillName` / `RenderContent` / `CatalogLine`；与 agentsmd 同哲学（读失败非致命、预算截断、多字节安全）。
+  4. **装配签名重构（用户拍板：BuildOptions 结构体）**：`agent.Build(res, mode, globalAgentsMD)` → `agent.Build(agent.BuildOptions{Provider, DefaultMode, GlobalAgentsMD, GlobalSkillsDir})`——对齐项目 Options 惯例（app.Options/compact.Options/agentsmd.Options），签名不再随新能力 +1；`session.GlobalSkillsDir()`（镜像 GlobalAgentsMDPath）+ `session.DirSkills`；`app.buildAgent` 三模式共用解析注入（防环约定不动）。
+  5. **审批只读分类**：`skill` 归类 classRead（只读工具放行，不打断渐进式披露；plan 模式同放行）；`ToolOutputMiddleware` 豁免 skill 截断（指令语义不能被 head/tail 丢中段，全量在原 SKILL.md + 200KB 预算兜底，read_file 同款豁免）。
+  6. **基础设施**：`harness init` 与 `session.EnsureDirs` 建 `skills/` 目录 + README.md 占位说明（幂等不覆盖）；TUI 工具块分派（摘要 `skill <name>`、折叠态 `loaded <name> | N`、展开全文、`Loaded skill <name>` 文案）。**无 config 开关**（文件在场即启用，对齐 AGENTS.md 无开关）；**无 AgentState/会话格式变更**。
+- **影响 ADR**：ADR-039——onSystemPrompt 管道新增 SkillsCatalog 中间件（顺序：基础 persona → 项目上下文 → 技能目录 → 工具引导）；ADR-033——`agent.Build` 签名重构为 BuildOptions（调用方仅 app/build.go）；ADR-028——ToolOutputMiddleware 豁免清单 +read skill；ADR-029——policy classRead +skill。
+- **明确不做**：项目级 skill（.dsh/skills、.agents/skills）、用户 `/name` 手势直呼、远程/市场拉取、config 开关、codex 式插件/别名/MCP 依赖/动态选择、热更新监听（ComposeSystemPrompt 每回合现读足够）。
+- **验证**：`go build/vet/test ./... -count=1` 全绿（含 e2e）；`internal/skills` 发现/解析/截断/渲染 + `tools.SkillTool` + `impl.SkillsCatalogMiddleware` + TUI 分派 + policy 只读 + `TestSkillToolE2E`（进程外：系统提示目录行 → skill 调用 → `<skill_content` 回填断言）锁定。版本 0.12.0。
+
 

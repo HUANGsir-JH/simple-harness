@@ -16,6 +16,10 @@ import (
 // 闭环二次截断（模型永远读不到全量）。豁免后 read_file 返回完整内容，由
 // read 自身的大文件保护（>MaxReadFileBytes 提示分段）兜底。
 //
+// skill 同款豁免（ADR-044）：技能指令的语义完整性不能被 head/tail 截断丢
+// 中段（指令往往依赖中段步骤）；全量就在原 SKILL.md（技能根），加载侧已有
+// 200KB 预算（skills.DefaultMaxBytes）兜底，模型确需全量可自行 read_file。
+//
 // 注：transcript（会话落盘）记完整结果（审计全量）；conversation（模型
 // 上下文）经本中间件截断为 preview + 路径，模型用 read_file/grep 读全量。
 type ToolOutputMiddleware struct {
@@ -47,8 +51,9 @@ func (ToolOutputMiddleware) OnToolCall(ctx context.Context, rc *middleware.Runti
 	for _, msg := range rc.Messages.Messages[before:] {
 		for i := range msg.ToolResults {
 			tr := &msg.ToolResults[i]
-			if nameByCall[tr.ToolCallID] == "read_file" {
-				continue // 豁免：read 返回完整，模型控制读取粒度
+			switch nameByCall[tr.ToolCallID] {
+			case "read_file", "skill":
+				continue // 豁免：read 返回完整由模型控制粒度；技能指令不可截断丢中段
 			}
 			tr.Content = tools.EvictContent(rc, tr.Content)
 		}

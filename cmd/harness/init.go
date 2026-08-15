@@ -11,9 +11,9 @@ import (
 )
 
 // initCmd 初始化 workspace 根（$HARNESS_HOME 优先，否则 ~/.harness）：
-// 目录骨架（workspaces/subagents/memory/logs + agents.md 占位）+ 全局配置
-// 模板（config.yaml 不存在时写入全注释模板，存在则不动）。幂等：重复执行
-// 已存在项跳过不覆盖。
+// 目录骨架（workspaces/subagents/memory/logs/skills + agents.md 占位）+ 全局
+// 配置模板（config.yaml 不存在时写入全注释模板，存在则不动）。幂等：重复
+// 执行已存在项跳过不覆盖。
 func initCmd(args []string) error {
 	if len(args) > 0 {
 		return fmt.Errorf("init: 不接受参数（用法: `harness init`）")
@@ -34,6 +34,7 @@ func initCmd(args []string) error {
 		{filepath.Join(root, session.DirSubagents), "subagents/"},
 		{filepath.Join(root, session.DirMemory), "memory/"},
 		{filepath.Join(root, session.DirLogs), "logs/"},
+		{filepath.Join(root, session.DirSkills), "skills/"},
 		{filepath.Join(root, session.FileAgentsMD), "agents.md"},
 	}
 	var created, skipped []string

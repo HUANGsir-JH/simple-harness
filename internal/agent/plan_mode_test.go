@@ -36,7 +36,7 @@ func TestRunPlanModeClosedLoop(t *testing.T) {
 		return textStream("完成"), nil
 	}}
 	reg := tools.NewRegistry()
-	for _, tl := range tools.Builtins() {
+	for _, tl := range tools.Builtins("") {
 		if err := reg.Register(tl); err != nil {
 			t.Fatal(err)
 		}

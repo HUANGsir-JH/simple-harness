@@ -81,6 +81,8 @@ func TestDecideAcceptEdits(t *testing.T) {
 	wantAllow(t, toolCall("list_dir", map[string]any{}), mode, nil)
 	wantAllow(t, toolCall("glob", map[string]any{"pattern": "*"}), mode, nil)
 	wantAllow(t, toolCall("update_todo", map[string]any{"items": []any{}}), mode, nil)
+	// skill 只读（加载本地技能指令，不放行就打断渐进式披露，ADR-044）。
+	wantAllow(t, toolCall("skill", map[string]any{"name": "demo-skill"}), mode, nil)
 	// 编辑放行（acceptedit 语义）。
 	wantAllow(t, toolCall("write_file", map[string]any{"path": "a.txt", "content": "x"}), mode, nil)
 	wantAllow(t, toolCall("apply_patch", map[string]any{"patch": "--- a\n+++ b\n"}), mode, nil)

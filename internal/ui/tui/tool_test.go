@@ -264,3 +264,46 @@ func TestInterruptPromptAddedOnRunDone(t *testing.T) {
 		t.Fatal("handleRunDone 后应停止 running")
 	}
 }
+
+// TestSkillToolDispatch skill 工具：摘要 = 技能名，折叠态 = 加载摘要（不含
+// 指令全文），展开可读全文（ADR-044 UI 对位）。
+func TestSkillToolDispatch(t *testing.T) {
+	m := New(nil)
+	tc := &messages.ToolCall{ID: "c1", Name: "skill", Args: []byte(`{"name":"demo-skill"}`)}
+	nm, _ := m.Update(agentEventMsg{ev: events.Event{Type: events.EventToolCall, ToolCall: tc}})
+	m = nm.(Model)
+	if m.tools[0].Summary != "skill demo-skill" {
+		t.Fatalf("skill 摘要 = %q", m.tools[0].Summary)
+	}
+
+	body := "<skill_content name=\"demo-skill\">\n<skill_instructions>\n步骤 1\n</skill_instructions>\n</skill_content>"
+	nm, _ = m.Update(agentEventMsg{ev: events.Event{Type: events.EventToolResult, ToolCall: tc, ToolResult: &messages.ToolResult{Success: true, Content: body}}})
+	m = nm.(Model)
+	ts := m.tools[0]
+	if !ts.Done || ts.Failed {
+		t.Fatalf("skill 结果应 done: %+v", ts)
+	}
+	if !strings.Contains(ts.Content, "loaded demo-skill") {
+		t.Fatalf("折叠态应含加载摘要: %q", ts.Content)
+	}
+	if strings.Contains(ts.Content, "步骤 1") {
+		t.Fatalf("折叠态不应含指令全文: %q", ts.Content)
+	}
+	if !strings.Contains(ts.Full, "步骤 1") {
+		t.Fatalf("展开态应含全文: %q", ts.Full)
+	}
+	// 失败态：错误信息进 Content。
+	nm, _ = m.Update(agentEventMsg{ev: events.Event{Type: events.EventToolResult, ToolCall: tc, ToolResult: &messages.ToolResult{Success: false, Content: "skill: 未知技能"}}})
+	m = nm.(Model)
+	if !m.tools[0].Failed || !strings.Contains(m.tools[0].Content, "未知技能") {
+		t.Fatalf("失败态应含错误: %+v", m.tools[0])
+	}
+}
+
+// TestSkillToolDisplaySummary view 文案："Loaded skill <name>"。
+func TestSkillToolDisplaySummary(t *testing.T) {
+	ts := &ToolStatus{Name: "skill", Summary: "skill demo-skill"}
+	if got := toolDisplaySummary(ts); got != "Loaded skill demo-skill" {
+		t.Fatalf("toolDisplaySummary = %q", got)
+	}
+}

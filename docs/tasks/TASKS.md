@@ -320,3 +320,23 @@
 | A3 | `impl.BaseInstructionsMiddleware` 增强（中文模板 + render 注入 {{cwd}}/{{model}}）+ 单测改写 | ✅ 2026-08-15 |
 | A4 | `agent.Build` 签名 + 链注册（base→agentsmd→tools）+ `session.GlobalAgentsMDPath` + `app.buildAgent` 三模式共用 | ✅ 2026-08-15 |
 | A5 | 文档（ADR-043/TASKS/PROGRESS/IMPLEMENTATION_PLAN/CLAUDE.md）+ 全量 build/vet/test | ✅ 2026-08-15 |
+
+## 全局 Skill 支持（2026-08-15）✅
+
+- **目标**：仅全局 skill——`~/.harness/skills/`（$HARNESS_HOME 覆盖）下 SKILL.md 目录包/平铺文件，系统提示注入技能摘要目录，模型经 `skill` 工具按需加载完整指令（渐进式披露）。参考 deepseek-harness（`packages/skill`：注册表 + filesystem 提供者 + `skill` 工具 + `<available_skills>` 目录）+ codex/opencode（SKILL.md + YAML frontmatter 格式）。
+- **成功标准**：`harness run`/TUI/resume 三模式系统提示含技能目录（有技能时）；`skill` 工具加载完整指令回填；技能读失败/格式非法非致命（绝不终止回合）；`go build/vet/test ./... -count=1` 全绿（含 e2e）。
+- **状态**：✅ 已完成（2026-08-15，ADR-044，版本 0.12.0）
+- **决策（用户拍板）**：① 仅全局（不做项目级/远程/手势直呼）；② `agent.Build` 签名重构为 `BuildOptions` 结构体（AGENTS.md 路径与技能目录同源注入，不再逐能力 +1 参数）；③ 技能格式 = 目录包 `<name>/SKILL.md` + 平铺 `<name>.md`（deepseek-harness/opencode 公共子集）。
+
+### 任务单元
+
+| # | 单元 | 状态 |
+|---|---|---|
+| S1 | `agent.BuildOptions` 签名重构（app/build.go 同步）+ 编译回归 | ✅ 2026-08-15 |
+| S2 | `internal/skills` 包（Discover/Load/IsSkillName/RenderContent/CatalogLine + frontmatter 校验 + 200KB 预算 + 多字节边界）+ 单测 | ✅ 2026-08-15 |
+| S3 | `session.DirSkills`/`GlobalSkillsDir`/`EnsureDirs`（skills/ + README 占位）+ `harness init` 报告 | ✅ 2026-08-15 |
+| S4 | `tools.SkillTool`（按名现读 + `<skill_content>` 包装 + RespondToModel 回填）+ 单测 | ✅ 2026-08-15 |
+| S5 | `impl.SkillsCatalogMiddleware`（onSystemPrompt 目录注入 + 描述截断 + 触发引导）+ 单测 | ✅ 2026-08-15 |
+| S6 | 装配接线（Build 注册/链顺序）+ ToolOutput 豁免 + policy classRead + TUI 分派 + 单测 | ✅ 2026-08-15 |
+| S7 | e2e `TestSkillToolE2E`（进程外全链路：目录行 → skill 调用 → `<skill_content` 回填）+ `TestInitE2E` 扩展 | ✅ 2026-08-15 |
+| S8 | 文档（ADR-044/TASKS/PROGRESS/IMPLEMENTATION_PLAN/CLAUDE.md）+ 全量 build/vet/test | ✅ 2026-08-15 |

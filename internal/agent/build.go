@@ -12,25 +12,39 @@ import (
 	"github.com/agent-project/harness/internal/tools"
 )
 
+// BuildOptions 是 agent.Build 的装配参数（2026-08-16 起收拢为结构体，
+// ADR-044：AGENTS.md 路径与全局技能目录同源注入，签名不再随新能力 +1）。
+// 字段零值 = 未指定（Provider 必填；路径空 = 对应能力不装配）。
+type BuildOptions struct {
+	// Provider 是生效 provider 配置（res，--model/--effort 覆盖后）。
+	Provider *config.ProviderConfig
+	// DefaultMode 是审批默认模式（config approval.mode 播种值，ADR-029）。
+	DefaultMode string
+	// GlobalAgentsMD 是全局 persona 文件路径（~/.harness/agents.md，
+	// $HARNESS_HOME 覆盖，经 session.GlobalAgentsMDPath 解析；空 = 不注入
+	// 全局 persona，ADR-043）。
+	GlobalAgentsMD string
+	// GlobalSkillsDir 是全局技能目录（~/.harness/skills，$HARNESS_HOME
+	// 覆盖，经 session.GlobalSkillsDir 解析；空 = 技能不可用，ADR-044）。
+	GlobalSkillsDir string
+}
+
 // Build 装配 CLI 标准 agent：共享 client + 内置工具 + 标准中间件链。
 //
 // agent 完全无状态（ADR-026）：不持有会话/模型/档位，per-call 一切经 rc 传入
 // （rc.Messages/rc.Model/rc.ThinkingEffort/rc.ThinkingEnabled）。因此一个 agent
 // 可被多个 goroutine 并发 Run（并行 agent 架构可扩展，阶段五落地）。
-// defaultMode 是审批默认模式（config approval.mode 播种值，ADR-029）。
-// globalAgentsMD 是全局 persona 文件路径（~/.harness/agents.md，$HARNESS_HOME
-// 覆盖，经 session.GlobalAgentsMDPath 解析；空 = 不注入全局 persona，ADR-043）。
 //
 // 未来 subagent = 在此之外构造自定义装配（不同工具集/中间件/提示词，本质同样
 // 无状态可共享），buildAgent 从 cmd 下沉到此（2026-08-09）。
-func Build(res *config.ProviderConfig, defaultMode string, globalAgentsMD string) (*Agent, error) {
-	client, err := provider.NewClient(res)
+func Build(o BuildOptions) (*Agent, error) {
+	client, err := provider.NewClient(o.Provider)
 	if err != nil {
 		return nil, fmt.Errorf("provider: %w", err)
 	}
 
 	reg := tools.NewRegistry()
-	for _, t := range tools.Builtins() {
+	for _, t := range tools.Builtins(o.GlobalSkillsDir) {
 		if err := reg.Register(t); err != nil {
 			return nil, err
 		}
@@ -38,9 +52,10 @@ func Build(res *config.ProviderConfig, defaultMode string, globalAgentsMD string
 	// 系统提示组合（内容通道分类原则，ADR-037 修订）：BaseInstructions 在链首
 	// 注入基础提示词（含 {{cwd}}/{{model}} 动态上下文，调用方 per-call 贡献经
 	// rc.SystemPrompt，见 agent.Run）；AgentsMd 注入全局 persona + 项目级 AGENTS.md
-	// （阶段四，ADR-043）；ToolInstructions 追加工具说明。三者仅挂 onSystemPrompt，
+	// （阶段四，ADR-043）；SkillsCatalog 注入全局技能目录（ADR-044）；
+	// ToolInstructions 追加工具说明。四者仅挂 onSystemPrompt，
 	// 不参与洋葱 hook，不影响下列洋葱顺序逻辑。顺序 = 基础 persona → 项目上下文
-	// → 操作型工具引导。
+	// → 技能目录 → 操作型工具引导。
 	// SessionMiddleware 无状态，从 rc.StatePath 读写 AgentState。
 	// CompactMiddleware 上下文压缩（onReasoning before，ADR-037）：每轮采样前
 	// 检查 85% 阈值（实际 usage 驱动 + 估算兜底——兜底由 CompactMiddleware 判定时
@@ -57,14 +72,16 @@ func Build(res *config.ProviderConfig, defaultMode string, globalAgentsMD string
 	// 审批交互器经 rc.Approver 注入（TUI/runCmd 各自 channelApprover，非 TTY 不设）。
 	// DefaultMode 与会话创建播种同源（App.DefaultApprovalMode，config approval.mode）。
 	opts := compact.Options{
-		ContextWindow:   int64(res.ContextWindow),
-		Model:           res.Model,
+		ContextWindow:   int64(o.Provider.ContextWindow),
+		Model:           o.Provider.Model,
 		MaxOutputTokens: 4096, // codex/opencode 同值，ADR-037
 	}
 	compactor := compact.NewRunner(compact.NewSummarizer(client, opts), opts)
+
 	mw := middleware.NewChain(
 		impl.BaseInstructionsMiddleware{Text: impl.DefaultBaseInstructions},
-		impl.AgentsMdMiddleware{Options: agentsmd.Options{GlobalPath: globalAgentsMD}},
+		impl.AgentsMdMiddleware{Options: agentsmd.Options{GlobalPath: o.GlobalAgentsMD}},
+		impl.SkillsCatalogMiddleware{SkillsDir: o.GlobalSkillsDir},
 		impl.ToolInstructionsMiddleware{Tools: reg.Specs()},
 		impl.SessionMiddleware{},
 		impl.CompactMiddleware{Runner: compactor},
@@ -76,10 +93,10 @@ func Build(res *config.ProviderConfig, defaultMode string, globalAgentsMD string
 		impl.TodoReminderMiddleware{},
 		impl.UsageMiddleware{},
 		impl.ToolOutputMiddleware{},
-		impl.ApprovalMiddleware{DefaultMode: defaultMode},
+		impl.ApprovalMiddleware{DefaultMode: o.DefaultMode},
 	)
 
-	a := New(client, res.Model)
+	a := New(client, o.Provider.Model)
 	a.SetTools(reg)
 	a.SetMiddleware(mw)
 	a.SetCompactor(compactor)

@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// TestInitCmd 验证 harness init：建骨架（4 目录 + agents.md 占位）+
+// TestInitCmd 验证 harness init：建骨架（5 目录 + agents.md 占位）+
 // 注释版 config.yaml 模板；幂等且不覆盖用户编辑。
 func TestInitCmd(t *testing.T) {
 	home := t.TempDir()
@@ -15,11 +15,15 @@ func TestInitCmd(t *testing.T) {
 		t.Fatalf("init: %v", err)
 	}
 	for _, p := range []string{
-		"workspaces", "subagents", "memory", "logs", "agents.md", "config.yaml",
+		"workspaces", "subagents", "memory", "logs", "skills", "agents.md", "config.yaml",
 	} {
 		if _, err := os.Stat(filepath.Join(home, p)); err != nil {
 			t.Errorf("缺 %s: %v", p, err)
 		}
+	}
+	// skills/ 占位说明（ADR-044）。
+	if _, err := os.Stat(filepath.Join(home, "skills", "README.md")); err != nil {
+		t.Errorf("缺 skills/README.md: %v", err)
 	}
 	cfg := filepath.Join(home, "config.yaml")
 	data, _ := os.ReadFile(cfg)

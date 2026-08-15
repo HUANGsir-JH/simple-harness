@@ -773,6 +773,8 @@ func toolDisplaySummary(tool *ToolStatus) string {
 		return "Applied patch"
 	case "update_todo":
 		return "Updated tasks"
+	case "skill":
+		return "Loaded skill " + strings.TrimSpace(strings.TrimPrefix(summary, "skill"))
 	default:
 		return summary
 	}
