@@ -71,6 +71,7 @@ func TestCommandPopupModel(t *testing.T) {
 func TestEffortCommandLazyLoadsSession(t *testing.T) {
 	c := newTestController(t, nil)
 	sess := c.active
+	sess.State().SetThinkingEffort("high")
 	c.active = nil
 	c.newSession = func() (*session.Session, error) { return sess, nil }
 	c.cfg = config.Config{Providers: map[string]config.ProviderSpec{
@@ -92,6 +93,9 @@ func TestEffortCommandLazyLoadsSession(t *testing.T) {
 	}
 	if len(m.ovl.sel.items) != 2 || m.ovl.sel.items[0].description != "" {
 		t.Fatalf("effort selector should show names without descriptions: %+v", m.ovl.sel.items)
+	}
+	if m.ovl.sel.current != "high" || m.ovl.sel.cursor != 1 {
+		t.Fatalf("effort selector should preserve current effort, popup=%+v", m.ovl.sel)
 	}
 }
 
@@ -360,6 +364,16 @@ func TestModalsFitPanelWidth(t *testing.T) {
 			if panelWidth > maxInt(screenWidth, modalBorderWidth+modalPaddingWidth+1) {
 				t.Fatalf("%s@%d 弹窗宽度 %d 超出屏幕", tc.name, screenWidth, panelWidth)
 			}
+		}
+	}
+}
+
+func TestPopupFitsShortHeightWithDescriptions(t *testing.T) {
+	sel := &selectPopup{title: "Permission", cursor: 1, current: "accept-edits", items: permissionItems([]string{"readonly", "accept-edits", "full-access"})}
+	for _, height := range []int{3, 4, 5, 6, 7} {
+		view := renderPopup(sel, 80, height)
+		if got := lipgloss.Height(view); got > height {
+			t.Fatalf("popup height %d exceeds budget %d:\n%s", got, height, ansi.Strip(view))
 		}
 	}
 }

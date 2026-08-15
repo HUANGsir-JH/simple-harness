@@ -65,6 +65,24 @@ func TestExpandedToolShowsCompleteArgumentsAndResult(t *testing.T) {
 	}
 }
 
+func TestExpandedToolCompactsResultSpacing(t *testing.T) {
+	ts := &ToolStatus{
+		Name:      "shell_command",
+		Summary:   "shell_command: test",
+		Args:      []byte(`{"command":"test"}`),
+		Done:      true,
+		Full:      "\r\nfirst\r\n\r\nsecond\n \nthird\n\n",
+		Collapsed: false,
+	}
+	view := ansi.Strip(expandedToolContent(ts))
+	if strings.Contains(view, "Result\n\n") {
+		t.Fatalf("Result label should be adjacent to output:\n%s", view)
+	}
+	if !strings.Contains(view, "first\n\nsecond\n \nthird") {
+		t.Fatalf("expanded result should preserve internal blank lines:\n%s", view)
+	}
+}
+
 func TestFormatToolArgsPreservesHTMLCharacters(t *testing.T) {
 	formatted := formatToolArgs([]byte(`{"command":"echo a&b","query":"<tag>","quote":"a'b"}`))
 	for _, escaped := range []string{`\u0026`, `\u003c`, `\u003e`} {

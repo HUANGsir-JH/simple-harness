@@ -118,11 +118,15 @@ func (m Model) runCommand(cmd command) (tea.Model, tea.Cmd) {
 			}
 			return m.sysOK("Effort set to " + cmd.arg), nil
 		}
+		if err := m.c.ensureActive(); err != nil {
+			return m.sysErr(err), nil
+		}
+		efforts := m.c.Efforts()
 		current := ""
 		if st := m.c.ActiveState(); st != nil {
 			current = st.ThinkingEffort
 		}
-		return m.openPopup(popupEffort, "Reasoning effort", effortItems(m.c.Efforts()), current), nil
+		return m.openPopup(popupEffort, "Reasoning effort", effortItems(efforts), current), nil
 	case "permission":
 		if cmd.arg != "" {
 			if err := m.c.SetPermission(cmd.arg); err != nil {
@@ -314,6 +318,7 @@ func (m *Model) reloadSession() {
 	m.queue = nil
 	m.ovl = nil
 	m.pending = nil // 切换会话：丢弃旧会话的待决请求（其 goroutine 随对应 run 的 ctx 释放）
+	m.clearSelection()
 	loadSessionHistory(m, m.c.active)
 	m.autoScroll = true
 	m.refresh(true)
@@ -321,23 +326,63 @@ func (m *Model) reloadSession() {
 
 func renderPopup(sel *selectPopup, screenWidth, availableHeight int) string {
 	panelWidth := modalPanelWidth(screenWidth, 34, 64)
-	maxRows := maxInt(3, availableHeight-4)
-	start := 0
-	if len(sel.items) > maxRows {
-		start = sel.cursor - maxRows/2
-		if start < 0 {
-			start = 0
-		}
-		if start+maxRows > len(sel.items) {
-			start = len(sel.items) - maxRows
-		}
-	}
-	end := start + maxRows
-	if end > len(sel.items) {
-		end = len(sel.items)
-	}
 	listWidth := modalInnerWidth(panelWidth)
+	if len(sel.items) == 0 {
+		return renderInlinePanel(sel.title, []string{styleMuted.Render("No options")}, panelWidth, styleAssistant)
+	}
+	cursor := clamp(sel.cursor, 0, len(sel.items)-1)
+	contentBudget := maxInt(1, availableHeight-2) // panel title + bottom rule
+	showDescriptions := listWidth >= 38
+	showHint := true
+	showIndicators := true
+	for popupRowsHeight(sel, cursor, cursor+1, showDescriptions, showHint, showIndicators) > contentBudget {
+		switch {
+		case showDescriptions:
+			showDescriptions = false
+		case showHint:
+			showHint = false
+		case showIndicators:
+			showIndicators = false
+		default:
+			break
+		}
+		if !showDescriptions && !showHint && !showIndicators {
+			break
+		}
+	}
+
+	start, end := cursor, cursor+1
+	for {
+		preferUp := cursor-start <= end-cursor-1
+		grew := false
+		for attempt := 0; attempt < 2; attempt++ {
+			tryUp := preferUp
+			if attempt == 1 {
+				tryUp = !tryUp
+			}
+			candidateStart, candidateEnd := start, end
+			if tryUp && start > 0 {
+				candidateStart--
+			} else if !tryUp && end < len(sel.items) {
+				candidateEnd++
+			} else {
+				continue
+			}
+			if popupRowsHeight(sel, candidateStart, candidateEnd, showDescriptions, showHint, showIndicators) <= contentBudget {
+				start, end = candidateStart, candidateEnd
+				grew = true
+				break
+			}
+		}
+		if !grew {
+			break
+		}
+	}
+
 	var rows []string
+	if showIndicators && start > 0 {
+		rows = append(rows, styleMuted.Render(fmt.Sprintf("  ↑ %d more", start)))
+	}
 	for i := start; i < end; i++ {
 		prefix := "  "
 		if i == sel.cursor {
@@ -352,18 +397,37 @@ func renderPopup(sel *selectPopup, screenWidth, availableHeight int) string {
 			row = styleSelected.Render(fitLine(row, listWidth))
 		}
 		rows = append(rows, row)
-		if sel.items[i].description != "" && listWidth >= 38 {
+		if showDescriptions && sel.items[i].description != "" {
 			rows = append(rows, styleMuted.Render("      "+ansi.Truncate(sel.items[i].description, listWidth-6, "...")))
 		}
 	}
-	if start > 0 {
-		rows = append([]string{styleMuted.Render(fmt.Sprintf("  ↑ %d more", start))}, rows...)
-	}
-	if end < len(sel.items) {
+	if showIndicators && end < len(sel.items) {
 		rows = append(rows, styleMuted.Render(fmt.Sprintf("  ↓ %d more", len(sel.items)-end)))
 	}
-	rows = append(rows, "", styleMuted.Render("↑/↓ move · Enter select · Esc cancel"))
+	if showHint {
+		rows = append(rows, styleMuted.Render(ansi.Truncate("↑/↓ move · Enter select · Esc cancel", listWidth, "...")))
+	}
 	return renderInlinePanel(sel.title, rows, panelWidth, styleAssistant)
+}
+
+func popupRowsHeight(sel *selectPopup, start, end int, descriptions, hint, indicators bool) int {
+	height := 0
+	if indicators && start > 0 {
+		height++
+	}
+	for i := start; i < end; i++ {
+		height++
+		if descriptions && sel.items[i].description != "" {
+			height++
+		}
+	}
+	if indicators && end < len(sel.items) {
+		height++
+	}
+	if hint {
+		height++
+	}
+	return height
 }
 
 func switchItems(sessions []session.SessionInfo) []popupItem {

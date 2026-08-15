@@ -215,6 +215,8 @@ func TestMouseTogglesToolBlock(t *testing.T) {
 	y := m.mainTop + hit.start - m.viewport.YOffset
 	nm, _ = m.Update(tea.MouseMsg{X: 4, Y: y, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
 	m = nm.(Model)
+	nm, _ = m.Update(tea.MouseMsg{X: 4, Y: y, Action: tea.MouseActionRelease, Button: tea.MouseButtonLeft})
+	m = nm.(Model)
 	if m.tools[0].Collapsed {
 		t.Fatal("mouse click should expand tool block")
 	}
@@ -254,6 +256,48 @@ func TestMouseSelectsTextAndCtrlCCopiesSelection(t *testing.T) {
 	m = nm.(Model)
 	if copied != m.selection.text || m.toast != "Selected text copied" {
 		t.Fatalf("Ctrl+C copied %q with toast %q, want %q", copied, m.toast, m.selection.text)
+	}
+}
+
+func TestMouseDragFromToolDoesNotToggleBlock(t *testing.T) {
+	m := New(nil)
+	nm, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = nm.(Model)
+	tc := &messages.ToolCall{ID: "drag-tool", Name: "shell_command", Args: []byte(`{"command":"echo hi"}`)}
+	m.onToolCall(tc)
+	m.onToolResult(events.Event{ToolCall: tc, ToolResult: &messages.ToolResult{Success: true, Content: "one\ntwo\nthree"}})
+	m.refresh(true)
+	hit := m.hits[0]
+	y := m.mainTop + hit.start - m.viewport.YOffset
+	nm, _ = m.Update(tea.MouseMsg{X: 2, Y: y, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	m = nm.(Model)
+	nm, _ = m.Update(tea.MouseMsg{X: 8, Y: y + 1, Action: tea.MouseActionMotion, Button: tea.MouseButtonLeft})
+	m = nm.(Model)
+	nm, _ = m.Update(tea.MouseMsg{X: 8, Y: y + 1, Action: tea.MouseActionRelease, Button: tea.MouseButtonLeft})
+	m = nm.(Model)
+	if !m.tools[0].Collapsed {
+		t.Fatal("dragging from a tool block must not toggle expansion")
+	}
+	if m.selection.text == "" {
+		t.Fatal("dragging from a tool block should retain selected text")
+	}
+}
+
+func TestSelectionClearsOnResizeAndReload(t *testing.T) {
+	m := New(nil)
+	m.selection = textSelection{anchor: selectionPoint{line: 0, column: 0}, focus: selectionPoint{line: 0, column: 2}, text: "stale", pressedHit: -1}
+	nm, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = nm.(Model)
+	if m.selection.text != "" || m.selection.dragging {
+		t.Fatal("resize should clear the old timeline selection")
+	}
+
+	c := newTestController(t, nil)
+	m = New(c)
+	m.selection.text = "stale"
+	m.reloadSession()
+	if m.selection.text != "" || m.selection.dragging {
+		t.Fatal("session reload should clear the old timeline selection")
 	}
 }
 
@@ -327,6 +371,8 @@ func TestMouseTargetsExactInterleavedBlock(t *testing.T) {
 		y := m.mainTop + hit.start - m.viewport.YOffset
 		next, _ := m.Update(tea.MouseMsg{X: 4, Y: y, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
 		m = next.(Model)
+		next, _ = m.Update(tea.MouseMsg{X: 4, Y: y, Action: tea.MouseActionRelease, Button: tea.MouseButtonLeft})
+		m = next.(Model)
 	}
 
 	click(2)
@@ -398,6 +444,19 @@ func TestHitRangesAlignWithRenderedLines(t *testing.T) {
 		if hits[i].start <= hits[i-1].end {
 			t.Fatalf("hit %d starts at %d, overlapping previous end %d", i, hits[i].start, hits[i-1].end)
 		}
+	}
+}
+
+func TestTimelineUsesCompactBlockSpacing(t *testing.T) {
+	m := New(nil)
+	m.appendSystem("first", false)
+	tc := &messages.ToolCall{ID: "compact-spacing", Name: "read_file", Args: []byte(`{"path":"README.md"}`)}
+	m.onToolCall(tc)
+	m.onToolResult(events.Event{ToolCall: tc, ToolResult: &messages.ToolResult{Success: true, Content: "one\ntwo"}})
+	m.appendSystem("after", false)
+	content, _ := renderTimeline(&m)
+	if got := strings.Count(content, "\n\n"); got != 1 {
+		t.Fatalf("only the boundary before the collapsed tool should be compact; got %d:\n%s", got, ansi.Strip(content))
 	}
 }
 

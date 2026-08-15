@@ -95,10 +95,12 @@ type selectionPoint struct {
 }
 
 type textSelection struct {
-	anchor   selectionPoint
-	focus    selectionPoint
-	dragging bool
-	text     string
+	anchor     selectionPoint
+	focus      selectionPoint
+	dragging   bool
+	moved      bool
+	pressedHit int
+	text       string
 }
 
 var writeClipboard = clipboard.WriteAll
@@ -254,6 +256,7 @@ func New(c *Controller) Model {
 		historyPos:   -1,
 		completion:   -1,
 		selectedHit:  -1,
+		selection:    textSelection{pressedHit: -1},
 		autoScroll:   true,
 		showThinking: true,
 		width:        80,
@@ -266,6 +269,9 @@ func (m Model) Init() tea.Cmd { return textarea.Blink }
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
+		if m.width != msg.Width || m.height != msg.Height {
+			m.clearSelection()
+		}
 		m.width, m.height = msg.Width, msg.Height
 		m.layout()
 		m.refresh(true)
@@ -493,20 +499,29 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if ev.Action == tea.MouseActionMotion && m.selection.dragging {
-		m.selection.focus = m.timelinePoint(ev.X, ev.Y)
+		point := m.timelinePoint(ev.X, ev.Y)
+		if point != m.selection.anchor {
+			m.selection.moved = true
+		}
+		m.selection.focus = point
 		m.updateSelectionText()
 		m.refresh(false)
 		return m, nil
 	}
 	if ev.Action == tea.MouseActionRelease && m.selection.dragging {
 		point := m.timelinePoint(ev.X, ev.Y)
-		changed := point != m.selection.focus
 		m.selection.focus = point
 		m.selection.dragging = false
 		m.updateSelectionText()
-		if changed {
-			m.refresh(false)
+		if !m.selection.moved {
+			if m.selection.pressedHit >= 0 && m.selection.pressedHit < len(m.hits) {
+				m.selectedHit = m.selection.pressedHit
+				m.toggleHit(m.hits[m.selectedHit])
+			}
+			m.selection.text = ""
 		}
+		m.selection.pressedHit = -1
+		m.refresh(false)
 		return m, nil
 	}
 	if ev.Button != tea.MouseButtonLeft || ev.Action != tea.MouseActionPress {
@@ -514,18 +529,20 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	}
 	if ev.Y >= m.composerTop {
 		m.selection.dragging = false
+		m.selection.pressedHit = -1
 		m.setFocus(focusComposer)
 		m.refresh(false)
 		return m, nil
 	}
 	if ev.Y >= m.mainTop && ev.Y < m.mainTop+m.viewport.Height && m.ovl == nil {
 		m.setFocus(focusTimeline)
-		m.selection = textSelection{anchor: m.timelinePoint(ev.X, ev.Y), focus: m.timelinePoint(ev.X, ev.Y), dragging: true}
+		point := m.timelinePoint(ev.X, ev.Y)
+		m.selection = textSelection{anchor: point, focus: point, dragging: true, pressedHit: -1}
 		contentY := m.viewport.YOffset + ev.Y - m.mainTop
 		for i, hit := range m.hits {
 			if contentY >= hit.start && contentY <= hit.end {
 				m.selectedHit = i
-				m.toggleHit(hit)
+				m.selection.pressedHit = i
 				break
 			}
 		}
@@ -592,6 +609,10 @@ func (m *Model) updateSelectionText() {
 		parts = append(parts, string(runes[from:to]))
 	}
 	m.selection.text = strings.TrimSpace(strings.Join(parts, "\n"))
+}
+
+func (m *Model) clearSelection() {
+	m.selection = textSelection{pressedHit: -1}
 }
 
 func (m Model) handleApprovalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {

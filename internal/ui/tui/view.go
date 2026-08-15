@@ -412,13 +412,21 @@ func renderTimeline(m *Model) (string, []hitTarget) {
 	var sb strings.Builder
 	var hits []hitTarget
 	line := 0
-	// appendCell writes one timeline cell followed by a single blank separator
-	// line. localStart/localEnd are line offsets inside the cell that the hit
-	// target covers; localEnd < 0 means "the whole cell".
-	appendCell := func(cell string, hit *hitTarget, localStart, localEnd int) {
+	wroteCell := false
+	// appendCell inserts the separator before each cell so collapsed tools can
+	// use a compact boundary without changing spacing between other messages.
+	appendCell := func(cell string, hit *hitTarget, localStart, localEnd int, compactBefore bool) {
 		cell = strings.TrimRight(cell, "\n")
 		if cell == "" {
 			return
+		}
+		if wroteCell {
+			if compactBefore {
+				sb.WriteString("\n")
+			} else {
+				sb.WriteString("\n\n")
+				line++
+			}
 		}
 		height := lipgloss.Height(cell)
 		if hit != nil {
@@ -430,9 +438,8 @@ func renderTimeline(m *Model) (string, []hitTarget) {
 			hits = append(hits, *hit)
 		}
 		sb.WriteString(cell)
-		sb.WriteString("\n\n")
-		// cell occupies `height` lines plus the one blank separator line.
-		line += height + 1
+		line += height
+		wroteCell = true
 	}
 
 	for _, item := range m.items {
@@ -444,7 +451,7 @@ func renderTimeline(m *Model) (string, []hitTarget) {
 				h := hitTarget{kind: hitThinking, message: item.msg}
 				hit = &h
 			}
-			appendCell(cell.body, hit, cell.thinkingStart, cell.thinkingEnd)
+			appendCell(cell.body, hit, cell.thinkingStart, cell.thinkingEnd, false)
 		case itemTool:
 			cell := renderToolBlock(item.tool, m.contentWidth, m.isToolSelected(item.tool))
 			var hit *hitTarget
@@ -452,11 +459,11 @@ func renderTimeline(m *Model) (string, []hitTarget) {
 				h := hitTarget{kind: hitTool, tool: item.tool}
 				hit = &h
 			}
-			appendCell(cell, hit, 0, -1)
+			appendCell(cell, hit, 0, -1, item.tool.Collapsed)
 		}
 	}
 	if m.stream != nil && (m.stream.Text != "" || (m.showThinking && m.stream.Thinking != "")) {
-		appendCell(renderStream(m.stream, m.contentWidth, m.showThinking), nil, 0, -1)
+		appendCell(renderStream(m.stream, m.contentWidth, m.showThinking), nil, 0, -1, false)
 	}
 	if sb.Len() == 0 {
 		brand := styleBrand.Render("Harness")
@@ -727,8 +734,23 @@ func expandedToolContent(tool *ToolStatus) string {
 	if result == "" {
 		result = "waiting for result"
 	}
-	parts = append(parts, "", styleAssistant.Render("Result"), result)
+	result = compactToolResult(result)
+	parts = append(parts, styleAssistant.Render("Result"), result)
 	return strings.Join(parts, "\n")
+}
+
+func compactToolResult(result string) string {
+	result = strings.ReplaceAll(result, "\r\n", "\n")
+	result = strings.ReplaceAll(result, "\r", "\n")
+	lines := strings.Split(result, "\n")
+	start, end := 0, len(lines)
+	for start < end && strings.TrimSpace(lines[start]) == "" {
+		start++
+	}
+	for end > start && strings.TrimSpace(lines[end-1]) == "" {
+		end--
+	}
+	return strings.Join(lines[start:end], "\n")
 }
 
 func toolDisplaySummary(tool *ToolStatus) string {
