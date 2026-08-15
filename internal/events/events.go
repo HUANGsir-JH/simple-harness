@@ -36,6 +36,10 @@ const (
 	// EventCompacted 是上下文压缩完成通知（agent 读 rc.attrs 压缩标记后发出；
 	// TUI 显示系统行"上下文已压缩"，ADR-037）。
 	EventCompacted EventType = "compacted"
+	// EventNotice 是系统提示行（后台任务完成等注入通知的 UI 可见性，
+	// 2026-08-13）：BackgroundCompletionMiddleware 注入完成后经 rc.Emit 发出，
+	// TUI 渲染为系统行；transcript 不落盘（内容已作为 user 行由 AddUser 写入）。
+	EventNotice EventType = "notice"
 	// EventError 是回合级错误。
 	EventError EventType = "error"
 )

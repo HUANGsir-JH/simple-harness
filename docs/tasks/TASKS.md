@@ -227,6 +227,79 @@
 | T4 | CompactMiddleware 判定（in.Tools）+ Controller.RunCompact 手动路径适配 | ✅ 2026-08-13 |
 | T5 | 测试改写（compact/chain/session）+ 新增（base_instructions/TestRunSystemPromptCompose 回归锚点/TestRunnerShouldCompact）+ 文档 + 全量验证 | ✅ 2026-08-13 |
 
+## 阶段 后台任务完成自动反向通知 + 唤醒器（ADR-040）✅
+
+- **目标**：shell 后台进程（background: true / 超时转后台）完成时主动通知模型（参照 AgentScope Java v2 AsyncToolMiddleware + MessageBus.inbox + WakeupDispatcher）：通用 async 通道（独立 completion 包，阶段 5 子 agent 复用）→ 落盘完成事件 → 下次采样前注入对话末尾；会话空闲时唤醒 run 自动继续。
+- **成功标准**：completions.json 独立落盘（不挂 AgentState）；通知角色 RoleUser（transcript/load 零改动）；唤醒决策收敛 `Controller.MaybeWake`（agent 核心零耦合）；计划评审轮三处竞态修复（同步抢占防双唤醒 / 超时瞬间补偿 / 失败不热循环）落地并有回归锚点；全量 build/vet/test + tools -race + 三平台交叉编译绿。
+- **状态**：✅ 已完成（2026-08-13，ADR-040，版本 0.9.3）
+- **说明**：计划 `docs/plans/async-completion-notify-2026-08-13.md` 评审轮修复三处后实施；路径 A（注入）与路径 B（唤醒）按会话状态自然分流，Drain 清空 + PendingCount()==0 天然防重；run 单轮模式无唤醒器为已知局限（测试用，ADR 记录）。
+
+### 任务单元
+
+| # | 单元 | 状态 |
+|---|---|---|
+| T1 | completion 包（Event + Queue：锁内 append/Drain + pid 临时名原子落盘 + 锁外 OnAppend）+ 7 测试（含并发守恒 -race） | ✅ 2026-08-13 |
+| T2 | rc 加 Completions/AppendUser + Session Create/Resume 构造队列 + RuntimeContext 注入（防环同 rc.Segment）+ 2 测试 | ✅ 2026-08-13 |
+| T3 | BackgroundCompletionMiddleware（onReasoning before：Drain → AppendUser → in.Messages 同步 → rc.Emit EventNotice）+ events.EventNotice + build.go 挂载 + 3 测试 | ✅ 2026-08-13 |
+| T4 | tools 生产端：bgProcess 条目加 queue/sessionID/logPath + notifyCompletion + 两处 Wait goroutine + compensateTransferNotify（超时瞬间竞态补偿）+ 文案/schema + 9 测试（4 集成） | ✅ 2026-08-13 |
+| T5 | TUI 唤醒器：RunWakeup/MaybeWake（同步抢占 cancel）/isRunning + setSend 遍历 open + ensureActive/SwitchTo 登记 + Model 双闸（m.running + completionWakeMsg）+ handleRunDone err==nil 补唤醒 + EventNotice 系统行 + 13 测试 | ✅ 2026-08-13 |
+| T6 | 文档（ADR-040/PROGRESS/IMPLEMENTATION_PLAN/TASKS）+ 版本 0.9.3 + 全量验证 + 交叉编译 + go install | ✅ 2026-08-13 |
+
 ## 阶段 6（TUI 后后续可选）：摘要式压缩 / grep 工具 / 双向通信
 
 - **状态**：未开始（TUI 已提前为独立阶段；本阶段为压缩/grep/双向通信剩余项）
+
+## 阶段 7（2026-08-14 提前启动）：代码架构整理 ✅
+
+- **目标**：低风险可读性/可维护性整理（架构方向不改）：① 注入闭包方法值化（可 grep/可跳转）；② Composition Root 收敛——命令层只声明模式与参数，装配全在 `app.Build → HarnessAgent`；③ rc 注入分层（session 域默认 + Controller 单一 UI 覆写点）；④ TUI 启停序列显式三阶段（Assemble → Run → Close），拆除与装配对称；⑤ ADR-040 审查待办 03/04/05 修复 + 06 测试补齐 + handleCompactDone 补唤醒。
+- **状态**：✅ 已完成（2026-08-14，ADR-041，版本 0.10.0）
+- **说明**：用户拍板提前启动（原计划阶段 4/5/6 完成后做，为下一阶段铺路）；装配形态经两轮评审定稿——产物命名 `HarnessAgent`（避开 RuntimeContext 的 Runtime；内部持有基础 ReAct agent `reactAgent` 字段）、TUI 三阶段逐段解释、`app.Build` 草案用户确认。除 03/04/05 防御性修复外行为零变化。
+
+### 任务单元
+
+| # | 单元 | 状态 |
+|---|---|---|
+| T1 | 接缝方法值化：`session.writeSegment`/`AddUser` 方法值 + `controller.wake` 命名方法值 | ✅ 2026-08-14 |
+| T2 | `Controller.newRunContext` 单一 UI 注入点（Run/RunWakeup/RunCompact 共用） | ✅ 2026-08-14 |
+| T3 | tui 显式三阶段 `Assemble/Run/Close` + RunTUI 薄壳 | ✅ 2026-08-14 |
+| T4 | app Composition Root（`build.go`+`harness_agent.go`+runOnce 迁移+`ProjectForCWD`）+ 命令层瘦身（main/run/resume，删 repl.go） | ✅ 2026-08-14 |
+| T5 | 审查 03：`BackgroundCompletionMiddleware` 补 `rc.Messages != nil` 守卫 + 测试 | ✅ 2026-08-14 |
+| T6 | 审查 04：前台 notifyCompletion `transferred` 门控 + `waitForeground` 抽名 + 回归锚点 | ✅ 2026-08-14 |
+| T7 | 审查 05：`runDoneMsg.wakeNotStarted`，未开跑唤醒 run 不写中断提示 + 回归锚点 | ✅ 2026-08-14 |
+| T8 | 审查 06：四组测试（唤醒中断/非 active 事件/退出后 Send/渲染器忽略 EventNotice） | ✅ 2026-08-14 |
+| T9 | `handleCompactDone` 成功路径补 MaybeWake + 测试 | ✅ 2026-08-14 |
+| T10 | 测试基架打磨：`testCompletionRC` 去 rc.attrs 走私 | ✅ 2026-08-14 |
+| T11 | 文档（ADR-041/TASKS/PROGRESS/IMPLEMENTATION_PLAN/规划文档状态）+ 版本 0.10.0 | ✅ 2026-08-14 |
+| T12 | 全量验证：build/vet/test/-race/e2e/交叉编译/go install | ✅ 2026-08-14 |
+
+## 工具命令：harness init（2026-08-14）✅
+
+- **目标**：`harness init` 初始化 workspace 根（$HARNESS_HOME 优先，否则 ~/.harness）：目录骨架（workspaces/subagents/memory/logs + agents.md 占位）+ 全局配置模板（config.yaml 不存在时写入**全注释模板**，存在则不动）；幂等可重复执行、不覆盖用户编辑。
+- **状态**：✅ 已完成（2026-08-14，版本 0.11.0）
+- **决策（用户拍板）**：① init 范围 = 骨架 + 注释版 config.yaml 模板（非完整示例——无激活值不误连端点；run 报错从 "no config found" 变为 "providers: no providers configured"，更明确指向填配置）；② 配置查找顺带对齐 HARNESS_HOME（此前写死 ~/.harness，与 session 存储根不一致）。
+
+### 任务单元
+
+| # | 单元 | 状态 |
+|---|---|---|
+| I1 | `config.EnvHome` 规范常量 + `globalConfigPath` 候选对齐（$HARNESS_HOME/config.yaml 优先）+ `session.EnvHome` 别名 | ✅ 2026-08-14 |
+| I2 | config 全注释模板 + `EnsureConfig`（不存在才写、临时名 rename 原子、不覆盖） | ✅ 2026-08-14 |
+| I3 | cmd `initCmd`（预检报告 [创建]/[跳过]）+ main 分发/usage | ✅ 2026-08-14 |
+| I4 | 测试：globalConfigPath/EnsureConfig 3 项 + cmd init 2 项 + e2e init（进程外幂等/不覆盖） | ✅ 2026-08-14 |
+| I5 | 文档（TASKS/PROGRESS/IMPLEMENTATION_PLAN）+ 版本 0.11.0 + 全量验证 | ✅ 2026-08-14 |
+
+## 后台日志分配竞态修复（2026-08-14）✅
+
+- **目标**：修复并发启动 background 任务时的日志文件分配竞态（问题文档 `docs/problems/background-log-race-2026-08-14.md`）：临时日志名由 `time.Now().UnixNano()` 合成，并行 tool call 同刻调用返回相同值（本机实测连续调用 93% 同值、8 并发同刻 7~8 个相同）→ 共享 inode 输出互覆/丢失 + rename 竞态致通知路径指向已消失的 `.bg` 文件。统一改用 `os.CreateTemp`（随机后缀 + O_EXCL）保证唯一性；三处同源一并修复（`.bg_` / `.fg_` / eviction `tool_`）；补并发回归测试。
+- **状态**：✅ 已完成（2026-08-14，ADR-042，版本 0.11.1）
+
+### 任务单元
+
+| # | 单元 | 状态 |
+|---|---|---|
+| B1 | 定位 + 复现：UnixNano 碰撞测量（连续 93% 同值、8 并发 7~8 个相同）+ 会话存储证据核对（38763.log 等长行整体覆盖） | ✅ 2026-08-14 |
+| B2 | background.go：startBackground 改 `os.CreateTemp(".bg_*.log")` + rename 降级语义注释同步 | ✅ 2026-08-14 |
+| B3 | shell.go（`.fg_*.log`）+ evict.go（`tool_*.txt`）同源修复 | ✅ 2026-08-14 |
+| B4 | 回归测试 `TestShellCommandBackgroundConcurrentUniqueLogs`（12 轮 × 8 并发屏障；修复前一次运行复现全部四症状） | ✅ 2026-08-14 |
+| B5 | 文档（ADR-042/PROGRESS/TASKS/问题文档状态）+ 版本 0.11.1 + 全量验证 + 交叉编译 | ✅ 2026-08-14 |
+| B6 | 修复后回归验证：场景 A（保持 run）6 轮并发 19 任务实测（零 .bg 泄漏/内容完整无串扰/通知全达）+ 场景 B（结束 run）OnAppend 逐条实时 + 唤醒器全套 + setsid 干净环境全量/race 全绿 + SIGTTIN 环境边界记录 | ✅ 2026-08-14 |

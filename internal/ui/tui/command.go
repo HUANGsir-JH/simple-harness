@@ -41,6 +41,7 @@ func (c *Controller) Sessions() []session.SessionInfo {
 func (c *Controller) SwitchTo(id string) error {
 	if s, ok := c.open[id]; ok {
 		c.active = s
+		c.registerWake(s) // 幂等：早于 wakeSignal 生成时 setSend 已统一补登记
 		return nil
 	}
 	list, err := c.proj.Sessions()
@@ -63,6 +64,7 @@ func (c *Controller) SwitchTo(id string) error {
 	}
 	c.open[id] = s
 	c.active = s
+	c.registerWake(s) // 完成事件唤起回调（2026-08-13）
 	return nil
 }
 

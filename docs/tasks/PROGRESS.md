@@ -1,15 +1,51 @@
-## 2026-08-15
+## 2026-08-14
 
-### TUI v3 全面替换 ✅
+### 后台日志分配竞态修复 ✅ 版本 0.11.1（ADR-042）
 
-- **背景**：参照 `../claude-code-source-code/src/components` 的内容优先 TUI 设计，全面替换原常驻双行顶栏、全屏深色画布、四边 ASCII composer、显式 `YOU/ASSISTANT` 标签与居中盒式 modal；完整计划先行落盘到 `docs/plans/tui-v3-2026-08-15.md`。
-- **交付**：暖橙主强调 + 青/绿/黄/红语义色；单行会话/模型/plan 条；用户 surface 与开放式助手消息；thinking/工具渐进披露；Claude Code 风格上下边线 composer；紧凑 footer、Todo、queue、命令补全；approval/Ask/selector/help 改为靠近输入区的底部内联 overlay，并为 selector 增加当前项、说明和滚动提示。
-- **响应式**：辅助区统一高度预算，低高度时优先保留交互建议与队列并保证 timeline 至少 3 行；overlay 限制在 viewport；所有横向内容使用 ANSI-aware 截断/填充。新增 48×18 密集状态 + 审批回归、v3 视觉契约与 legacy chrome 移除断言，修复移除旧助手标题后 thinking hit range 偏移一行的问题。
-- **修复回归**：overlay 改为参与布局而非替换 viewport，历史文本持续可见；工具块展开增加完整格式化 JSON 参数与结果；命令补全维持五行但随选择滚动；`/effort` 选择器移除重复说明。
-- **边界**：controller、session、agent event bridge、middleware 审批/Ask 契约、transcript 格式和 slash command 业务语义均未改变；只替换 TUI 呈现与布局。
-- **验证**：`go test ./... -count=1`（含完整 E2E）✅；`go vet ./...` ✅；`go build ./cmd/harness` ✅；`go test -race ./internal/ui/tui -count=1` ✅；定向 ConPTY `TestTUIInteractiveE2E|TestTUIApprovalE2E` ✅。
+- **背景**：TUI 实测（问题文档 `docs/problems/background-log-race-2026-08-14.md`）发现并发启动 background 任务时 5/8 轮日志分配竞态：临时日志名用 `time.Now().UnixNano()` 合成，而本机墙上时钟 tick 粒度粗（实测连续调用 **93% 同值**、8 并发同刻放行 **7~8 个相同**）——并行 tool call 同刻 `os.Create` 共享同一 inode：输出同偏移互覆、等长行整体丢失；先 rename 者胜、后 rename 者 ENOENT 降级到已不存在的 `.bg` 路径（完成通知路径不可读）。四种症状（共享 `.bg` 路径 / `.bg` 消失 / 内容串扰 / 输出丢失）一次性全部复现定位。
+- **修复**：临时文件命名统一 `os.CreateTemp`（随机后缀 + O_EXCL，EEXIST 自动换新），唯一性由内核保证而非时间戳概率；三处同源一并修：`background.go`（`.bg_*.log`）、`shell.go`（`.fg_*.log`，超时转后台同源 rename 竞态）、`evict.go`（`tool_*.txt`，并发 eviction 后写者 O_TRUNC 覆盖先写者）；rename 降级语义保留（tmp 由 O_EXCL 唯一创建、降级路径必然存在，注释同步）。
+- **回归锚点**：`TestShellCommandBackgroundConcurrentUniqueLogs`（12 轮 × 8 任务屏障并发直调 `startBackground`；断言路径唯一且为 `<pid>.log`、文件可读、内容仅含本任务、无 `.bg` 残留）——修复前一次运行即复现全部四症状，修复后 3 连跑全绿。
+- **验证**：`go build/vet/test ./...` 全绿 + `tools -race` 绿 + linux/windows/darwin 交叉编译绿。
+- **修复后回归验证（2026-08-14 晚，真实 TUI 会话多轮实测 + 干净环境全量）**：
+  - **场景 A（保持 run）**：6 轮并发 19 个后台任务（并发数 2/3/4/4/2/4，标识输出 + sleep 1~6s）——返回路径全部为 `<pid>.log`（零 `.bg` 泄漏）、日志运行期间存在且内容完整（START/END 齐全）、无任何串扰（每份日志仅含本任务标识）、完成通知全部到达（exit 0、无遗漏、无重复）；批量投递符合设计：通知在**下次工具调用返回时**批量注入（如第 3 轮返回时 4 条通知一次注入，含上轮延迟的 1 条）。
+  - **场景 B（结束 run）**：`TestQueueOnAppend`（每次 Append 触发一次 OnAppend = **逐条实时**）+ TUI 唤醒器全套（MaybeWake 三分支 / completionWakeMsg 拉起 run / 同步抢占防并发 / handleRunDone 补唤醒）通过；全量测试 ui/tui 包 ok。
+  - **干净环境全量**：`go test ./...` 17 包全绿（internal/tools 8.4s）+ `go test -race ./internal/tools/ ./internal/completion/` 全绿（含 12 轮 × 8 任务并发回归测试）。
+  - **环境边界记录（非代码问题）**：harness TUI 会话内 background 运行**会访问控制终端的程序**（如 tui 包测试中 bubbletea 打开 `/dev/tty`）会被 **SIGTTIN** 暂停（POSIX：后台进程组读控制终端）——首次在 TUI 会话内后台跑全量测试时 `TestShellCommandTimeoutTransferNotifies` 因此冻结 259s 失败；脱离控制终端（python 双 fork + setsid，等价 CI）复跑全绿，证明非代码问题。教训：重型测试套件（含 bubbletea 的 tui 测试）不要在 TUI 会话内后台跑，用普通终端或 setsid 方式。
+
+### harness init 命令 ✅ 版本 0.11.0
+
+- **背景**：`~/.harness/` 骨架此前只在首次建会话时惰性创建，config.yaml 从不自动生成——新用户上手要读 help 猜目录结构、手写配置。
+- **交付**：`harness init`（幂等）：建 workspaces/subagents/memory/logs + agents.md 占位 + config.yaml **全注释模板**（不存在才写、临时名 rename 原子、已存在不覆盖用户编辑），输出 `[创建]/[跳过]` 报告 + 填配置提示。**顺带对齐 HARNESS_HOME**：`config.EnvHome` 规范常量（config 最底层）+ `session.EnvHome` 别名引用；`globalConfigPath` 候选改为 $HARNESS_HOME/config.yaml 优先（修复 config 查找与 session 存储根不一致）。
+- **决策（用户拍板）**：init 范围 = 骨架 + 注释版模板（非完整示例——无激活值不误连端点；run 报错从 "no config found" 变为 "providers: no providers configured"）；config 查找顺带对齐 HARNESS_HOME。
+- **测试**：config 3 项（globalConfigPath 候选 / 模板全注释 / EnsureConfig 幂等不覆盖）+ cmd 2 项（initCmd 骨架+幂等 / 拒参数）+ e2e 1 项（进程外 init + 重复 init 不覆盖）。
+- **验证**：build/vet/全量 test/e2e/交叉编译绿（见 I5）。
+
+### 阶段 7 代码架构整理 ✅ 版本 0.10.0（ADR-041）
+
+- **背景**：ADR-040 实施后复查代码，闭包密集 + 装配逻辑散落（规划文档 `docs/plans/architecture-cleanup-2026-08-13.md`）。架构方向（无状态 agent + per-call rc + middleware + TUI）本身成立，本轮只做低风险可读性整理，为阶段 4 剩余/5（子 agent）/6 铺路。**用户拍板提前启动**（原计划阶段 4/5/6 完成后做）；装配形态经两轮评审定稿：产物命名 `HarnessAgent`（避开 RuntimeContext 的 Runtime，内部持有基础 ReAct agent）、TUI 三阶段逐段解释、`app.Build` 草案确认。
+- **交付**：
+  - **接缝方法值化（行为零变化，可 grep/可跳转）**：`rc.AppendUser = s.AddUser`、`rc.Segment = s.writeSegment`（seed 落盘抽命名方法）、`c.wakeSignal = c.wake`、repl `newSession` 闭包 → `HarnessAgent.defaultNewSession` 方法值。既定取舍线不动（单方法单实现 → 函数字段；Approver 多方法多实现 → 接口）；run 的 onEvent 双转发等普通回调按分类保留并补捕获语义注释。
+  - **rc 注入分层成型**：session 域（`Session.RuntimeContext`）给全量默认；`Controller.newRunContext` 是唯一 UI 覆写点（Approver/Emit），Run/RunWakeup/RunCompact 三处共用——新增接缝只改一处。
+  - **TUI 显式三阶段**：`tui.Assemble → (*App).Run → (*App).Close` 取代 RunTUI 单函数隐式顺序（RunTUI 留薄壳兼容）；装配只接线不运行（可单测），拆除顺序 WaitRuns→SaveActiveState→CloseAll 与装配对称；完整拆除链：tui.Close（CloseAll）→ main defer CleanupBackground。
+  - **Composition Root**：`app.Build(Options) → *HarnessAgent`（ModeRun/ModeTUI/ModeResume 三工厂）；命令层瘦身成"解析 flags + 声明 Options"（run.go ~35 行，repl.go 删除）；runOnce 事件循环原样迁入 `internal/app`；`HarnessAgent.Run()` 内部按模式创建 signal ctx、`Teardown()` 幂等；`session.ProjectForCWD()`（cmd findProject 下沉，Build 与 sessions 共用）。
+  - **ADR-040 审查待办**：03 `BackgroundCompletionMiddleware` 补 `rc.Messages != nil` 守卫（防非会话 rc panic）+ 测试；04 前台 Wait goroutine `notifyCompletion` 加 `transferred` 门控（atomic.Bool，仅超时转后台置位；抽 `waitForeground` 命名函数）+ 回归锚点 `TestWaitForegroundNotifyGate`（旧实现第一段必挂）；05 `runDoneMsg.wakeNotStarted` 标记——未开跑即被打断的唤醒 run 不写伪中断提示（pending 保留）+ 回归锚点；06 四组测试（已启动唤醒 run Esc 中断正常语义 / 非 active 会话事件 MaybeWake 丢弃 / 退出后 Send 安全 / text+json 渲染器忽略 EventNotice）；另议项落地——`handleCompactDone` 成功路径补 `maybeStartWake`（对称 handleRunDone，compact 期间被闸丢弃的 pending 立即补跑）+ 测试；`testCompletionRC` 去 rc.attrs 走私（直接返回注入记录切片）。
+  - **附带**：e2e `TestSessionPersistenceE2E` 解析符号链接（macOS /var→/private/var 物理/逻辑路径分桶错位，HEAD 即存在、与本次改动无关，测试侧修复）。
+- **验证**：全量 build/vet/test + e2e + -race + 交叉编译 + go install（见 T12）。
+- **影响 ADR**：见 DECISIONS.md ADR-041（影响 ADR-030/026/021/040）。
 
 ## 2026-08-13
+
+### 后台任务完成自动反向通知 + 唤醒器 ✅ 版本 0.9.3（ADR-040）
+
+- **背景**：shell 后台进程（background: true / 超时转后台）完成时 harness 不主动通知模型，模型被迫轮询日志浪费 token/回合，且 `cmd.Wait()` 退出码被丢弃。参照 AgentScope Java v2（AsyncToolMiddleware + MessageBus.inbox + WakeupDispatcher）实现通用 async 通道。计划文档 `docs/plans/async-completion-notify-2026-08-13.md`（计划评审轮修复三处竞态/热循环后实施）。
+- **交付**：
+  - **completion 包（新，只依赖 stdlib）**：`Event` + `Queue`（锁内 append/Drain + pid 临时名原子落盘 completions.json + 锁外 OnAppend 防重入；读侧损坏容错）；7 个测试含并发守恒 `-race`。
+  - **注入端**：rc 新增 `Completions`/`AppendUser`（session 注入，防环同 rc.Segment）；Session Create/Resume 构造队列（Resume 自动恢复未注入事件）；`BackgroundCompletionMiddleware`（onReasoning before，Compact 之后 TodoReminder 之前）：采样前 Drain → AddUser 注入 → `in.Messages` 同步 → `rc.Emit` 推 `EventNotice`（TUI 系统行可见性，text/json 渲染器 default 忽略已核实）。
+  - **生产端（tools）**：bgProcess 条目加 queue/sessionID/logPath（rc 捕获，非会话跳过）；`notifyCompletion`（注销 + 拼通知全文 + Append，exit 码 `exec.ExitError.ExitCode()`、signal 杀 = -1）；两处 Wait goroutine 完成时调用；`compensateTransferNotify`（超时瞬间进程已死的竞态窗口非阻塞 done 补偿，两路恰好一个拿 entry 不双通知）；shell 文案/参数 schema 改"完成会自动通知，可等通知也可轮询日志"。9 个新测试（含 4 个集成：自然退出通知 / kill 不通知 / 前台不通知 / 超时转后台通知 / 超时竞态恰好 1 条）。
+  - **TUI 唤醒器**：`RunWakeup`（Run 去 AddUser 变体）+ `MaybeWake`（三分支丢弃 + **返回 cmd 前同步抢占 cancel**）+ `isRunning`（复用 cancel 零新增字段）；wake 登记（setSend 遍历 open + ensureActive + SwitchTo 三处）；Model `completionWakeMsg` 双闸（m.running + MaybeWake）+ `handleRunDone` 末尾 `err==nil` 补唤醒 + EventNotice 系统行。13 个新测试（含三处回归锚点：同步抢占防并发 run / 双 wake 消息不并发 / 唤醒失败不热循环）。
+- **验证**：`go build/vet/test ./...` 全绿；completion + tools `-race` 绿；linux/darwin 交叉编译绿。
+- **审查修复（2026-08-14，独立审查报告 `docs/reviews/async-completion-notify-review-2026-08-13.md`）**：6 项缺陷（0 严重/1 中等/4 低/1 测试）——01 `/compact` 分派后 wake 可穿过双闸与压缩并发（data race）已修（/compact 分派同步置 running + handleCompactDone 复位 + 回归锚点 `TestCompactDispatchBlocksWake`）；02 超时转后台文案"它仍在运行"→"可能仍在后台运行"已修；03/04/05 低级别记录进阶段 7 待办；计划三处评审轮修复全部核实落地（40 次竞态压测零双通知、零注册表残留）。
+- **已知局限（ADR-040 记录）**：`harness run` 单轮模式（测试用）无唤醒器，完整通知承诺仅对 TUI 会话成立。
 
 ### shell 进程树审查修复轮（审查报告 01-06）✅ 版本 0.9.2
 

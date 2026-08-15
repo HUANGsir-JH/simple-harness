@@ -507,7 +507,14 @@ func TestSessionPersistenceE2E(t *testing.T) {
 
 	// 3) workspace 文件存在。
 	store := session.NewAt(home)
-	proj, err := store.FindProject(workDir)
+	// macOS 上 /var -> /private/var 符号链接：子进程 getcwd 返回物理路径
+	// （/private/var/...），而 t.TempDir 返回逻辑路径（/var/...）——不解析
+	// 符号链接会分到两个项目桶。先解析再 FindProject（与 CLI 进程内 Getwd 同源）。
+	resolved, err := filepath.EvalSymlinks(workDir)
+	if err != nil {
+		t.Fatalf("eval symlinks: %v", err)
+	}
+	proj, err := store.FindProject(resolved)
 	if err != nil {
 		t.Fatalf("find project: %v", err)
 	}
@@ -522,5 +529,61 @@ func TestSessionPersistenceE2E(t *testing.T) {
 		if _, err := os.Stat(p); err != nil {
 			t.Errorf("缺文件 %s: %v", p, err)
 		}
+	}
+}
+
+// TestInitE2E 验证 harness init：创建 workspace 骨架 + 注释版 config.yaml
+// 模板；幂等重跑退出 0、不覆盖用户编辑（进程外验证，2026-08-14）。
+func TestInitE2E(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "home")
+	workDir := t.TempDir()
+	cp, err := termtest.NewTest(t, termtest.Options{
+		CmdName:        harnessExe,
+		Args:           []string{"init"},
+		WorkDirectory:  workDir,
+		DefaultTimeout: 30 * time.Second,
+		Environment:    []string{"HARNESS_HOME=" + home},
+	})
+	if err != nil {
+		t.Fatalf("newtest init: %v", err)
+	}
+	defer cp.Close()
+	if _, err := cp.Expect("初始化完成"); err != nil {
+		t.Fatalf("expect init output: %v", err)
+	}
+	if _, err := cp.ExpectExitCode(0); err != nil {
+		t.Fatalf("expect exit 0: %v", err)
+	}
+	for _, p := range []string{
+		filepath.Join(home, "workspaces"), filepath.Join(home, "subagents"),
+		filepath.Join(home, "memory"), filepath.Join(home, "logs"),
+		filepath.Join(home, "agents.md"), filepath.Join(home, "config.yaml"),
+	} {
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("缺 %s: %v", p, err)
+		}
+	}
+	// 幂等 + 不覆盖：写入用户编辑后再 init。
+	cfg := filepath.Join(home, "config.yaml")
+	if err := os.WriteFile(cfg, []byte("# user\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cp2, err := termtest.NewTest(t, termtest.Options{
+		CmdName:        harnessExe,
+		Args:           []string{"init"},
+		WorkDirectory:  workDir,
+		DefaultTimeout: 30 * time.Second,
+		Environment:    []string{"HARNESS_HOME=" + home},
+	})
+	if err != nil {
+		t.Fatalf("newtest init2: %v", err)
+	}
+	defer cp2.Close()
+	if _, err := cp2.ExpectExitCode(0); err != nil {
+		t.Fatalf("重复 init 退出: %v", err)
+	}
+	data, _ := os.ReadFile(cfg)
+	if string(data) != "# user\n" {
+		t.Errorf("用户编辑不应被覆盖: %q", data)
 	}
 }

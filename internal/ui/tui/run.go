@@ -12,15 +12,27 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// RunTUI starts the full-screen interactive client.
+// App 是装配完成的 TUI 实例（显式三阶段生命周期：Assemble → Run → Close，
+// 架构整理 2026-08-14）。原 RunTUI 把装配/运行/拆除混在一个函数体里、启动与
+// 收尾顺序靠语句排列保证；拆成三阶段后每段有名字有边界，拆除与装配对称可见。
+type App struct {
+	controller *Controller
+	program    *tea.Program
+	closed     bool
+}
+
+// Assemble 装配阶段：controller → model → 历史加载 → program → setSend
+// 补偿登记。只接线不运行——接线完整性可在测试中不启动事件循环直接断言。
+// 参数（agent/project/sess/newSession）即装配产物 HarnessAgent 移交的零件
+// （app→tui 接缝；tui 不反向依赖 app，防环，分层见 internal/app 注释）。
 // sess 为已加载会话（resume）或 nil（新入口，懒加载）；newSession 是懒加载
 // 创建器（sess nil 时首动作触发，resume 传 nil 不触发）。
-func RunTUI(a *agent.Agent, project *session.Project, cfg config.Config, sess *session.Session, newSession func() (*session.Session, error), ctx context.Context, thinkingDisplay ...bool) error {
+// 构造鸡生蛋（bubbletea 固有：Program 需初始 Model，send 只能后注入）经
+// setSend 补偿登记收敛在此阶段，不推翻。
+func Assemble(a *agent.Agent, project *session.Project, cfg config.Config, sess *session.Session, newSession func() (*session.Session, error), ctx context.Context, showThinking bool) *App {
 	controller := NewController(a, project, cfg, sess, newSession, ctx)
 	model := New(controller)
-	if len(thinkingDisplay) > 0 {
-		model.showThinking = thinkingDisplay[0]
-	}
+	model.showThinking = showThinking
 	if sess != nil {
 		loadSessionHistory(&model, sess)
 	}
@@ -33,23 +45,51 @@ func RunTUI(a *agent.Agent, project *session.Project, cfg config.Config, sess *s
 		tea.WithContext(ctx),
 	)
 	controller.setSend(program.Send)
-	_, runErr := program.Run()
+	return &App{controller: controller, program: program}
+}
+
+// Run 运行阶段：事件循环 + 运行侧收尾（WaitRuns → SaveActiveState，顺序显式；
+// 原 RunTUI 收尾逻辑逐字保留）。
+func (a *App) Run() error {
+	_, runErr := a.program.Run()
 	// SIGTERM（tea.WithContext）→ program.Run 返回，但 run goroutine 可能仍在
 	// emit；先等其退出再关 writer（Bug09 治因），writer closed 兜底（Bug06(a)）。
-	controller.WaitRuns()
+	a.controller.WaitRuns()
 	// 退出前兜底把 active session 的 AgentState 写回（ADR-038 退出 pre-kill：
 	// SessionMiddleware 每回合保存已覆盖正常路径，此处是进程退出时刻的廉价
-	// 保险，在 CloseAll 前执行——flush transcript 与写 state 互不干扰）。
+	// 保险，在 Close 前执行——flush transcript 与写 state 互不干扰）。
 	// 落盘失败忽略：兜底是保险，正常路径已保存，不阻塞退出流程。
-	_ = controller.SaveActiveState()
-	defer controller.CloseAll()
+	_ = a.controller.SaveActiveState()
 	if runErr != nil {
-		if errors.Is(ctx.Err(), context.Canceled) {
+		if errors.Is(a.controller.ctx.Err(), context.Canceled) {
 			return nil
 		}
 		return fmt.Errorf("tui: %w", runErr)
 	}
 	return nil
+}
+
+// Close 拆除阶段：CloseAll flush 所有打开会话（与 Assemble 对称；closed 守卫
+// 幂等，外部 Teardown 兜底可重复调用）。
+func (a *App) Close() {
+	if a.closed {
+		return
+	}
+	a.closed = true
+	a.controller.CloseAll()
+}
+
+// RunTUI 是 Assemble→Run→Close 三阶段的便捷封装（既有调用点/外部引用兼容；
+// 新代码建议直接走三阶段 API）。
+func RunTUI(a *agent.Agent, project *session.Project, cfg config.Config, sess *session.Session, newSession func() (*session.Session, error), ctx context.Context, thinkingDisplay ...bool) error {
+	showThinking := true
+	if len(thinkingDisplay) > 0 {
+		showThinking = thinkingDisplay[0]
+	}
+	app := Assemble(a, project, cfg, sess, newSession, ctx, showThinking)
+	err := app.Run()
+	app.Close()
+	return err
 }
 
 func loadSessionHistory(model *Model, sess *session.Session) {

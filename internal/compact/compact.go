@@ -14,8 +14,8 @@ import (
 // ThresholdPercent 是压缩触发阈值：context_window 的 85%（ADR-037，硬编码无配置）。
 const ThresholdPercent = 85
 
-// summaryOutputTokens 是摘要请求的 max_tokens（codex/opencode 同值 4096，ADR-037）。
-const summaryOutputTokens = 4096
+// summaryOutputTokens 是摘要请求的 max_tokens。
+const summaryOutputTokens = 8192
 
 // Options 是压缩选项。全程不加配置（ADR-037）：ContextWindow 来自模型配置，
 // Model/MaxOutputTokens 由装配根（agent.Build）从 client 解析。

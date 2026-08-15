@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime"
+	"sync/atomic"
 	"time"
 
 	"github.com/agent-project/harness/internal/messages"
@@ -26,7 +26,7 @@ const powershellUTF8Prefix = "try { [Console]::OutputEncoding=[System.Text.Encod
 //     （Windows Job Object / POSIX 进程组，含派生孙进程）并回填"已中断"；
 //     **正常退出不杀派生进程**（`npm run dev &` 起的服务随命令返回继续运行，
 //     终端式语义）；**超时不杀树，自动转入后台托管**（返回 PID+日志路径，模型轮询日志，
-//     用 kill_pid 终止，不要重试——命令仍在运行）；输出超长时完整版由
+//     用 kill_pid 终止，不要重试——命令可能仍在运行）；输出超长时完整版由
 //     ToolOutputMiddleware 统一落盘 evictions/（工具返回完整结果，ADR-028）。
 //   - background：后台启动立即返回 PID + 日志路径（长任务/服务启动用），
 //     进程不绑定回合（Esc 不杀），用 read_file/grep 轮询日志，配套 kill_pid
@@ -42,8 +42,8 @@ func (ShellCommandTool) Name() string { return "shell_command" }
 type shellCommandArgs struct {
 	Command    string `json:"command,omitempty" jsonschema:"description=要执行的命令（kill_pid 模式可省略）"`
 	Workdir    string `json:"workdir,omitempty" jsonschema:"description=工作目录（默认当前目录）"`
-	TimeoutMS  int    `json:"timeout_ms,omitempty" jsonschema:"description=超时毫秒（默认 30000；超时后命令自动转入后台继续运行并返回 PID 与日志路径；background/kill_pid 模式忽略）"`
-	Background bool   `json:"background,omitempty" jsonschema:"description=true 时后台启动并立即返回 PID 与日志路径（长任务/服务启动用；输出写入日志文件，用 read_file/grep 轮询；配套 kill_pid 终止）"`
+	TimeoutMS  int    `json:"timeout_ms,omitempty" jsonschema:"description=超时毫秒（默认 30000；超时后命令自动转入后台继续运行并返回 PID 与日志路径，完成会自动通知；background/kill_pid 模式忽略）"`
+	Background bool   `json:"background,omitempty" jsonschema:"description=true 时后台启动并立即返回 PID 与日志路径（长任务/服务启动用；输出写入日志文件，完成会自动通知，可等通知也可用 read_file/grep 轮询；配套 kill_pid 终止）"`
 	KillPID    int    `json:"kill_pid,omitempty" jsonschema:"description=终止指定后台进程（background 启动返回的 PID；提供时忽略 command）"`
 }
 
@@ -51,8 +51,8 @@ func (ShellCommandTool) Spec() provider.ToolSpec {
 	return provider.ToolSpec{
 		Name: "shell_command",
 		Description: "在 shell 中执行命令并返回输出（stdout+stderr 合并）。Windows 用 PowerShell，POSIX 用 sh -c。" +
-			"Esc 中断会终止整个进程树；超时自动转入后台（返回 PID+日志路径，轮询日志、kill_pid 终止，不要重试）。" +
-			"长任务/服务启动用 background: true 后台运行。命令非零退出返回错误文本（输出超长时完整版会保存到 evictions/ 目录并用 read_file 提示，错误信息含路径）。",
+			"Esc 中断会终止整个进程树；超时自动转入后台（返回 PID+日志路径，完成会自动通知，也可轮询日志、kill_pid 终止，不要重试）。" +
+			"长任务/服务启动用 background: true 后台运行（完成会自动通知）。命令非零退出返回错误文本（输出超长时完整版会保存到 evictions/ 目录并用 read_file 提示，错误信息含路径）。",
 		Parameters: schemaOf[shellCommandArgs](),
 	}
 }
@@ -79,7 +79,7 @@ func (ShellCommandTool) Handle(ctx context.Context, rc *middleware.RuntimeContex
 			return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: "shell_command: 后台启动失败: " + err.Error()}
 		}
 		return messages.ToolResult{Success: true, Content: fmt.Sprintf(
-			"已后台启动 PID %d，日志：%s\n用 read_file/grep 轮询日志判断进度；用 shell_command {\"kill_pid\": %d} 终止；会话结束自动清理",
+			"已后台启动 PID %d，日志：%s\n完成会自动通知；可继续其它任务等通知，也可用 read_file/grep 轮询日志观察进度；用 shell_command {\"kill_pid\": %d} 终止；会话结束自动清理",
 			pid, logPath, pid)}, nil
 	}
 
@@ -96,11 +96,14 @@ func (ShellCommandTool) Handle(ctx context.Context, rc *middleware.RuntimeContex
 	if err := os.MkdirAll(logDir, 0o755); err != nil {
 		return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: "shell_command: " + err.Error()}
 	}
-	tmpLog := filepath.Join(logDir, fmt.Sprintf(".fg_%d.log", time.Now().UnixNano()))
-	f, err := os.Create(tmpLog)
+	// 临时名经 os.CreateTemp 唯一化（随机后缀 + O_EXCL）：UnixNano 合成名在并发
+	// tool call 同刻调用时撞名共享 inode（后台日志分配竞态同源，2026-08-14），
+	// 超时转后台的 rename 竞态同样会致通知路径失效。
+	f, err := os.CreateTemp(logDir, ".fg_*.log")
 	if err != nil {
 		return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: "shell_command: " + err.Error()}
 	}
+	tmpLog := f.Name()
 
 	cmd := newShellCmd(p.Command, p.Workdir)
 	cmd.Stdout = f
@@ -127,12 +130,14 @@ func (ShellCommandTool) Handle(ctx context.Context, rc *middleware.RuntimeContex
 
 	// Wait goroutine：Wait 返回（copy goroutine 完成 = 文件写完）后关闭
 	// 日志文件再发 done——转后台后进程可能长活，f 的收尾由这里统一承担。
+	// transferred 门控（审查 04，2026-08-14）：仅超时转后台分支置 true 后才
+	// 按 pid 查全局注册表通知——纯前台完成路径 pid 从未进注册表，无条件查询
+	// 在 pid 复用窗口可能命中"刚死未注销"的旧后台条目发错通知（理论、概率
+	// 可忽略但可消除）；门控后纯前台彻底不查询，误报窗口消除。转后台场景两
+	// 路仍恰好一个拿到 entry（goroutine 命中注册 / compensate 补偿），不双通知。
+	var transferred atomic.Bool
 	done := make(chan error, 1)
-	go func() {
-		err := cmd.Wait()
-		f.Close()
-		done <- err
-	}()
+	go waitForeground(cmd, f, &transferred, done)
 
 	select {
 	case werr := <-done:
@@ -185,16 +190,34 @@ func (ShellCommandTool) Handle(ctx context.Context, rc *middleware.RuntimeContex
 			// 超时转后台托管（ADR-038 扩展）：不杀树——进程继续跑，日志持续
 			// 写文件，句柄移交注册表；模型轮询日志、kill_pid 终止。竞态：进程
 			// 恰好此时完成也注册无害（杀空 job 无副作用，二次 kill 报未找到）。
+			transferred.Store(true) // 门控先置位：转后台后完成必须通知（审查 04）
 			pid := cmd.Process.Pid
 			logPath := transferToBackground(rc, tree, pid, tmpLog)
 			stopTree() // 回调已在超时瞬间触发（DeadlineExceeded 不杀），此处 no-op 防御
 			var zero processTreeHandle
 			tree = zero // 句柄已移交注册表，defer 不再 close
+			// 竞态窗口补偿（2026-08-13）：进程恰在超时瞬间已死时，Wait
+			// goroutine 的 notify 先于上面的注册执行（no-op）——补一次
+			// 注销+通知，保证"完成会自动通知"的承诺不落空。
+			compensateTransferNotify(done, pid)
 			return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: fmt.Sprintf(
-				"shell_command: 命令运行超过 %v，已自动转入后台：PID %d，日志：%s\n用 read_file/grep 轮询日志判断进度；用 shell_command {\"kill_pid\": %d} 终止；不要重试该命令——它仍在运行",
+				"shell_command: 命令运行超过 %v，已自动转入后台：PID %d，日志：%s\n完成会自动通知；可用 read_file/grep 轮询日志观察进度；用 shell_command {\"kill_pid\": %d} 终止；不要重试该命令——它可能仍在后台运行",
 				timeout, pid, logPath, pid)}
 		}
 	}
+}
+
+// waitForeground 回收前台命令进程资源（Wait goroutine 体，审查 04 抽名，
+// 2026-08-14）：Wait 返回（copy goroutine 完成 = 文件写完）→ 关日志文件 →
+// 仅 transferred 时按 pid 发完成通知（纯前台路径不查注册表，pid 复用窗口
+// 不误命中"刚死未注销"的旧后台条目）→ 回传退出错误。
+func waitForeground(cmd *exec.Cmd, f *os.File, transferred *atomic.Bool, done chan<- error) {
+	err := cmd.Wait()
+	f.Close()
+	if transferred.Load() {
+		notifyCompletion(cmd.Process.Pid, err)
+	}
+	done <- err
 }
 
 // newShellCmd 按平台构造 shell 命令（**无 ctx**：前台经 startForeground 绑定

@@ -250,7 +250,7 @@ func TestInterruptPromptAddedOnRunDone(t *testing.T) {
 	nm2, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	m = nm2.(Model)
 	// 回合结束（ctx canceled）→ handleRunDone。
-	nm3, _ := m.handleRunDone(context.Canceled)
+	nm3, _ := m.handleRunDone(runDoneMsg{err: context.Canceled})
 	m = nm3.(Model)
 	if len(c.active.Conversation().Messages) == 0 {
 		t.Fatal("中断提示应写入 conversation")

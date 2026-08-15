@@ -21,10 +21,13 @@ import (
 	"sort"
 
 	"github.com/agent-project/harness/internal/agentstate"
+	"github.com/agent-project/harness/internal/config"
 )
 
 // EnvHome 覆盖 workspace 根目录（测试/定制；对标 codex CODEX_HOME）。
-const EnvHome = "HARNESS_HOME"
+// 规范定义在 config 包（config.EnvHome，2026-08-14 起 config 查找的全局
+// 配置路径同样尊重它），本别名保持 session 包既有 API 稳定。
+const EnvHome = config.EnvHome
 
 // workspace 布局目录常量。
 const (
@@ -80,6 +83,21 @@ func CreateInCWD(model, mode string) (*Session, error) {
 		return nil, err
 	}
 	return proj.Create(model, cwd, mode)
+}
+
+// ProjectForCWD 定位当前工作目录的项目桶（New + Getwd + FindProject 的组合
+// 入口；2026-08-14 从 cmd/harness 下沉——app.Build 与 sessions 命令共用，
+// 消除重复装配）。
+func ProjectForCWD() (*Project, error) {
+	store, err := New()
+	if err != nil {
+		return nil, err
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil, err
+	}
+	return store.FindProject(cwd)
 }
 
 // Root 返回 workspace 根。
