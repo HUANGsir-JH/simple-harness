@@ -33,7 +33,7 @@ type spawnArgs struct {
 func (SpawnAgentTool) Spec() provider.ToolSpec {
 	return provider.ToolSpec{
 		Name: "spawn_agent",
-		Description: "创建子 agent 异步执行任务（立即返回 agent id，完成后结果自动注入对话通知，无需轮询）。" +
+		Description: "创建子 agent 异步执行任务（立即返回 agent id，完成后结果自动注入对话通知，无需轮询，期间可以停下等待或者继续执行其他任务）。" +
 			"子 agent 有独立会话与工具集（general-purpose 全套 / explore 只读）。" +
 			"可并行创建多个子 agent。之后可用 list_agents 查看状态、send_message 补充指示、interrupt_agent 中断、resume_agent 继续。",
 		Parameters: schemaOf[spawnArgs](),
