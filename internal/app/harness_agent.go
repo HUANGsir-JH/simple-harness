@@ -16,6 +16,7 @@ import (
 	"github.com/agent-project/harness/internal/subagent"
 	"github.com/agent-project/harness/internal/ui"
 	"github.com/agent-project/harness/internal/ui/tui"
+	"github.com/agent-project/harness/internal/web"
 	"golang.org/x/term"
 )
 
@@ -51,6 +52,10 @@ type HarnessAgent struct {
 	// ModeResume 传 nil（不触发）。
 	newSession func() (*session.Session, error)
 
+	// web 模式服务参数（buildWeb 注入；ModeWeb 用）。
+	webHost string
+	webPort int
+
 	// run 模式执行参数。
 	prompt       string
 	jsonOut      bool
@@ -75,6 +80,8 @@ func (h *HarnessAgent) Run() error {
 	switch h.mode {
 	case ModeRun:
 		return h.runOnce(ctx)
+	case ModeWeb:
+		return h.runWeb(ctx)
 	default:
 		return h.runTUI(ctx)
 	}
@@ -83,11 +90,24 @@ func (h *HarnessAgent) Run() error {
 // signals 按模式选择监听信号：run 单轮 Esc/Ctrl+C 中断用 SIGINT（+SIGTERM
 // 终止进程）；TUI 的 SIGINT（Ctrl+C）由 bubbletea 作为按键事件处理（复制
 // 语义）、回合中断用 Esc（ADR-028），故只监听 SIGTERM。
+// ModeWeb：无 bubbletea 消费 SIGINT——Ctrl+C 必须走优雅收尾（Server.Shutdown
+// → WaitRuns → SaveActiveState → CloseAll → Teardown），故监听 SIGINT+SIGTERM。
 func (h *HarnessAgent) signals() []os.Signal {
-	if h.mode == ModeRun {
+	if h.mode == ModeRun || h.mode == ModeWeb {
 		return []os.Signal{os.Interrupt, syscall.SIGTERM}
 	}
 	return []os.Signal{syscall.SIGTERM}
+}
+
+// runWeb 执行 Web UI 模式：显式三阶段（Assemble → Run → Close，对齐
+// runTUI）。http.Server 收尾顺序见 web.Server.Run：Shutdown（带超时，先
+// 断开 SSE 长连接）→ WaitRuns → SaveActiveState → CloseAll；子 agent
+// Shutdown 与 background 清理由 Teardown / main defer 承担。
+func (h *HarnessAgent) runWeb(ctx context.Context) error {
+	srv := web.AssembleWith(h.reactAgent, h.proj, h.cfg.Config, h.sess, h.newSession, ctx, h.showThinking, h.subagents, h.webHost, h.webPort)
+	runErr := srv.Run()
+	srv.Close()
+	return runErr
 }
 
 // runTUI 执行 TUI 模式：显式三阶段（Assemble → Run → Close，见 tui 包）。

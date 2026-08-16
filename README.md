@@ -1,6 +1,6 @@
 # simple-harness
 
-用 Go 编写的**极简、可真实使用**的 agent harness（命令行工具），参照 [OpenAI Codex CLI](https://github.com/openai/codex)（Rust）与 [AgentScope Java v2](https://github.com/agentscope-ai/agentscope-java) 的架构思路，定位为通用框架。当前版本 **0.13.0**（阶段 5 子 agent 已落地）。
+用 Go 编写的**极简、可真实使用**的 agent harness（命令行工具），参照 [OpenAI Codex CLI](https://github.com/openai/codex)（Rust）与 [AgentScope Java v2](https://github.com/agentscope-ai/agentscope-java) 的架构思路，定位为通用框架。当前版本 **0.14.0**（Web UI 已落地，`harness web`）。
 
 ## 功能特性
 
@@ -15,6 +15,7 @@
 - **Shell 进程树**：Windows Job Object / POSIX 进程组杀树、超时转后台托管、`background` / `kill_pid` / `wait_task`（ADR-038/040）
 - **子 agent**（阶段 5，ADR-045）：`spawn_agent` 纯异步并行、独立会话落盘、嵌套（深度 ≤2）、`send_message` / `interrupt_agent` / `resume_agent` / `list_agents`、`/subagents` 只读实时查看、按类型装配（general-purpose / explore，explore 含强制只读 shell）
 - **Plan Mode**：规划模式 + plan 文件 + `plan_done` 交接（ADR-036）
+- **Web UI**：`harness web` 本地浏览器界面承载 TUI 全部功能（消息流/工具块/审批/提问/斜杠命令/队列/中断/唤醒/子 agent/plan/todo/用量），gin + SSE + 零依赖前端（go:embed 单二进制）
 
 ## 快速开始
 
@@ -30,6 +31,7 @@ harness init
 harness                          # 进入 TUI 交互模式（默认）
 harness run "分析当前目录结构"    # 单轮流式非交互
 harness resume --last            # 恢复最近会话进 TUI
+harness web                      # 启动本地 Web UI（默认 http://127.0.0.1:8080；--host/--port 覆盖）
 harness sessions                 # 查看会话列表
 harness version
 ```
@@ -37,6 +39,8 @@ harness version
 **配置**：`~/.harness/config.yaml`（可被 `HARNESS_HOME` 覆盖）声明 provider 与模型；**API key 只放 `config.local.yaml`**（gitignore），永不入库。`approval.mode` 为默认审批模式。
 
 **TUI 常用命令**：`/switch` `/model` `/effort` `/thinking` `/permission` `/subagents` `/compact` `/rename` `/help` `/exit`；**Esc** 中断当前回合，**Ctrl+C** 复制选中文本。
+
+**Web UI**（`harness web`）：浏览器打开即可使用，功能与 TUI 等价（会话栏切换/新建、消息流 + thinking 折叠、工具块展开、审批 y/s/n、ask 提问、命令经输入框 `/` 前缀、中断按钮、后台完成自动继续、子 agent 只读查看）。默认绑定 127.0.0.1（POST 接口有 Origin 校验防跨站驱动）；如需局域网访问用 `--host 0.0.0.0`（风险自担）。
 
 ## 架构
 
@@ -46,6 +50,7 @@ internal/
   config/             # 配置域（最底层）：Config/ProviderConfig 类型 + YAML 加载 + 校验
   app/                # 进程级装配根：App{Config, Provider} 惰性单例 + flags 校验 + 审批默认模式
   ui/                 # 渲染（text/json）+ 审批解析 + tui/（bubbletea 全屏交互 UI）
+  web/                # ★ Web UI 运行时（gin 路由 + SSE Hub + Controller + 前端 embed）
   agent/              # 无状态 ReAct loop + 回合级事件 + Build 主装配工厂（client+工具+中间件链）
   middleware/         # 框架 core：6 hook 扩展机制（onAgent/onReasoning/onToolCall/onActing/onModelCall + onSystemPrompt 管道）+ RuntimeContext
   middleware/impl/    # 内置中间件：基础提示词/AGENTS.md/技能目录/工具说明/会话 load-save/todo 提醒/结果截断/审批三档

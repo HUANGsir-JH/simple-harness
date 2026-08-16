@@ -23,6 +23,8 @@ const (
 	ModeTUI
 	// ModeResume 是恢复会话进 TUI 模式（harness resume <id>|--last）。
 	ModeResume
+	// ModeWeb 是 Web UI 模式（harness web：本地 HTTP 服务承载 TUI 全部功能）。
+	ModeWeb
 )
 
 // Options 是命令层对一次运行的声明：模式 + 参数。字段零值 = 未指定。
@@ -47,6 +49,10 @@ type Options struct {
 	// resume 模式会话选择。
 	ResumeID   string
 	ResumeLast bool
+
+	// web 模式服务参数。
+	WebHost string // harness web --host（默认 127.0.0.1）
+	WebPort int    // harness web --port（默认 8080）
 }
 
 // Build 是唯一装配入口（Composition Root）：把"模式+参数"接线成可运行的
@@ -60,9 +66,53 @@ func Build(o Options) (*HarnessAgent, error) {
 		return buildTUI(o)
 	case ModeResume:
 		return buildResume(o)
+	case ModeWeb:
+		return buildWeb(o)
 	default:
 		return nil, fmt.Errorf("app: unknown mode %d", o.Mode)
 	}
+}
+
+// buildWeb 装配 Web UI 模式（webui 阶段，feat/webui）：复用 buildTUI 的零件
+// （buildAgent 共享 agent + Load 配置 + ProjectForCWD 项目桶 + 会话懒加载
+// newSession），跳过终端检查（Web 服务无需 TTY；浏览器即客户端）。装配与
+// 执行（Assemble → Serve → Teardown）全在 Composition Root。
+func buildWeb(o Options) (*HarnessAgent, error) {
+	if o.JSONOut {
+		return nil, fmt.Errorf("web 模式不支持 --json（交互模式同款限制）")
+	}
+	rt, err := Load()
+	if err != nil {
+		return nil, err
+	}
+	a, subMgr, err := buildAgent(rt.Provider, rt.DefaultApprovalMode())
+	if err != nil {
+		return nil, err
+	}
+	proj, err := session.ProjectForCWD()
+	if err != nil {
+		return nil, err
+	}
+	host := o.WebHost
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	port := o.WebPort
+	if port == 0 {
+		port = 8080
+	}
+	h := &HarnessAgent{
+		mode:         ModeWeb,
+		cfg:          rt,
+		reactAgent:   a,
+		subagents:    subMgr,
+		proj:         proj,
+		webHost:      host,
+		webPort:      port,
+		showThinking: !o.NoThinkingDisplay,
+	}
+	h.newSession = h.defaultNewSession
+	return h, nil
 }
 
 // buildAgent 解析全局 persona 与技能目录路径、创建子 agent Manager 并装配共享

@@ -67,6 +67,24 @@
 - **成功标准**：`harness run "用子 agent 分析这个目录结构"` 端到端跑通；并行子 agent 状态可查；`--json` 输出结构化事件；config 文件可配置
 - **状态**：✅ **已完成（2026-08-16，ADR-045，版本 0.13.0）**——`internal/subagent`（Manager + 5 控制工具 + 按类型装配，无接口无工厂）；spawn 纯异步 + completion 队列复用（完成自动注入父对话 + TUI 唤醒，无 wait_agent）；子会话落盘 `<父会话目录>/subagents/<子id>/` + 血缘字段；fork 过滤 = 仅 spawn message；结果完整注入；send_message 仅运行中 / interrupt 任意后代 / resume 仅直属子；权限继承 + 审批归属；wait_task 子专属；TUI /subagents 只读查看；e2e `TestSubagentE2E`。
 
+## 阶段 WebUI：harness web（feat/webui 分支）
+
+- **目标**：`harness web` 本地 HTTP 服务承载 TUI 全部功能（消息流/工具块/审批/提问/斜杠命令/队列/中断/唤醒/子 agent/plan/todo/用量），浏览器界面简洁、直观、易用。
+- **成功标准**：`harness web` 启动（默认 `http://127.0.0.1:8080`）后浏览器可完成 TUI 全部交互；功能等价性由 web 包单测 + httptest 集成（SSE 事件流/审批回填闭环/CSRF）+ 全量回归锁定。
+- **状态**：✅ **已完成（2026-08-16，版本 0.14.0）**——`internal/web`（gin + SSE Hub + WebController 并发契约 + webApprover + 命令分发 + state 快照 + goldmark/chroma md + 工具分派）；`app.ModeWeb/buildWeb/runWeb` + `signals` SIGINT+SIGTERM；`cmd/harness/web.go`（--host/--port/--no-thinking-display）；前端零依赖 embed（会话栏/状态栏/消息流/弹窗/四态矩阵/多标签页同步）；POST Origin 校验；依赖 gin v1.10.1。
+
+### 任务单元
+
+| # | 单元 | 状态 |
+|---|---|---|
+| W1 | 分支 + 依赖（feat/webui + gin v1.10.1） | ✅ 2026-08-16 |
+| W2 | app 层（ModeWeb/buildWeb/runWeb/signals）+ cmd web.go | ✅ 2026-08-16 |
+| W3 | web 包核心（Hub/Controller 并发契约/approver/command） | ✅ 2026-08-16 |
+| W4 | web 包服务与数据（server/md/toolview/state） | ✅ 2026-08-16 |
+| W5 | 前端 assets（index.html/style.css/app.js） | ✅ 2026-08-16 |
+| W6 | 测试（单测 + httptest 集成 + -race + 全量回归） | ✅ 2026-08-16 |
+| W7 | 文档（README/PROGRESS/TASKS/plans/webui-2026-08-16.md）+ 版本 0.14.0 | ✅ 2026-08-16 |
+
 ## 阶段 TUI：bubbletea 全屏交互 UI（提前自阶段 6，子 agent 之前）
 
 - **目标**：bubbletea + bubbles 全屏聊天式 TUI **替代 REPL**（消息列表流式 + md 渲染、底部多行输入 + 队列、工具折叠块 + diff、审批弹窗、斜杠命令弹窗选择器 + 自动补全、thinking 折叠、todo 常驻条、切换全量替换、命令落盘）；TUI 上线后 **REPL 删除**（`repl()` 留薄壳调 `tui.RunTUI`）；`run` 保留流式非交互。

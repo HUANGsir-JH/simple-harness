@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Harness</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div id="app">
+  <!-- 会话栏 -->
+  <aside id="sidebar" aria-label="会话列表">
+    <div class="sidebar-head">
+      <span class="brand">Harness</span>
+      <button id="btn-new" class="btn btn-ghost" aria-label="新建会话" title="新建会话">＋</button>
+    </div>
+    <div id="session-list" class="session-list"></div>
+  </aside>
+
+  <!-- 主区 -->
+  <main id="main">
+    <!-- 状态栏 -->
+    <header id="statusbar">
+      <div class="status-left">
+        <span id="status-session" class="status-session">—</span>
+        <span id="status-plan" class="badge badge-warn" hidden>PLAN</span>
+        <span id="status-subview" class="badge badge-info" hidden>查看子 agent</span>
+      </div>
+      <div class="status-right">
+        <span id="status-model" class="chip"></span>
+        <span id="status-effort" class="chip"></span>
+        <span id="status-permission" class="chip"></span>
+        <span id="status-todo" class="chip"></span>
+        <span class="ctx-wrap" title="上下文占用">
+          <span id="ctx-bar" class="ctx-bar"><span id="ctx-fill" class="ctx-fill"></span></span>
+          <span id="ctx-text" class="ctx-text"></span>
+        </span>
+      </div>
+    </header>
+
+    <!-- 断线横幅 -->
+    <div id="offline-banner" hidden>连接中断，重连中…</div>
+
+    <!-- 消息流 -->
+    <div id="timeline" aria-live="polite"></div>
+
+    <!-- 空态 -->
+    <div id="empty-state" hidden>
+      <div class="empty-card">
+        <div class="empty-title">开始你的第一个会话</div>
+        <div class="empty-sub">在下方输入消息，或输入 <code>/help</code> 查看命令。</div>
+      </div>
+    </div>
+
+    <!-- composer -->
+    <div id="composer">
+      <textarea id="input" rows="1" placeholder="Ask Harness anything  （/help 查看命令）" aria-label="消息输入"></textarea>
+      <div class="composer-actions">
+        <span id="queue-hint" class="queue-hint" hidden></span>
+        <button id="btn-interrupt" class="btn btn-danger" hidden aria-label="中断当前回合" title="中断当前回合">■ 中断</button>
+        <button id="btn-back" class="btn btn-ghost" hidden aria-label="返回父会话" title="返回父会话">← 返回</button>
+        <button id="btn-send" class="btn btn-primary" aria-label="发送">发送</button>
+      </div>
+    </div>
+  </main>
+</div>
+
+<!-- 弹窗容器（审批 / 提问 / 选择 / 帮助） -->
+<div id="overlay-root" hidden>
+  <div class="overlay-backdrop"></div>
+  <div id="overlay-panel" class="overlay-panel" role="dialog" aria-modal="true"></div>
+</div>
+
+<!-- 轻提示 -->
+<div id="toast" hidden></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

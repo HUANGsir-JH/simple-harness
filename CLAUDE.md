@@ -31,7 +31,7 @@ go test ./internal/messages/ -run TestMessageJSONL
 go test ./internal/e2e/ -count=1
 ```
 
-交互模式（`harness` 无子命令进 TUI，bubbletea 全屏）命令：`/switch` `/model` `/effort` `/thinking` `/permission` 弹窗选择器（选项实时从配置获取，右侧显示说明）、`/rename <名称>`（会话改名）、`/subagents`（子 agent 列表 → 只读查看，/switch 返回）、`/help`、`/exit`（退出仅此命令）。**会话懒加载**（2026-08-11）：进入不创建 session，首条消息/状态命令才建（避免 /exit 或 /switch 残留空会话）；**首消息自动命名**（codex first_user_message 同款，前 40 字，/switch 弹窗与 header 展示 name）。**Esc 中断当前回合**（中断提示落盘，resume 可见，ADR-028）；**Ctrl+C 复制**（非中断非退出）；run 期间输入进**队列**（输入框上方队列条，回合完成逐条连跑）。`run`（单轮流式非交互）保留。**thinking 默认开启**（ADR-034，2026-08-10 删配置 enabled 项）：开关是会话级偏好，`/thinking` 或 `--thinking/--no-thinking` 切换，持久化 AgentState，resume 恢复。**工具审批**（ADR-029）：config `approval.mode` 为默认权限（会话创建时播种进 AgentState.Permission.Mode）；危险操作按模式询问，`y` 允许本次 / `s` 本会话记住（落盘 AgentState）/ `n` 拒绝（回填模型换思路）；非 TTY 自动拒绝。
+交互模式（`harness` 无子命令进 TUI，bubbletea 全屏）命令：`/switch` `/model` `/effort` `/thinking` `/permission` 弹窗选择器（选项实时从配置获取，右侧显示说明）、`/rename <名称>`（会话改名）、`/subagents`（子 agent 列表 → 只读查看，/switch 返回）、`/help`、`/exit`（退出仅此命令）。**会话懒加载**（2026-08-11）：进入不创建 session，首条消息/状态命令才建（避免 /exit 或 /switch 残留空会话）；**首消息自动命名**（codex first_user_message 同款，前 40 字，/switch 弹窗与 header 展示 name）。**Esc 中断当前回合**（中断提示落盘，resume 可见，ADR-028）；**Ctrl+C 复制**（非中断非退出）；run 期间输入进**队列**（输入框上方队列条，回合完成逐条连跑）。`run`（单轮流式非交互）保留。**thinking 默认开启**（ADR-034，2026-08-10 删配置 enabled 项）：开关是会话级偏好，`/thinking` 或 `--thinking/--no-thinking` 切换，持久化 AgentState，resume 恢复。**工具审批**（ADR-029）：config `approval.mode` 为默认权限（会话创建时播种进 AgentState.Permission.Mode）；危险操作按模式询问，`y` 允许本次 / `s` 本会话记住（落盘 AgentState）/ `n` 拒绝（回填模型换思路）；非 TTY 自动拒绝。**Web UI**（feat/webui，版本 0.14.0）：`harness web` 启动本地服务（默认 http://127.0.0.1:8080，--host/--port 覆盖），浏览器承载 TUI 全部功能——`internal/web`（gin 路由 + SSE Hub + WebController 对位 tui.Controller + webApprover + 命令分发 + state 快照 + goldmark/chroma md + 工具分派），前端零依赖 embed；POST 接口有 Origin 校验（防跨站驱动本机 agent）。
 
 ## 代码架构
 
@@ -41,6 +41,7 @@ internal/
   config/             # ★ 配置域（最底层，只依赖 yaml+stdlib）：Config/ProviderSpec/Model/ProviderConfig 类型 + YAML 加载 + 解析 + 校验（provider 拆出，2026-08-09）
   app/                # ★ 进程级装配根：App{Config, Provider} 惰性单例 + flags 校验 + 审批默认模式（未来扩展 client/agent/subagent 字段）
   ui/                 # ★ 用户交互层：渲染（text/json，run 单轮用）+ 审批解析（ParseApprovalDecision）+ **tui/**（bubbletea 全屏交互 UI 替代 REPL：Model/View/Update 纯函数 + 事件桥 + 审批桥，ADR-030）
+  web/                # ★ Web UI 运行时（feat/webui）：gin 路由 + SSE Hub + WebController（对位 tui.Controller）+ webApprover + 命令分发 + state 快照 + 零依赖前端 embed
   agent/              # ★ 无状态 ReAct loop（采样→工具→回填，消息序列经 rc.Messages；ADR-026）+ 回合级事件（turn_done 为测试锚点）+ Build 装配工厂（client+工具+标准中间件链）
   middleware/         # ★ 框架 core：6 hook 扩展机制（onAgent/onReasoning/onToolCall/onActing/onModelCall onion + onSystemPrompt 管道）+ RuntimeContext（承载会话）+ 契约（Approver/ApprovalRequest/DeniedError，ADR-029）
   middleware/impl/    # ★ 内置中间件实现：基础提示词注入（链首，含 {{cwd}}/{{model}}）/ AGENTS.md 注入（AgentsMd，ADR-043）/ 技能目录注入（SkillsCatalog，ADR-044）/ 工具说明注入 / 会话状态 load-save / todo 跨轮提醒（ADR-027）/ 工具结果截断 head/tail + evictions 落盘（ADR-028）/ 工具审批三档 + 黑白名单 + 会话记忆（ADR-029）

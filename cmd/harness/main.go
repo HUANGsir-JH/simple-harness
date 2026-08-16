@@ -10,7 +10,7 @@ import (
 
 // version 是 harness 版本号。每次有用户可见变更（功能 → minor、修复 → patch）
 // 随提交 bump，`harness version` 输出。
-const version = "0.13.0"
+const version = "0.14.0"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -53,6 +53,8 @@ func run(args []string) error {
 		return runCmd(rest[1:], jsonOut)
 	case "resume":
 		return resumeCmd(rest[1:], jsonOut)
+	case "web":
+		return webCmd(rest[1:])
 	case "init":
 		return initCmd(rest[1:])
 	case "sessions":
@@ -81,6 +83,7 @@ func usage() {
 	fmt.Println("  harness                       interactive mode (TUI, multi-turn)")
 	fmt.Println("  harness run <prompt>          run a single turn with the configured model")
 	fmt.Println("  harness resume <id>|--last    resume a session and continue in TUI")
+	fmt.Println("  harness web                   start the local Web UI (browser interface, http://127.0.0.1:8080)")
 	fmt.Println("  harness init                  initialize ~/.harness workspace (skeleton + config template)")
 	fmt.Println("  harness sessions              list sessions for this project")
 	fmt.Println("  harness version               print version")
@@ -93,6 +96,8 @@ func usage() {
 	fmt.Println("  --thinking                   force enable thinking (default: model config)")
 	fmt.Println("  --no-thinking                force disable thinking (default: model config)")
 	fmt.Println("  --no-thinking-display        do not show thinking text")
+	fmt.Println("  web: --host <addr>            bind address (default 127.0.0.1)")
+	fmt.Println("       --port <n>              listen port (default 8080)")
 	fmt.Println()
 	fmt.Println("TUI commands:")
 	fmt.Println("  /switch /model /effort /permission /thinking    popup pickers (real-time config lists)")

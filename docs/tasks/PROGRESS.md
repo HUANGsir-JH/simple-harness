@@ -16,6 +16,20 @@
 - **修订（2026-08-16，同日）**：**子装配独立化 + 提示词精准化**——`buildSubagent(kind)` 完全独立（不复用 `agent.Build`：client/registry/compactor/中间件链在 subagent 包自由组合；`agent.Build` 回归纯主装配，`BuildOptions.BaseInstructions` 字段删除）；提示词调研 opencode/deepseek 后定稿：general-purpose = **uniform 主 persona**（`impl.DefaultBaseInstructions` 跨主/子一致）+ **独立 `DelegationInstructionsMiddleware` 追加委托段**（deepseek SUBAGENT_DELEGATION_CONTEXT 同款：权限固定/不重试被拒/任务范围/结论回父/不能问用户/可嵌套/wait_task）；explore = **专属简短提示词**（opencode explore.txt 风格）；`FakeClient.Stream` 加锁修复 -race 并发采样数据竞争；新增 `TestBuildSubagentPrompts`（FakeClient 捕获 Instructions 断言 uniform+委托段 / explore 专属）与 `TestDelegationMiddleware`。**TUI 查看退出修复**：查看模式输入框禁用导致 `/switch` 无法输入、Esc 又只做中断——困死；改为查看模式 **Esc = 退出查看回父会话**（主退出键，/switch 保留；提示行改 "Esc to return"；新增 `TestModelViewingSubagentEscExits` 覆盖真实 controller 退出 + c==nil 安全）。
 - **修订（2026-08-16，同日）**：**explore 只读 shell**——`ShellCommandTool{Readonly: bool}` 装配字段（explore 工具集 4→5，Spec 描述按字段区分明示能力边界；Handle 强制 `IsSafeCommand` 判定，白名单外命令与 kill_pid 拒绝回填——与审批模式无关的硬边界，bypass 也拦得住）；只读白名单判定从 impl/policy.go 下沉 tools 包（`tools.IsSafeCommand`，impl 审批豁免/plan 判定改引用，无环）并**扩充**（git grep/show/ls-files、wc/stat/du/sort/uniq）+ **顺带修复两个白名单漏洞**：`--flag=value` 形式绕过（sort --output=file）、前缀非词边界绕过（findx 借 find 放行）；explore 提示词补只读 shell 场景引导。测试：`TestIsSafeCommand`（放行/拒绝全用例）、`TestShellCommandReadonly`（执行/拒绝/kill_pid）、`TestSameKindAgentCached` 断言只读实例。
 
+### Web UI：`harness web` ✅ 版本 0.14.0（feat/webui 分支）
+
+- **背景**：承载 TUI 全部功能的浏览器界面（任务：`temp/task.md`）；从 main 拉独立 `feat/webui` 分支开发测试。前端风格：简洁、直观、易用（frontend-design 技能：agent 工作台气质，上下文占用条签名元素，浅色默认 + 深色自动）。
+- **决策（用户拍板）**：后端 HTTP 框架 **gin**（路由/JSON 绑定/静态资源）；前端**零依赖原生 HTML/CSS/JS + go:embed**（无 node 构建链，单二进制交付）；SSE 事件推送（`EventSource`）；markdown 由后端 `goldmark`+`chroma` 渲染为 HTML 片段下发（`events.Event` 不能加字段 → SSE 包装层附加 html/summary/tool/err_text）；命令统一入口 `POST /api/input`（选择类命令在 HTTP 响应返回选项，前端弹窗选中后提交带参命令——命令逻辑全收敛后端）。
+- **交付**：
+  - **`internal/web` 包（新，对位 `internal/ui/tui` 职责）**：`Server`（gin 路由 `/api/*` 先注册 + `/static` StaticFS embed 后注册——根通配符会与 API 路由冲突 panic；SSE handler 注册 `Request.Context().Done()` 退订；启动打印 `http://host:port`；收尾 = Hub.Close 断 SSE → Shutdown（带超时）→ WaitRuns → SaveActiveState → CloseAll）+ `Hub`（订阅/退订/广播/无订阅者检测）+ `WebController`（并发契约：running/queue/cancel/interrupted/approvals/asks/seq/active/open/viewSubID 全在锁内；队列消费锁内串行置位防双 run；switch/new running 拒绝；首消息自动命名；中断清 pending 表；wakeNotStarted/补唤醒对位）+ `webApprover`（request_id pending 表 + 无订阅者 ctx cancel 自释放 + 锁内先删表再回填）+ `command.go`（全部斜杠命令，含 /switch --last、select 空列表报错、AddCommand 落盘）+ `state.go`（timeline 重建：transcript 优先 + conversation 回退；元素 id = `msg-<序号>`/`tool-<call_id>`；pending 恢复）+ `md.go`（goldmark+chroma CSS classes，不开 WithUnsafe 防注入）+ `toolview.go`（工具分派轻量版 + gotextdiff diff HTML + full 100KB 截断）。
+  - **app 层**：`ModeWeb` + `Options.WebHost/WebPort` + `buildWeb`（复用 buildAgent/Load/ProjectForCWD，跳过 TTY 检查；--json 拒绝）+ `Run()` 分支 `runWeb` + `signals()` ModeWeb 返回 {SIGINT, SIGTERM}（无 bubbletea 消费 SIGINT，Ctrl+C 必须优雅收尾）。
+  - **cmd**：`web.go`（--host 默认 127.0.0.1 / --port 默认 8080 / --no-thinking-display）+ main 分发 + usage。
+  - **前端 `assets/`**（index.html + style.css + app.js）：会话栏（新建/切换/活动指示，<768px 抽屉）+ 顶栏状态条（model/effort/permission/[PLAN]/todo/ctx 占用条）+ 消息流（thinking 折叠、单一 stream 块——⚠ delta 无 MsgID 严禁按 id 关联、工具折叠块、系统行）+ composer（发送/中断/返回父会话按钮）+ 弹窗（审批/ask/select/help 互斥 + pendingOverlays FIFO）+ 四态矩阵（空/加载/错误/断线横幅）+ 多标签页同步（state_changed 重拉 + reconnecting 丢弃窗口增量 + approve 404 提示）。
+  - **安全**：POST 接口 Origin/Sec-Fetch-Site 校验（防 DNS rebinding 驱动本机 agent）；默认绑定 127.0.0.1。
+- **测试**：web 包 30+ 项单测（hub 订阅/退订/并发、controller 输入路由/队列锁内消费/中断/approver 回填与自释放/命令分发/state 快照/md 渲染/toolview 分派）+ httptest 集成（真实 http.Server：input → SSE 事件流 → run_done；switch running 拒绝；CSRF 403；静态资源 embed；approve 404/400）+ `-race` 全绿；全量 `go build/vet/test ./... -count=1`（19 包含 e2e）。
+- **版本**：0.14.0；新增依赖 `github.com/gin-gonic/gin v1.10.1`（v1.12 要求 go 1.25 故锁定 v1.10.x 保持 go 1.24.2）。
+- **实施前 review**：两个 explore 子 agent 审查计划（后端 17 项 + 前端 27 项缺陷）→ 全部整合进计划 v3（并发契约/SSE 载荷字段/流式渲染策略/多标签页语义/收尾顺序/CSRF 等），见 `docs/plans/webui-2026-08-16.md`。
+
 ## 2026-08-15
 
 ### 全局 Skill 支持 ✅ 版本 0.12.0（ADR-044）
