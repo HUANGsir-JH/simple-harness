@@ -4,7 +4,7 @@
 
 ![tui截图](https://github.com/HUANGsir-JH/simple-harness/blob/main/tui%E6%88%AA%E5%9B%BE.png)
 
-用 Go 编写的**极简、可真实使用**的 agent harness（命令行工具），参照 [OpenAI Codex CLI](https://github.com/openai/codex)（Rust）与 [AgentScope Java v2](https://github.com/agentscope-ai/agentscope-java) 的架构思路，定位为通用框架。当前版本 **0.13.0**（阶段 5 子 agent 已落地）。
+用 Go 编写的**极简、可真实使用**的 agent harness（命令行工具），参照 [OpenAI Codex CLI](https://github.com/openai/codex)（Rust）与 [AgentScope Java v2](https://github.com/agentscope-ai/agentscope-java) 的架构思路，定位为通用框架，能够进行长程任务的执行。当前版本 **0.13.0**（阶段 5 子 agent 已落地）。
 
 ## 功能特性
 
@@ -107,3 +107,9 @@ go test ./internal/e2e/ -count=1   # 进程外 e2e（termtest + mock HTTP，确�
 ## 规划
 
 阶段规划与决策状态见 `IMPLEMENTATION_PLAN.md`（权威来源）；任务跟踪在 `docs/tasks/{TASKS,PROGRESS}.md`。当前进度：阶段 1~5 已完成，阶段 6 剩余（grep / 双向通信）。
+
+## 一些个人承认的缺陷
+
+1. 审批系统的设计不够完善，因为平时使用ClaudeCode等都是auto或者bypass模式，所以对这一块的设计不愿太费精力
+2. tui的设计不够好用，受限于纯go的设计，tui的选型无法实现和react的ink一样的水准，当然也是我自己不算很懂bubbletea的使用
+3. 肯定不是一个好的产品，也不是一个值得推广的工具，但一定是一个值得学习的harness架构设计（当然和deepseek-harness的思想有很大不同）
