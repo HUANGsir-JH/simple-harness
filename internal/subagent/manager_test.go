@@ -358,3 +358,114 @@ func TestListMergesDisk(t *testing.T) {
 		t.Errorf("子会话目录: %v", err)
 	}
 }
+
+// TestSendOnlyDirectChild 验证 send_message 仅直属子（2026-08-16 修复 P1a）：
+// 主会话给两个直属子均可发（各自都是直属）；子 agent 给兄弟/无关 agent 发拒绝；
+// 无关会话拒绝。
+func TestSendOnlyDirectChild(t *testing.T) {
+	m, rc, _ := testHarness(t, hangingStream())
+	id1, err := m.Spawn(rc, SpawnRequest{Message: "任务1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitRunning(t, m, id1)
+	// 主会话给直属子1：允许。
+	if err := m.Send(rc, id1, "补充1"); err != nil {
+		t.Fatalf("直属 Send 应允许: %v", err)
+	}
+	id2, err := m.Spawn(rc, SpawnRequest{Message: "任务2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitRunning(t, m, id2)
+	// 主会话给直属子2：也允许（各子都是主会话直属）。
+	if err := m.Send(rc, id2, "补充2"); err != nil {
+		t.Fatalf("直属 Send 应允许: %v", err)
+	}
+	// 子1 给兄弟（子2）：拒绝（子2 的父是主会话，不是子1）。
+	e1, _ := m.get(id1)
+	subRC1 := e1.session.RuntimeContext()
+	if err := m.Send(subRC1, id2, "发给兄弟"); err == nil {
+		t.Error("子给兄弟 Send 应拒绝")
+	}
+	// 无关会话：拒绝。
+	otherRC := middleware.NewRuntimeContext()
+	otherRC.SessionID = "unrelated"
+	if err := m.Send(otherRC, id1, "无关会话发"); err == nil {
+		t.Error("无关会话 Send 应拒绝")
+	}
+}
+
+// TestInterruptOnlyDescendant 验证 interrupt 仅后代（2026-08-16 修复 P1a）：
+// 兄弟拒绝；父（主会话）可中断任意后代；子可中断自己的子（孙）。
+func TestInterruptOnlyDescendant(t *testing.T) {
+	m, rc, _ := testHarness(t, hangingStream())
+	id1, err := m.Spawn(rc, SpawnRequest{Message: "任务1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitRunning(t, m, id1)
+	id2, err := m.Spawn(rc, SpawnRequest{Message: "任务2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitRunning(t, m, id2)
+
+	// 子1 中断兄弟（子2）：拒绝。
+	e1, _ := m.get(id1)
+	subRC1 := e1.session.RuntimeContext()
+	if err := m.Interrupt(subRC1, id2); err == nil {
+		t.Error("子中断兄弟应拒绝")
+	}
+	// 主会话中断两个子：允许。
+	if err := m.Interrupt(rc, id1); err != nil {
+		t.Fatalf("主中断子1: %v", err)
+	}
+	if err := m.Interrupt(rc, id2); err != nil {
+		t.Fatalf("主中断子2: %v", err)
+	}
+}
+
+// waitRunning 等子进入 running（测试 helper）。
+func waitRunning(t *testing.T, m *Manager, id string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for m.statusOf(id) != StatusRunning {
+		if time.Now().After(deadline) {
+			t.Fatalf("子 %s 未进入 running", id)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestResumeAfterRestart 验证进程重启后磁盘恢复 resume（2026-08-16 修复
+// P1b）：新 Manager（无内存 entry）经 List 看到历史子 → Resume 磁盘加载续跑
+// → 完成通知再次注入。
+func TestResumeAfterRestart(t *testing.T) {
+	m, rc, q := testHarness(t, immediateStream("第一次完成"))
+	id, _ := m.Spawn(rc, SpawnRequest{Message: "x"})
+	waitEvent(t, q, 5*time.Second)
+
+	// 模拟进程重启：全新 Manager（无 entries），同一父 rc。
+	m2 := NewManager(Options{Provider: &config.ProviderConfig{Model: "m1", ContextWindow: 200_000},
+		Client: &provider.FakeClient{StreamFn: immediateStream("第二次完成")}})
+	rc.Completions = q // 同一父队列（磁盘恢复后完成通知注入同一处）
+	t.Cleanup(m2.Shutdown)
+
+	// 磁盘可见（血缘校验通过）。
+	views := m2.List(rc)
+	if len(views) != 1 || views[0].ID != id {
+		t.Fatalf("重启后 List: %+v", views)
+	}
+	// Resume：内存未命中 → 磁盘加载续跑。
+	if err := m2.Resume(rc, id, "继续第二步"); err != nil {
+		t.Fatalf("重启后 Resume: %v", err)
+	}
+	ev := waitEvent(t, q, 5*time.Second)
+	if !strings.Contains(ev[0].Result, "第二次完成") {
+		t.Errorf("重启后完成通知: %q", ev[0].Result)
+	}
+	if st := m2.statusOf(id); st != StatusCompleted {
+		t.Errorf("重启后状态: %s", st)
+	}
+}

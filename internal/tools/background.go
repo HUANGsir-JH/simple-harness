@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/agent-project/harness/internal/completion"
@@ -42,11 +43,16 @@ type bgProcess struct {
 }
 
 // markDone 置完成信号（close(done) + 先写 exitCode）。done 为 nil（旧测试直接
-// 构造条目）时跳过——wait_task 按"未找到/超时"处理，无崩溃。
+// 构造条目）时跳过——wait_task 按"未找到/超时"处理，无崩溃。退出缓存同时
+// 记录（logPath 非空时）——wait_task 对已注销的合法 PID 仍可取退出结果
+// （2026-08-16 修复 P2）。
 func markDone(e *bgProcess, code int) {
 	e.exitCode = code
 	if e.done != nil {
 		close(e.done)
+	}
+	if e.logPath != "" {
+		rememberBGExit(e.PID, code, e.logPath)
 	}
 }
 
@@ -55,6 +61,39 @@ func markDone(e *bgProcess, code int) {
 // Build 重建实例），会话/回合切换不影响进程生命周期；注册表挂在工具包的
 // 进程级全局，sync.Map 并发安全（并行工具调用可同时注册/注销）。
 var backgroundProcesses sync.Map // int → *bgProcess
+
+// bgExitInfo 是已退出后台进程的完成记录（wait_task 兜底查询，2026-08-16 修复
+// P2：进程快速退出后注册表条目已注销，wait_task 仍能查到合法 PID 的退出结果）。
+type bgExitInfo struct {
+	exitCode int
+	logPath  string
+}
+
+// bgExitCache 是已退出后台进程缓存（pid → bgExitInfo）。进程级，生命周期 =
+// harness 进程；markDone 统一写入（notifyCompletion 自然退出 / kill_pid /
+// CleanupBackground 杀树）。wait_task 注册表未命中时查它——本会话启动过且已
+// 退出的 PID 直接返回退出码 + 日志尾部；从未见过的 pid 才报"未找到"。
+var bgExitCache sync.Map // int → bgExitInfo
+
+// bgExitCount 是缓存条目计数（粗粒度上限控制：后台进程量小，超限整体清空，
+// 最旧记录丢失可接受——wait_task 对极旧 pid 退化为"未找到"）。
+var bgExitCount atomic.Int32
+
+// bgExitCacheLimit 是退出缓存上限。
+const bgExitCacheLimit = 128
+
+// rememberBGExit 记录已退出后台进程（markDone 统一调用）。并发安全：
+// 超限清空与 Store 竞态最多丢最近的写入，无正确性影响。
+func rememberBGExit(pid, code int, logPath string) {
+	if bgExitCount.Add(1) > bgExitCacheLimit {
+		bgExitCache.Range(func(k, _ any) bool {
+			bgExitCache.Delete(k)
+			return true
+		})
+		bgExitCount.Store(1)
+	}
+	bgExitCache.Store(pid, bgExitInfo{exitCode: code, logPath: logPath})
+}
 
 // registerBackground 登记后台进程（Start 成功后调用）。
 func registerBackground(e *bgProcess) { backgroundProcesses.Store(e.PID, e) }

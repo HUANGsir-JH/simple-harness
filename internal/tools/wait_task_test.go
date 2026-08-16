@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -103,5 +104,48 @@ func TestWaitTaskUnknownPID(t *testing.T) {
 	_, te := waitTaskHandle(t, waitTaskArgs{PID: 9999, TimeoutMS: 10})
 	if te == nil || !te.RespondToModel {
 		t.Fatalf("未知 PID 应报错: %v", te)
+	}
+}
+
+// TestWaitTaskExitedAndUnregistered 验证已注销的合法 PID（2026-08-16 修复
+// P2）：进程退出后注册表条目被 notifyCompletion 删除，wait_task 经退出缓存
+// 仍能取到退出码 + 日志尾部（不报"未找到"）。
+func TestWaitTaskExitedAndUnregistered(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "out.log")
+	if err := os.WriteFile(logPath, []byte("done: ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pid := 5252
+	e := registerFakeBG(t, pid, logPath)
+	markDone(e, 0)
+	// 模拟 notifyCompletion 注销（真实流程：注销 + markDone 都发生）。
+	unregisterBackground(pid)
+
+	content, te := waitTaskHandle(t, waitTaskArgs{PID: pid, TimeoutMS: 1000})
+	if te != nil {
+		t.Fatalf("已退出合法 PID 不应报错: %v", te)
+	}
+	if content != "后台进程 5252 已退出（exit 0）\n日志尾部：\ndone: ok" {
+		t.Errorf("内容: %q", content)
+	}
+
+	// 非零退出同样从缓存返回（回填错误语义对齐）。
+	pid2 := 5253
+	log2 := filepath.Join(t.TempDir(), "out2.log")
+	if err := os.WriteFile(log2, []byte("err: boom"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	e2 := registerFakeBG(t, pid2, log2)
+	markDone(e2, 3)
+	unregisterBackground(pid2)
+	_, te2 := waitTaskHandle(t, waitTaskArgs{PID: pid2, TimeoutMS: 1000})
+	if te2 == nil || te2.Message != "wait_task: 后台进程 5253 已退出（exit 3）\n日志尾部：\nerr: boom" {
+		t.Errorf("非零退出缓存: %v", te2)
+	}
+
+	// 从未见过的 pid：仍报"未找到"。
+	_, te3 := waitTaskHandle(t, waitTaskArgs{PID: 9998, TimeoutMS: 10})
+	if te3 == nil || !strings.Contains(te3.Message, "未找到") {
+		t.Errorf("未知 pid 应报未找到: %v", te3)
 	}
 }

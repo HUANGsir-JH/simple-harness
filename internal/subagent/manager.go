@@ -322,13 +322,19 @@ func (m *Manager) setStatus(e *Entry, s string) {
 	}
 }
 
-// Send 主→子单向消息：仅运行中的子（消息进子会话 Queue，子下轮采样前注入；
-// 子已结束 → 调用方（工具）回填错误引导 resume_agent）。
+// Send 主→子单向消息：仅**直属**运行中的子（消息进子会话 Queue，子下轮采样
+// 前注入；子已结束 → 调用方（工具）回填错误引导 resume_agent）。目标必须是
+// 当前会话直接 spawn 的子——兄弟/无关 agent 拒绝（2026-08-16 修复，与
+// resume_agent 的"仅直属子"对称）。
 func (m *Manager) Send(rc *middleware.RuntimeContext, id, message string) error {
 	e, ok := m.get(id)
 	if !ok {
 		return &tools.ToolError{RespondToModel: true, Message: fmt.Sprintf(
 			"send_message: 未找到子 agent %s", id)}
+	}
+	if e.ParentID != rc.SessionID {
+		return &tools.ToolError{RespondToModel: true, Message: fmt.Sprintf(
+			"send_message: 只能向直属子 agent 发送消息（%s 不是当前会话的子）", id)}
 	}
 	if m.statusOf(id) != StatusRunning {
 		return &tools.ToolError{RespondToModel: true, Message: fmt.Sprintf(
@@ -343,24 +349,20 @@ func (m *Manager) Send(rc *middleware.RuntimeContext, id, message string) error 
 	return nil
 }
 
-// Interrupt 中断任意运行中的后代（不能中断自己/父；对齐 codex interrupt_agent）。
-// 中断 = cancel 子 turn ctx（Esc 同款语义），子收尾通知父（带中断前结果）。
+// Interrupt 中断运行中的后代（不能中断自己/父/兄弟/无关 agent；对齐 codex
+// interrupt_agent + 2026-08-16 归属校验修复）。中断 = cancel 子 turn ctx（Esc
+// 同款语义），子收尾通知父（带中断前结果）。
 func (m *Manager) Interrupt(rc *middleware.RuntimeContext, id string) error {
 	e, ok := m.get(id)
 	if !ok {
 		return &tools.ToolError{RespondToModel: true, Message: fmt.Sprintf(
 			"interrupt_agent: 未找到子 agent %s", id)}
 	}
-	// 拒绝：自己或祖先（沿当前会话 ParentID 链上溯，主会话不在注册表即放行）。
-	for cur := rc.SessionID; cur != ""; {
-		if cur == id {
-			return &tools.ToolError{RespondToModel: true, Message: "interrupt_agent: 不能中断自己或父 agent"}
-		}
-		e2, ok := m.get(cur)
-		if !ok {
-			break
-		}
-		cur = e2.ParentID
+	// 目标必须是当前会话的后代（沿 ParentID 链；自己/祖先/兄弟/无关 agent 均
+	// 非后代 → 拒绝；主会话 = 全部子 agent 的祖先）。
+	if !m.isDescendant(id, rc.SessionID) {
+		return &tools.ToolError{RespondToModel: true, Message: fmt.Sprintf(
+			"interrupt_agent: 只能中断当前会话的子 agent（%s 不属于当前会话）", id)}
 	}
 	st := m.statusOf(id)
 	if st != StatusRunning && st != StatusPending {
@@ -382,12 +384,44 @@ func (m *Manager) Interrupt(rc *middleware.RuntimeContext, id string) error {
 // Resume 磁盘加载已落盘的子会话继续新任务（仅直属子；定案第 6 条）。
 // 走 session.ResumeAt（writer 续接原 transcript 段，不新开文件）；message 可选
 // （追加为新 user 消息）。完成后结果再次注入父（多轮委托）。
+// 进程重启后：内存未命中时从磁盘恢复（List 可见的历史子 agent 必须可 resume，
+// 2026-08-16 修复 P1b——读 agentstate.json 验证血缘后 ResumeAt）。
 func (m *Manager) Resume(rc *middleware.RuntimeContext, id, message string) error {
+	if rc == nil || rc.StatePath == "" {
+		return &tools.ToolError{RespondToModel: true, Message: "resume_agent: 当前不在会话中"}
+	}
+	parentDir := filepath.Dir(rc.StatePath)
+	dir := filepath.Join(parentDir, session.DirSubagents, id)
+
 	e, ok := m.get(id)
 	if !ok {
-		return &tools.ToolError{RespondToModel: true, Message: fmt.Sprintf(
-			"resume_agent: 未找到子 agent %s（可用 list_agents 查看）", id)}
+		// 磁盘恢复路径（新进程 Manager 无 Entry）。
+		st, err := agentstate.LoadFile(filepath.Join(dir, session.FileAgentState))
+		if err != nil {
+			return &tools.ToolError{RespondToModel: true, Message: fmt.Sprintf(
+				"resume_agent: 未找到子 agent %s（可用 list_agents 查看）", id)}
+		}
+		if st.ParentID != rc.SessionID {
+			return &tools.ToolError{RespondToModel: true, Message: fmt.Sprintf(
+				"resume_agent: 只能 resume 直属子 agent（%s 不是当前会话的子）", id)}
+		}
+		sub, err := session.ResumeAt(dir)
+		if err != nil {
+			return &tools.ToolError{RespondToModel: true, Message: "resume_agent: " + err.Error()}
+		}
+		e = &Entry{
+			ID:       id,
+			Name:     st.Name,
+			Type:     st.AgentType,
+			Status:   StatusPending,
+			ParentID: st.ParentID,
+			Depth:    st.Depth,
+			Dir:      sub.Dir(),
+			queue:    rc.Completions,
+		}
+		return m.resumeEntry(e, rc, message, sub)
 	}
+
 	if e.ParentID != rc.SessionID {
 		return &tools.ToolError{RespondToModel: true, Message: fmt.Sprintf(
 			"resume_agent: 只能 resume 直属子 agent（%s 不是当前会话的子）", id)}
@@ -401,6 +435,12 @@ func (m *Manager) Resume(rc *middleware.RuntimeContext, id, message string) erro
 	if err != nil {
 		return &tools.ToolError{RespondToModel: true, Message: "resume_agent: " + err.Error()}
 	}
+	return m.resumeEntry(e, rc, message, sub)
+}
+
+// resumeEntry 启动已加载的子会话续跑（内存续跑与磁盘恢复共用）：
+// message 追加 → entry 绑定新会话 → pending → goroutine runChild。
+func (m *Manager) resumeEntry(e *Entry, rc *middleware.RuntimeContext, message string, sub *session.Session) error {
 	if message != "" {
 		sub.AddUser(message)
 	}
@@ -411,7 +451,7 @@ func (m *Manager) Resume(rc *middleware.RuntimeContext, id, message string) erro
 	m.mu.Unlock()
 	m.setStatus(e, StatusPending)
 	m.mu.Lock()
-	m.entries[id] = e
+	m.entries[e.ID] = e
 	m.mu.Unlock()
 	go m.runChild(e, rc)
 	return nil
@@ -616,6 +656,23 @@ func (m *Manager) statusOf(id string) string {
 		return e.Status
 	}
 	return ""
+}
+
+// isDescendant 判断 id 是否属于 ancestor 会话的后代（沿 ParentID 链上溯；
+// 主会话 = 全部子 agent 的祖先，链最终指向主会话 id 时匹配）。目标/链路
+// 不在注册表（磁盘历史/无关会话）→ false。Interrupt 归属校验用
+// （2026-08-16 修复：拒绝自己/祖先/兄弟/无关 agent）。
+func (m *Manager) isDescendant(id, ancestor string) bool {
+	for {
+		e, ok := m.get(id)
+		if !ok {
+			return false
+		}
+		if e.ParentID == ancestor {
+			return true
+		}
+		id = e.ParentID
+	}
 }
 
 // Session 锁内读子会话实例（TUI 查看模式复用——运行中/刚收尾的子用同一

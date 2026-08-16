@@ -50,6 +50,25 @@ func (WaitTaskTool) Handle(ctx context.Context, rc *middleware.RuntimeContext, _
 
 	v, ok := backgroundProcesses.Load(p.PID)
 	if !ok {
+		// 已退出的合法 PID（2026-08-16 修复 P2）：注册表条目已被 notifyCompletion
+		// 注销，退出缓存仍可取退出码 + 日志尾部——直接返回结果；从未见过的 pid
+		// 才报"未找到"。
+		if info, ok := bgExitCache.Load(p.PID); ok {
+			ei := info.(bgExitInfo)
+			tail := readLogTail(ei.logPath, 8<<10)
+			if ei.exitCode != 0 {
+				msg := fmt.Sprintf("wait_task: 后台进程 %d 已退出（exit %d）", p.PID, ei.exitCode)
+				if tail != "" {
+					msg += "\n日志尾部：\n" + tail
+				}
+				return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: msg}
+			}
+			content := fmt.Sprintf("后台进程 %d 已退出（exit 0）", p.PID)
+			if tail != "" {
+				content += "\n日志尾部：\n" + tail
+			}
+			return messages.ToolResult{Success: true, Content: content}, nil
+		}
 		return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: fmt.Sprintf(
 			"wait_task: 未找到后台进程 %d（可能已退出，或非本会话 background 启动）", p.PID)}
 	}
