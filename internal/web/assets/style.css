@@ -414,6 +414,38 @@ code, pre, .mono {
   gap: 8px;
 }
 
+/* 命令补全候选（对位 TUI completionView） */
+.completion {
+  max-width: 840px;
+  margin: 0 auto 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.completion-item {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 7px 14px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.completion-item:hover { background: var(--surface-2); }
+
+.completion-item.selected { background: var(--accent-soft); }
+
+.completion-cmd {
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  color: var(--accent);
+  min-width: 90px;
+}
+
+.completion-short { color: var(--muted); font-size: 12px; }
+
 #input {
   width: 100%;
   border: 1px solid var(--border);

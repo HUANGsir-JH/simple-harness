@@ -35,6 +35,96 @@ const offlineBanner = $("offline-banner");
 const overlayRoot = $("overlay-root");
 const overlayPanel = $("overlay-panel");
 const toastEl = $("toast");
+const completionEl = $("completion");
+
+/* 命令目录（对位 TUI commandCatalog：completion 弹窗数据源）。 */
+const commandCatalog = [
+  { name: "switch", short: "切换会话" },
+  { name: "model", short: "切换模型" },
+  { name: "effort", short: "设置推理档位" },
+  { name: "thinking", short: "开启/关闭思考" },
+  { name: "permission", short: "设置审批模式" },
+  { name: "plan", short: "切换规划模式 / 查看计划" },
+  { name: "subagents", short: "查看子 agent" },
+  { name: "usage", short: "查看用量" },
+  { name: "compact", short: "压缩上下文" },
+  { name: "rename", short: "重命名会话" },
+  { name: "help", short: "命令与说明" },
+  { name: "exit", short: "退出服务" },
+];
+
+let completionIndex = -1; // 当前高亮候选（-1 = 无）
+
+/* ---------- 命令补全（对位 TUI completionView） ---------- */
+
+// completionItems 按输入前缀过滤命令目录；非 / 开头或含空格返回空。
+function completionItems(value) {
+  if (!value.startsWith("/")) return [];
+  const prefix = value.slice(1);
+  if (prefix.includes(" ")) return [];
+  return commandCatalog.filter((c) => c.name.startsWith(prefix));
+}
+
+// completionVisible 报告补全弹窗是否应显示（前缀部分匹配且非精确命中）。
+function completionVisible() {
+  const value = inputEl.value.trim();
+  if (!value.startsWith("/") || value.includes(" ")) return false;
+  const items = completionItems(value);
+  if (items.length === 0) return false;
+  const prefix = value.slice(1);
+  return !items.some((c) => c.name === prefix); // 已精确输入完整命令 → 不弹
+}
+
+// renderCompletion 渲染候选列表（↑/↓ 高亮跟随 completionIndex）。
+function renderCompletion() {
+  if (!completionVisible()) {
+    completionEl.hidden = true;
+    completionIndex = -1;
+    return;
+  }
+  const items = completionItems(inputEl.value.trim());
+  if (completionIndex < 0 || completionIndex >= items.length) completionIndex = 0;
+  completionEl.innerHTML = "";
+  items.forEach((c, i) => {
+    const row = document.createElement("div");
+    row.className = "completion-item" + (i === completionIndex ? " selected" : "");
+    row.innerHTML = '<span class="completion-cmd">/' + c.name + "</span>" +
+      '<span class="completion-short">' + esc(c.short) + "</span>";
+    row.addEventListener("click", () => acceptCompletion(i));
+    row.addEventListener("mousemove", () => {
+      if (completionIndex !== i) { completionIndex = i; renderCompletion(); }
+    });
+    completionEl.appendChild(row);
+  });
+  completionEl.hidden = false;
+}
+
+// moveCompletion 上下移动高亮（delta ±1，循环）。
+function moveCompletion(delta) {
+  const items = completionItems(inputEl.value.trim());
+  if (items.length === 0) return;
+  completionIndex = (completionIndex + delta + items.length) % items.length;
+  renderCompletion();
+}
+
+// acceptCompletion 把选中命令补全进输入框（"/name "，光标末尾）。
+function acceptCompletion(idx) {
+  const items = completionItems(inputEl.value.trim());
+  if (idx === undefined) idx = completionIndex;
+  if (idx < 0 || idx >= items.length) return;
+  inputEl.value = "/" + items[idx].name + " ";
+  inputEl.selectionStart = inputEl.selectionEnd = inputEl.value.length;
+  completionEl.hidden = true;
+  completionIndex = -1;
+  inputEl.focus();
+  updateComposerHeight();
+}
+
+// updateComposerHeight 输入框随内容行数增长（对位 TUI updateComposerHeight）。
+function updateComposerHeight() {
+  inputEl.style.height = "auto";
+  inputEl.style.height = Math.min(inputEl.scrollHeight, 140) + "px";
+}
 
 /* ---------- 工具函数 ---------- */
 function esc(s) {
@@ -625,8 +715,13 @@ async function submit() {
   const line = inputEl.value.trim();
   if (!line) return;
   inputEl.value = "";
-  inputEl.style.height = "auto";
-  appendUserMessage(line);
+  updateComposerHeight();
+  // 命令显示为系统行（对位 TUI：命令落 Command 行，非用户消息）。
+  if (line.startsWith("/")) {
+    appendSystem("Command  " + line, false);
+  } else {
+    appendUserMessage(line);
+  }
   const res = await sendInput(line);
   handleInputResult(res);
 }
@@ -802,6 +897,31 @@ function init() {
   $("btn-new").addEventListener("click", newSession);
 
   inputEl.addEventListener("keydown", (e) => {
+    // 命令补全导航（对位 TUI completion：↑/↓ 移动、Tab/Enter 接受、Esc 关闭）。
+    if (completionVisible()) {
+      switch (e.key) {
+        case "ArrowUp":
+          e.preventDefault();
+          moveCompletion(-1);
+          return;
+        case "ArrowDown":
+          e.preventDefault();
+          moveCompletion(1);
+          return;
+        case "Tab":
+          e.preventDefault();
+          acceptCompletion();
+          return;
+        case "Enter":
+          e.preventDefault();
+          acceptCompletion();
+          return;
+        case "Escape":
+          completionEl.hidden = true;
+          completionIndex = -1;
+          return;
+      }
+    }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       submit();
@@ -811,8 +931,18 @@ function init() {
   });
 
   inputEl.addEventListener("input", () => {
-    inputEl.style.height = "auto";
-    inputEl.style.height = Math.min(inputEl.scrollHeight, 140) + "px";
+    updateComposerHeight();
+    renderCompletion(); // 实时刷新补全候选
+  });
+
+  inputEl.addEventListener("blur", () => {
+    // 点击候选时 blur 先触发会关掉弹窗——延迟到点击处理完再隐藏。
+    setTimeout(() => {
+      if (completionEl.hidden === false && !completionEl.matches(":hover")) {
+        completionEl.hidden = true;
+        completionIndex = -1;
+      }
+    }, 150);
   });
 
   overlayPanel.addEventListener("click", (e) => e.stopPropagation());
