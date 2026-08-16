@@ -27,6 +27,17 @@ type BuildOptions struct {
 	// GlobalSkillsDir 是全局技能目录（~/.harness/skills，$HARNESS_HOME
 	// 覆盖，经 session.GlobalSkillsDir 解析；空 = 技能不可用，ADR-044）。
 	GlobalSkillsDir string
+	// Tools 是自定义工具集（阶段 5 子 agent 按类型装配，ADR-045）。
+	// 非空时跳过默认内置工具注册（tools.Builtins）；空 = 默认内置 12 工具。
+	// agent 保持通用不感知 subagent——装配方负责组合（app 拼主装配、
+	// subagent 包拼子装配）。
+	Tools []tools.Tool
+	// BaseInstructions 覆盖基础提示词（阶段 5：explore 等子 agent 换链首
+	// Text，ADR-045）。空 = impl.DefaultBaseInstructions。
+	BaseInstructions string
+	// Client 覆盖 provider client（测试注入 FakeClient 用；空 = 经
+	// provider.NewClient(o.Provider) 创建）。
+	Client provider.Client
 }
 
 // Build 装配 CLI 标准 agent：共享 client + 内置工具 + 标准中间件链。
@@ -38,15 +49,28 @@ type BuildOptions struct {
 // 未来 subagent = 在此之外构造自定义装配（不同工具集/中间件/提示词，本质同样
 // 无状态可共享），buildAgent 从 cmd 下沉到此（2026-08-09）。
 func Build(o BuildOptions) (*Agent, error) {
-	client, err := provider.NewClient(o.Provider)
-	if err != nil {
-		return nil, fmt.Errorf("provider: %w", err)
+	client := o.Client
+	if client == nil {
+		c, err := provider.NewClient(o.Provider)
+		if err != nil {
+			return nil, fmt.Errorf("provider: %w", err)
+		}
+		client = c
 	}
 
 	reg := tools.NewRegistry()
-	for _, t := range tools.Builtins(o.GlobalSkillsDir) {
-		if err := reg.Register(t); err != nil {
-			return nil, err
+	if len(o.Tools) > 0 {
+		// 自定义工具集（子 agent 按类型装配，ADR-045）。
+		for _, t := range o.Tools {
+			if err := reg.Register(t); err != nil {
+				return nil, err
+			}
+		}
+	} else {
+		for _, t := range tools.Builtins(o.GlobalSkillsDir) {
+			if err := reg.Register(t); err != nil {
+				return nil, err
+			}
 		}
 	}
 	// 系统提示组合（内容通道分类原则，ADR-037 修订）：BaseInstructions 在链首
@@ -78,8 +102,12 @@ func Build(o BuildOptions) (*Agent, error) {
 	}
 	compactor := compact.NewRunner(compact.NewSummarizer(client, opts), opts)
 
+	base := impl.DefaultBaseInstructions
+	if o.BaseInstructions != "" {
+		base = o.BaseInstructions
+	}
 	mw := middleware.NewChain(
-		impl.BaseInstructionsMiddleware{Text: impl.DefaultBaseInstructions},
+		impl.BaseInstructionsMiddleware{Text: base},
 		impl.AgentsMdMiddleware{Options: agentsmd.Options{GlobalPath: o.GlobalAgentsMD}},
 		impl.SkillsCatalogMiddleware{SkillsDir: o.GlobalSkillsDir},
 		impl.ToolInstructionsMiddleware{Tools: reg.Specs()},

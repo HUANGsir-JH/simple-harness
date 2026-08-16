@@ -85,7 +85,8 @@ func TestCommandCompletionWindowFollowsSelection(t *testing.T) {
 	m := New(nil)
 	m.input.SetValue("/")
 	m.completion = 0
-	for range 6 {
+	// 命令表 11 项：/usage 是第 8 项（第 7 项是 /subagents）。
+	for range 7 {
 		nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
 		m = nm.(Model)
 	}

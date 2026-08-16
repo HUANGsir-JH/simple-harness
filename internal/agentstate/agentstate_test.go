@@ -3,6 +3,7 @@ package agentstate
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -111,6 +112,45 @@ func TestReservedFieldsOptional(t *testing.T) {
 		t.Errorf("预留字段应缺省: %+v", got)
 	}
 	_ = data
+}
+
+// TestSubagentLineageFields 验证子 agent 血缘字段（ADR-045）：SetSubagent/
+// SetStatus 播种后往返保留；主会话缺省不出现在 json（omitempty 兼容旧文件）。
+func TestSubagentLineageFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agentstate.json")
+	a := New("sub-20260816T000000-abcd1234", "m", ".")
+	a.SetName("explorer")
+	a.SetSubagent("main-sess", "explore", 1)
+	a.SetStatus("running")
+	if err := SaveFile(path, a); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ParentID != "main-sess" || got.AgentType != "explore" || got.Depth != 1 || got.Status != "running" {
+		t.Errorf("血缘字段往返丢失: %+v", got)
+	}
+	if got.Name != "explorer" {
+		t.Errorf("name 应保留: %q", got.Name)
+	}
+
+	// 主会话：血缘字段缺省，json 不应出现。
+	main := New("main-sess", "m", ".")
+	mainPath := filepath.Join(t.TempDir(), "agentstate.json")
+	if err := SaveFile(mainPath, main); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(mainPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"parent_id", "agent_type", "depth", "status"} {
+		if strings.Contains(string(raw), k) {
+			t.Errorf("主会话 json 不应含 %q: %s", k, raw)
+		}
+	}
 }
 
 // TestAgentStateConcurrentAccess 验证锁下沉（ADR-036 修订）：混合并发读写与

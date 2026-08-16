@@ -7,6 +7,7 @@ import (
 
 	"github.com/agent-project/harness/internal/agentstate"
 	"github.com/agent-project/harness/internal/session"
+	"github.com/agent-project/harness/internal/subagent"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 )
@@ -19,6 +20,7 @@ const (
 	popupEffort
 	popupPermission
 	popupThinking
+	popupSubagents
 )
 
 type popupItem struct {
@@ -47,6 +49,7 @@ var commandCatalog = []commandItem{
 	{name: "thinking", short: "Toggle thinking on/off"},
 	{name: "permission", short: "Set approval policy"},
 	{name: "plan", short: "Toggle plan mode / view plan"},
+	{name: "subagents", short: "List / view sub agents"},
 	{name: "usage", short: "Show token usage"},
 	{name: "compact", short: "Compress context (LLM summary)"},
 	{name: "help", short: "Commands and keys"},
@@ -63,6 +66,23 @@ func completionItems(value string) []commandItem {
 		if strings.HasPrefix(item.name, prefix) {
 			items = append(items, item)
 		}
+	}
+	return items
+}
+
+// subagentItems 生成 /subagents 弹窗选项（id/name/type/status/depth）。
+func subagentItems(views []subagent.EntryView) []popupItem {
+	items := make([]popupItem, 0, len(views))
+	for _, v := range views {
+		status := v.Status
+		if v.Running {
+			status += " · running"
+		}
+		items = append(items, popupItem{
+			label:       v.Name + "（" + status + "）",
+			value:       v.ID,
+			description: fmt.Sprintf("%s · depth %d · %s", v.Type, v.Depth, v.ID),
+		})
 	}
 	return items
 }
@@ -88,6 +108,16 @@ func (m Model) runCommand(cmd command) (tea.Model, tea.Cmd) {
 
 	switch cmd.name {
 	case "switch":
+		// 子 agent 只读查看模式：/switch 即退出查看回父会话（无参直接回，
+		// 带参继续原切会话逻辑）。
+		if m.viewingSubagent {
+			m.c.ExitSubagentView()
+			m.viewingSubagent = false
+			m.reloadSession()
+			if cmd.arg == "" {
+				return m.sysOK("Back to " + shortSession(m.c.active.ID)), nil
+			}
+		}
 		if cmd.arg == "--last" {
 			if err := m.c.SwitchLast(); err != nil {
 				return m.sysErr(err), nil
@@ -201,6 +231,23 @@ func (m Model) runCommand(cmd command) (tea.Model, tea.Cmd) {
 		}
 		m.refreshStatus() // header 即时显示新名
 		return m.sysOK("Renamed to " + strings.TrimSpace(cmd.arg)), nil
+	case "subagents":
+		// /subagents [id]：列出当前会话的子 agent（运行态 + 磁盘历史）；选中
+		// 或带参直接进入只读查看（输入框禁用，/switch 返回父会话；子事件实时
+		// 滚动——运行中查看可见进度）。
+		if cmd.arg != "" {
+			if err := m.c.ViewSubagent(cmd.arg); err != nil {
+				return m.sysErr(err), nil
+			}
+			m.viewingSubagent = true
+			m.reloadSession()
+			return m.sysOK("Viewing sub agent " + shortSession(m.c.active.ID) + "（只读，/switch 返回）"), nil
+		}
+		views := m.c.ListSubagents()
+		if len(views) == 0 {
+			return m.sysOK("（当前会话没有子 agent）"), nil
+		}
+		return m.openPopup(popupSubagents, "Sub agents", subagentItems(views), ""), nil
 	case "usage":
 		// 最近一次 API 调用的完整用量 + 当前上下文占用（ADR-037 用量展示，
 		// 覆盖语义：每次采样返回的 usage 即该次调用的完整账目，系统行对齐 /plan view）。
@@ -295,6 +342,13 @@ func (m *Model) confirmPopup() (string, error) {
 			return "", err
 		}
 		return "Thinking " + item.label, nil
+	case popupSubagents:
+		if err := m.c.ViewSubagent(item.value); err != nil {
+			return "", err
+		}
+		m.viewingSubagent = true
+		m.reloadSession()
+		return "Viewing sub agent " + shortSession(m.c.active.ID) + "（只读，/switch 返回）", nil
 	default:
 		return "", fmt.Errorf("unsupported selector")
 	}

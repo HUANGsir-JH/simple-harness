@@ -515,3 +515,23 @@
 - **验证**：`go build/vet/test ./... -count=1` 全绿（含 e2e）；`internal/skills` 发现/解析/截断/渲染 + `tools.SkillTool` + `impl.SkillsCatalogMiddleware` + TUI 分派 + policy 只读 + `TestSkillToolE2E`（进程外：系统提示目录行 → skill 调用 → `<skill_content` 回填断言）锁定。版本 0.12.0。
 
 
+
+## ADR-045：子 agent——异步 spawn + completion 队列复用 + 按类型装配（2026-08-16，阶段 5）
+
+- **背景**：阶段 5（IMPLEMENTATION_PLAN 待办）：可被主 agent 调用的子 agent——并行执行、独立会话、单向通信、嵌套（深度 ≤2）、中断/resume。功能规划 `docs/plans/subagent.md` 14 条定案 + 实现讨论 12 条新增（计划文档 `docs/plans/subagent-implementation-2026-08-16.md`）。调研参考源：codex（spawn_agent 异步 + mailbox 注入 + wait_agent）、opencode（task 前台阻塞 + task_id resume）、AgentScope Java v2（inbox + wakeup + spawn 深度 3）、deepseek-harness（send_message + interrupt_agent + 深度 3）。
+- **决策**：
+  1. **spawn 纯异步（用户拍板）**：`spawn_agent` 立即返回 agent_id（工具结果 = id/name/type/depth/status + 引导文案），子 goroutine 跑完 → 完成事件 Append 进**父会话 completion 队列**（复用 ADR-040 通道，零新队列类型）——路径 A 在途采样前注入（user 消息 + EventNotice 系统行）/ 路径 B TUI 唤醒（空闲自动继续）。**无 wait_agent 工具**（注入 + 唤醒天然替代；IMPLEMENTATION_PLAN 简化项落地）。嵌套同构：孙完成 Append 进子的队列（逐层归并）。
+  2. **按类型装配 + 实例缓存共享（用户拍板）**：主 / general-purpose / explore 三个装配变体（工具集 + BaseInstructions 不同）；**装配逻辑在 `internal/subagent` 包内**（Manager 直接调 `agent.Build`；`agent.BuildOptions` 加可选 `Tools`/`BaseInstructions`/`Client` 字段保持通用，agent 不感知 subagent——无接口无工厂，依赖方向 subagent→agent→tools 无环）；同 kind agent 实例缓存共享（无状态 ADR-026）；spawn 的 model/thinking_effort 覆盖经子 AgentState 播种 → 子会话 rc per-call 生效。
+  3. **子会话落盘嵌套 + 血缘**：`<父会话目录>/subagents/<子id>/{historys, agentstate.json, plans, evictions}`（定案）；子 AgentState 新增血缘字段 `ParentID/AgentType/Depth/Status` + 复用 `Name`（spawn 可选 name，默认 `<type>-<短id>`）；`session.CreateIn(dir, st)`（Create 重构委托）+ `ResumeAt(dir)`（resume 续接原 jsonl 段，不新开）。
+  4. **工具集（定案第 8 条 + 嵌套确认）**：general-purpose = 内置 12 − ask_user + 5 控制工具（spawn/send/interrupt/resume/list，实现在 subagent 包）+ `wait_task`（tools 包，访问 bgProcess 注册表轮询后台 shell）；explore = 只读 4（read_file/list_dir/glob/skill）；主 agent = 内置 12 + 5 控制（无 wait_task——有唤醒器）。**嵌套允许**（general-purpose 可再 spawn），深度上限**硬编码 2**（用户拍板不做 config）。
+  5. **fork 过滤（用户拍板）**：子会话起点 = 仅 spawn 的 message（不继承父历史）。
+  6. **结果不截断完整注入（用户拍板）**：最终答案 = 子会话 conversation 最后一条无 tool_calls 的 assistant 文本（对齐 opencode/dsh/codex 完整返回；父 compact 85% 兜底）；失败/中断通知带"已产出文本"（用户拍板）。
+  7. **send_message 仅运行中**（用户拍板）：消息 Append 进子会话 completion 队列（子下轮采样前注入）；子已结束 → 工具错误回填引导 `resume_agent`（仅直属子，磁盘加载继续，多轮委托）。
+  8. **interrupt_agent 任意后代**（用户拍板）：不能中断自己/父（沿 ParentID 链上溯检查）；cancel 子 turn ctx（Esc 同款），收尾通知父（带中断前结果）。**父 Esc 不级联子**（子 ctx = WithCancel(Background) 独立）；进程退出 `Manager.Shutdown()`（cancel all + 等收尾 + 通知 Append——父 resume 补注入）。
+  9. **权限继承 + 审批归属**：子 AgentState.Permission = 父 Mode + Approved 快照播种；子审批经 `subagentApprover` 包装转发父 Approver（`ApprovalRequest`/`AskRequest` 加 `AgentID` 字段，TUI 弹窗/run 打印带【子 agent <id>】前缀）；inner nil（非 TTY）自动拒绝不变。
+  10. **run 模式局限（用户拍板）**：父 turn 结束时未完成的子被进程退出清理（子会话部分落盘，resume 可续）；对齐 ADR-040 run 无唤醒器；e2e 用 mock 内容路由（父拖延循环等注入——"已完成。结果："判定）保证确定性。
+  11. **TUI 轻量 + 只读查看（用户拍板）**：默认不打扰（子事件只落子会话 transcript）；`/subagents` 弹窗（Manager 运行态 + 磁盘历史合并，id/name/type/status/depth）→ 只读查看（active 切子会话 + 输入禁用 + 订阅子事件流实时滚动；`/switch` 返回；运行中的子复用 Manager 会话实例避免双 writer，磁盘历史 ResumeAt 退出时 Close）。
+  12. **审批策略**：控制工具（spawn/send/interrupt/resume/list/wait_task）归 classControl（无文件系统副作用，readonly/acceptedit/bypass/plan 全放行）。
+- **影响 ADR**：ADR-040——`completion.Event.SessionID` 预留字段落地（子→父通知带子会话 id）；ADR-026——共享无状态 agent 被多 goroutine 并发 Run（子并行）；ADR-028——结果注入不截断（user 消息路径，非 tool_result）；ADR-033——buildAgent 返回 (agent, Manager)；ADR-029——ApprovalRequest/AskRequest +AgentID + classControl；ADR-025——session CreateIn/ResumeAt/NewID(prefix)；agentstate +血缘字段（omitempty 向后兼容）。
+- **明确不做**：wait_agent/mailbox、用户直连子（第 13 条）、子唤醒循环（子用 wait_task 轮询）、同步 spawn、config subagents 段（深度硬编码）、自定义声明式 subagents/*.md（预留）。
+- **验证**：`go build/vet/test ./... -count=1` 全绿（含 e2e + -race）；subagent 包 Manager 生命周期/深度/通知三分支/实例缓存/退订 + session CreateIn/ResumeAt + TUI 查看/输入禁用 + `TestSubagentE2E`（进程外：spawn → 子采样 → 注入父 → 父回复 → 子目录血缘 completed 断言）。版本 0.13.0。

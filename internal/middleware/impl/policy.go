@@ -45,19 +45,24 @@ var Modes = []string{ModeReadonly, ModeAcceptEdits, ModeBypass}
 type toolClass int
 
 const (
-	classRead  toolClass = iota // 只读（read_file/list_dir/glob）
-	classEdit                   // 编辑（write_file/apply_patch）
-	classTodo                   // 低风险状态工具（update_todo）
-	classShell                  // shell_command
-	classPlan                   // plan 工具（plan_enter/write_plan/plan_done，ADR-036）
-	classAsk                    // 提问工具（ask_user，低风险）
+	classRead    toolClass = iota // 只读（read_file/list_dir/glob）
+	classEdit                     // 编辑（write_file/apply_patch）
+	classTodo                     // 低风险状态工具（update_todo）
+	classShell                    // shell_command
+	classPlan                     // plan 工具（plan_enter/write_plan/plan_done，ADR-036）
+	classAsk                      // 提问工具（ask_user，低风险）
+	classControl                  // 子 agent 控制/查询工具（spawn/send/interrupt/resume/list/wait_task，ADR-045——无文件系统副作用，只读放行）
 	classUnknown
 )
 
 var (
-	readTools = map[string]bool{"read_file": true, "list_dir": true, "glob": true, "skill": true}
-	editTools = map[string]bool{"write_file": true, "apply_patch": true}
-	planTools = map[string]bool{"plan_enter": true, "write_plan": true, "plan_done": true}
+	readTools    = map[string]bool{"read_file": true, "list_dir": true, "glob": true, "skill": true}
+	editTools    = map[string]bool{"write_file": true, "apply_patch": true}
+	planTools    = map[string]bool{"plan_enter": true, "write_plan": true, "plan_done": true}
+	controlTools = map[string]bool{
+		"spawn_agent": true, "send_message": true, "interrupt_agent": true,
+		"resume_agent": true, "list_agents": true, "wait_task": true,
+	}
 )
 
 func classify(name string) toolClass {
@@ -74,6 +79,8 @@ func classify(name string) toolClass {
 		return classPlan
 	case name == "ask_user":
 		return classAsk
+	case controlTools[name]:
+		return classControl
 	default:
 		return classUnknown
 	}
@@ -399,7 +406,7 @@ func Decide(call *messages.ToolCall, mode string, approved []string, ws string, 
 	}
 	if plan {
 		switch classify(call.Name) {
-		case classRead, classTodo, classAsk:
+		case classRead, classTodo, classAsk, classControl:
 			return OutcomeAllow, ""
 		case classPlan:
 			if call.Name == "plan_enter" {
@@ -438,6 +445,8 @@ func Decide(call *messages.ToolCall, mode string, approved []string, ws string, 
 		return OutcomeAllow, ""
 	case classAsk:
 		return OutcomeAllow, "" // ask_user 低风险放行（两模式）
+	case classControl:
+		return OutcomeAllow, "" // 子 agent 控制工具无文件系统副作用（ADR-045）
 	case classPlan:
 		if call.Name == "plan_enter" {
 			return OutcomeAllow, "" // plan_enter 放行（Handle 内 HITL 确认）

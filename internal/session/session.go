@@ -43,8 +43,18 @@ type Session struct {
 // 默认）。创建时固化进 AgentState.Permission.Mode，之后 /permission 切换改
 // 会话 state（resume 恢复）——审批模式完全由会话决定（ADR-029）。
 func (p *Project) Create(model, cwd, mode string) (*Session, error) {
-	sid := newSessionID()
-	dir := filepath.Join(p.Dir, sid)
+	sid := NewID("")
+	st := agentstate.New(sid, model, cwd)
+	if mode != "" {
+		st.Permission = &agentstate.PermissionState{Mode: mode}
+	}
+	return CreateIn(filepath.Join(p.Dir, sid), st)
+}
+
+// CreateIn 在指定目录新建会话（阶段 5 子 agent 用：<父会话目录>/subagents/<子id>/）。
+// st 由调用方构造（血缘/权限播种等），本函数负责目录 + state 落盘 + writer +
+// completion + meta 首行。Create 委托本函数。
+func CreateIn(dir string, st *agentstate.AgentState) (*Session, error) {
 	historyDir := filepath.Join(dir, DirHistorys)
 	if err := os.MkdirAll(historyDir, 0o755); err != nil {
 		return nil, fmt.Errorf("session: mkdir %s: %w", historyDir, err)
@@ -53,10 +63,6 @@ func (p *Project) Create(model, cwd, mode string) (*Session, error) {
 		return nil, fmt.Errorf("session: mkdir plans: %w", err)
 	}
 	statePath := filepath.Join(dir, FileAgentState)
-	st := agentstate.New(sid, model, cwd)
-	if mode != "" {
-		st.Permission = &agentstate.PermissionState{Mode: mode}
-	}
 	if err := agentstate.SaveFile(statePath, st); err != nil {
 		return nil, err
 	}
@@ -65,7 +71,7 @@ func (p *Project) Create(model, cwd, mode string) (*Session, error) {
 		return nil, err
 	}
 	s := &Session{
-		ID:           sid,
+		ID:           st.SessionID,
 		dir:          dir,
 		historyDir:   historyDir,
 		statePath:    statePath,
@@ -75,14 +81,22 @@ func (p *Project) Create(model, cwd, mode string) (*Session, error) {
 		completions:  completion.New(filepath.Join(dir, FileCompletions)),
 	}
 	// meta 首行（会话元数据，resume 可读）。
-	w.Write(Line{Type: "meta", SessionID: sid, CWD: cwd, Model: model, CreatedAt: st.CreatedAt})
+	w.Write(Line{Type: "meta", SessionID: st.SessionID, CWD: st.CWD, Model: st.Model, CreatedAt: st.CreatedAt})
 	return s, nil
 }
 
 // Resume 加载已有会话：重建 conversation + 恢复 state + 打开最新 transcript 继续追加。
 func (p *Project) Resume(info SessionInfo) (*Session, error) {
-	historyDir := filepath.Join(info.Path, DirHistorys)
-	statePath := filepath.Join(info.Path, FileAgentState)
+	return ResumeAt(info.Path)
+}
+
+// ResumeAt 加载指定目录的会话（阶段 5 子 agent resume 用：<父会话目录>/
+// subagents/<子id>/，与 Project.Resume 同逻辑但按目录直达——子会话不在项目
+// bucket 下）。NewTranscriptWriter 续接最新段（ordinal/turn 续号），writer
+// 接着原 history-N.jsonl 追加写，不新开文件。
+func ResumeAt(dir string) (*Session, error) {
+	historyDir := filepath.Join(dir, DirHistorys)
+	statePath := filepath.Join(dir, FileAgentState)
 	conv, err := LoadConversation(historyDir)
 	if err != nil {
 		return nil, err
@@ -96,8 +110,8 @@ func (p *Project) Resume(info SessionInfo) (*Session, error) {
 		return nil, err
 	}
 	return &Session{
-		ID:           info.ID,
-		dir:          info.Path,
+		ID:           st.SessionID,
+		dir:          dir,
 		historyDir:   historyDir,
 		statePath:    statePath,
 		conversation: conv,
@@ -105,7 +119,7 @@ func (p *Project) Resume(info SessionInfo) (*Session, error) {
 		writer:       w,
 		// Resume 自动恢复未注入的完成事件：已完成未注入的 pending 从
 		// completions.json 加载，下次采样前由注入中间件补注入。
-		completions: completion.New(filepath.Join(info.Path, FileCompletions)),
+		completions: completion.New(filepath.Join(dir, FileCompletions)),
 	}, nil
 }
 
@@ -278,9 +292,14 @@ func (s *Session) OnAgentEvent(ev events.Event) {
 // Close flush transcript writer。
 func (s *Session) Close() error { return s.writer.Close() }
 
-// newSessionID 生成目录名即会话 id：<时间戳>-<8 位随机 hex>（可读可排序）。
-func newSessionID() string {
-	return time.Now().Format("20060102T150405") + "-" + randHex(8)
+// NewID 生成目录名即会话 id：<prefix>-<时间戳>-<8 位随机 hex>（可读可排序）。
+// prefix 空 = 主会话格式 <时间戳>-<8hex>（历史兼容）；子 agent 用 "sub"。
+func NewID(prefix string) string {
+	s := time.Now().Format("20060102T150405") + "-" + randHex(8)
+	if prefix != "" {
+		return prefix + "-" + s
+	}
+	return s
 }
 
 func randHex(n int) string {

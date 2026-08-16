@@ -9,6 +9,7 @@ import (
 	"github.com/agent-project/harness/internal/config"
 	"github.com/agent-project/harness/internal/messages"
 	"github.com/agent-project/harness/internal/session"
+	"github.com/agent-project/harness/internal/subagent"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -30,7 +31,14 @@ type App struct {
 // 构造鸡生蛋（bubbletea 固有：Program 需初始 Model，send 只能后注入）经
 // setSend 补偿登记收敛在此阶段，不推翻。
 func Assemble(a *agent.Agent, project *session.Project, cfg config.Config, sess *session.Session, newSession func() (*session.Session, error), ctx context.Context, showThinking bool) *App {
+	return AssembleWith(a, project, cfg, sess, newSession, ctx, showThinking, nil)
+}
+
+// AssembleWith 是 Assemble 的全参版本（subagents 为子 agent 管理器，nil = 不
+// 启用 /subagents 与查看功能——纯 UI 测试用）。
+func AssembleWith(a *agent.Agent, project *session.Project, cfg config.Config, sess *session.Session, newSession func() (*session.Session, error), ctx context.Context, showThinking bool, subagents *subagent.Manager) *App {
 	controller := NewController(a, project, cfg, sess, newSession, ctx)
+	controller.SetSubagents(subagents)
 	model := New(controller)
 	model.showThinking = showThinking
 	if sess != nil {

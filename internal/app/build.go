@@ -7,6 +7,8 @@ import (
 	"github.com/agent-project/harness/internal/agent"
 	"github.com/agent-project/harness/internal/config"
 	"github.com/agent-project/harness/internal/session"
+	"github.com/agent-project/harness/internal/subagent"
+	"github.com/agent-project/harness/internal/tools"
 	"golang.org/x/term"
 )
 
@@ -63,25 +65,37 @@ func Build(o Options) (*HarnessAgent, error) {
 	}
 }
 
-// buildAgent 解析全局 persona 与技能目录路径并装配共享 ReAct agent
-// （AGENTS.md 注入 ADR-043 + 全局 skill 支持 ADR-044）。三模式共用：路径由
-// app 层解析后经 agent.BuildOptions 注入 agent.Build，保持"session 知中间件、
-// 反之不成立"的防环约定（impl 不反向依赖 session）。
-func buildAgent(res *config.ProviderConfig, defaultMode string) (*agent.Agent, error) {
+// buildAgent 解析全局 persona 与技能目录路径、创建子 agent Manager 并装配共享
+// ReAct agent（AGENTS.md 注入 ADR-043 + 全局 skill 支持 ADR-044 + 子 agent
+// 控制工具 ADR-045）。三模式共用：路径由 app 层解析后经 agent.BuildOptions
+// 注入 agent.Build，保持"session 知中间件、反之不成立"的防环约定（impl 不
+// 反向依赖 session）。主装配 = 内置工具 + 控制工具（不含 wait_task）。
+func buildAgent(res *config.ProviderConfig, defaultMode string) (*agent.Agent, *subagent.Manager, error) {
 	agentsPath, err := session.GlobalAgentsMDPath()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	skillsDir, err := session.GlobalSkillsDir()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return agent.Build(agent.BuildOptions{
+	m := subagent.NewManager(subagent.Options{
 		Provider:        res,
 		DefaultMode:     defaultMode,
 		GlobalAgentsMD:  agentsPath,
 		GlobalSkillsDir: skillsDir,
 	})
+	a, err := agent.Build(agent.BuildOptions{
+		Provider:        res,
+		DefaultMode:     defaultMode,
+		GlobalAgentsMD:  agentsPath,
+		GlobalSkillsDir: skillsDir,
+		Tools:           append(tools.Builtins(skillsDir), subagent.ControlTools(m)...),
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return a, m, nil
 }
 
 // buildRun 装配单轮模式：配置 → 生效配置（flags 覆盖）→ agent → 会话 →
@@ -107,7 +121,7 @@ func buildRun(o Options) (*HarnessAgent, error) {
 	if err != nil {
 		return nil, err
 	}
-	a, err := buildAgent(res, rt.DefaultApprovalMode())
+	a, subMgr, err := buildAgent(res, rt.DefaultApprovalMode())
 	if err != nil {
 		return nil, err
 	}
@@ -119,6 +133,7 @@ func buildRun(o Options) (*HarnessAgent, error) {
 		mode:         ModeRun,
 		cfg:          rt,
 		reactAgent:   a,
+		subagents:    subMgr,
 		sess:         sess,
 		prompt:       o.Prompt,
 		jsonOut:      o.JSONOut,
@@ -160,7 +175,7 @@ func buildTUI(o Options) (*HarnessAgent, error) {
 	if err != nil {
 		return nil, err
 	}
-	a, err := buildAgent(rt.Provider, rt.DefaultApprovalMode())
+	a, subMgr, err := buildAgent(rt.Provider, rt.DefaultApprovalMode())
 	if err != nil {
 		return nil, err
 	}
@@ -172,6 +187,7 @@ func buildTUI(o Options) (*HarnessAgent, error) {
 		mode:         ModeTUI,
 		cfg:          rt,
 		reactAgent:   a,
+		subagents:    subMgr,
 		proj:         proj,
 		showThinking: !o.NoThinkingDisplay,
 	}
@@ -226,7 +242,7 @@ func buildResume(o Options) (*HarnessAgent, error) {
 	if err != nil {
 		return nil, err
 	}
-	a, err := buildAgent(rt.Provider, rt.DefaultApprovalMode())
+	a, subMgr, err := buildAgent(rt.Provider, rt.DefaultApprovalMode())
 	if err != nil {
 		return nil, err
 	}
@@ -234,6 +250,7 @@ func buildResume(o Options) (*HarnessAgent, error) {
 		mode:         ModeResume,
 		cfg:          rt,
 		reactAgent:   a,
+		subagents:    subMgr,
 		proj:         proj,
 		sess:         sess,
 		showThinking: !o.NoThinkingDisplay,

@@ -32,6 +32,22 @@ type bgProcess struct {
 	queue     *completion.Queue
 	sessionID string
 	logPath   string
+
+	// 完成信号（wait_task 轮询用，2026-08-16）：进程自然退出（notifyCompletion）
+	// 或 kill_pid/退出清理杀树（handleKill/CleanupBackground）时 close(done)；
+	// exitCode 在 close 之前写入（channel close 的 happens-before 保证 wait_task
+	// 读安全，无需原子）。
+	done     chan struct{}
+	exitCode int
+}
+
+// markDone 置完成信号（close(done) + 先写 exitCode）。done 为 nil（旧测试直接
+// 构造条目）时跳过——wait_task 按"未找到/超时"处理，无崩溃。
+func markDone(e *bgProcess, code int) {
+	e.exitCode = code
+	if e.done != nil {
+		close(e.done)
+	}
 }
 
 // backgroundProcesses 是进程级后台进程注册表（PID → 条目）。
@@ -108,7 +124,7 @@ func transferToBackground(rc *middleware.RuntimeContext, tree processTreeHandle,
 	if err := os.Rename(tmpLog, logPath); err != nil {
 		logPath = tmpLog // 平台差异降级保留临时名
 	}
-	entry := &bgProcess{PID: pid, Handle: tree}
+	entry := &bgProcess{PID: pid, Handle: tree, done: make(chan struct{})}
 	captureCompletion(entry, rc, logPath)
 	registerBackground(entry)
 	return logPath
@@ -133,7 +149,7 @@ func captureCompletion(e *bgProcess, rc *middleware.RuntimeContext, logPath stri
 // 杀 = -1。
 func notifyCompletion(pid int, exitErr error) {
 	entry := unregisterBackground(pid)
-	if entry == nil || entry.queue == nil {
+	if entry == nil {
 		return
 	}
 	code := 0
@@ -143,6 +159,10 @@ func notifyCompletion(pid int, exitErr error) {
 		if errors.As(exitErr, &ee) {
 			code = ee.ExitCode()
 		}
+	}
+	markDone(entry, code)
+	if entry.queue == nil {
+		return
 	}
 	result := fmt.Sprintf(
 		"（系统通知：后台进程 %d 已退出（exit %d）。日志：%s，可用 read_file 查看输出）",
@@ -223,7 +243,7 @@ func startBackground(rc *middleware.RuntimeContext, command, workdir string) (pi
 		logPath = tmp
 	}
 	f.Close()
-	entry := &bgProcess{PID: pid, Handle: tree}
+	entry := &bgProcess{PID: pid, Handle: tree, done: make(chan struct{})}
 	captureCompletion(entry, rc, logPath)
 	// 先注册再起回收 goroutine（顺序铁定：条目存在期间进程在跑；先起 goroutine
 	// 则进程极快退出时注销可能先于注册执行，死进程条目残留回旧行为）。
@@ -256,6 +276,7 @@ func handleKill(pid int) (messages.ToolResult, error) {
 	}
 	killProcessTree(entry.Handle, entry.PID)
 	closeProcessTree(entry.Handle)
+	markDone(entry, -1)
 	return messages.ToolResult{Success: true, Content: fmt.Sprintf("已终止后台进程 %d", pid)}, nil
 }
 
@@ -273,6 +294,7 @@ func CleanupBackground() {
 		entry := v.(*bgProcess)
 		killProcessTree(entry.Handle, entry.PID)
 		closeProcessTree(entry.Handle)
+		markDone(entry, -1)
 		return true
 	})
 }

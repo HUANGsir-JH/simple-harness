@@ -87,9 +87,18 @@ func ParseApprovalDecision(line string) (middleware.Decision, bool) {
 	return middleware.DecisionDeny, false
 }
 
+// agentPrefix 返回子 agent 归属前缀（阶段 5，ADR-045）：AgentID 空（主会话）
+// 返回空串。
+func agentPrefix(agentID string) string {
+	if agentID == "" {
+		return ""
+	}
+	return "【子 agent " + agentID + "】"
+}
+
 // PrintApprovalUI 打印审批提示（文本渲染器）。
 func PrintApprovalUI(req middleware.ApprovalRequest) {
-	fmt.Printf("\n%s[审批] %s%s", ansiYellow, req.ToolName, ansiReset)
+	fmt.Printf("\n%s%s[审批] %s%s", ansiYellow, agentPrefix(req.AgentID), req.ToolName, ansiReset)
 	if req.Summary != "" {
 		fmt.Printf(" %s", req.Summary)
 	}
@@ -102,7 +111,7 @@ func PrintAskUI(req middleware.AskRequest) {
 	if header == "" {
 		header = "提问"
 	}
-	fmt.Printf("\n%s[%s]%s %s\n", ansiYellow, header, ansiReset, req.Question)
+	fmt.Printf("\n%s%s[%s]%s %s\n", ansiYellow, agentPrefix(req.AgentID), header, ansiReset, req.Question)
 	for i, o := range req.Options {
 		fmt.Printf("  %d. %s", i+1, o.Label)
 		if o.Description != "" {
@@ -131,5 +140,5 @@ func ParseAskAnswer(line string, req middleware.AskRequest) (middleware.AskResul
 
 // EmitApprovalJSON 输出审批请求的 JSON 事件（--json 模式排障用）。
 func EmitApprovalJSON(req middleware.ApprovalRequest) {
-	emitJSON(map[string]any{"type": "approval_request", "tool": req.ToolName, "summary": req.Summary, "mode": req.Mode})
+	emitJSON(map[string]any{"type": "approval_request", "tool": req.ToolName, "summary": req.Summary, "mode": req.Mode, "agent_id": req.AgentID})
 }

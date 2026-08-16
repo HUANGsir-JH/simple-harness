@@ -13,6 +13,7 @@ import (
 	"github.com/agent-project/harness/internal/events"
 	"github.com/agent-project/harness/internal/middleware"
 	"github.com/agent-project/harness/internal/session"
+	"github.com/agent-project/harness/internal/subagent"
 	"github.com/agent-project/harness/internal/ui"
 	"github.com/agent-project/harness/internal/ui/tui"
 	"golang.org/x/term"
@@ -38,6 +39,10 @@ type HarnessAgent struct {
 
 	// reactAgent 是基础 ReAct agent（无状态，可被多会话/多 goroutine 共享）。
 	reactAgent *agent.Agent
+
+	// subagents 是子 agent 管理器（阶段 5，ADR-045）：进程内注册表 + 生命周期，
+	// Teardown 时 Shutdown（cancel 全部 + 等收尾）。
+	subagents *subagent.Manager
 
 	proj *session.Project
 	sess *session.Session // run/resume 已建/已载；ModeTUI 新入口 nil（懒加载）
@@ -87,7 +92,7 @@ func (h *HarnessAgent) signals() []os.Signal {
 
 // runTUI 执行 TUI 模式：显式三阶段（Assemble → Run → Close，见 tui 包）。
 func (h *HarnessAgent) runTUI(ctx context.Context) error {
-	t := tui.Assemble(h.reactAgent, h.proj, h.cfg.Config, h.sess, h.newSession, ctx, h.showThinking)
+	t := tui.AssembleWith(h.reactAgent, h.proj, h.cfg.Config, h.sess, h.newSession, ctx, h.showThinking, h.subagents)
 	runErr := t.Run() // program.Run → WaitRuns → SaveActiveState
 	t.Close()         // CloseAll（与 Assemble 对称）
 	return runErr
@@ -214,13 +219,18 @@ func (h *HarnessAgent) runOnce(ctx context.Context) error {
 
 // Teardown 拆除装配产物（幂等；Run 内已调用，外部 defer 兜底）。run：关会话
 // transcript；TUI/resume：会话已由 tui.App.Close 的 CloseAll 关闭，此处
-// no-op。CleanupBackground 仍由 cmd 的 main defer 承担——完整拆除链：
-// WaitRuns→SaveActiveState→CloseAll→CleanupBackground（各段相邻可见）。
+// no-op。子 agent：Shutdown（cancel 全部 + 等收尾，收尾通知 Append 父 Queue
+// ——父 resume 后补注入）。CleanupBackground 仍由 cmd 的 main defer 承担——
+// 完整拆除链：WaitRuns→SaveActiveState→CloseAll→CleanupBackground（各段相邻
+// 可见）。
 func (h *HarnessAgent) Teardown() {
 	if h.closed {
 		return
 	}
 	h.closed = true
+	if h.subagents != nil {
+		h.subagents.Shutdown()
+	}
 	if h.mode == ModeRun && h.sess != nil {
 		_ = h.sess.Close()
 	}

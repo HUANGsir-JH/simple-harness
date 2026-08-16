@@ -43,6 +43,9 @@ type AskRequest struct {
 	// AllowCustom 允许用户在选项外输入自定义文本（默认 true；opencode
 	// custom 默认 true 对位）。
 	AllowCustom bool
+	// AgentID 是子 agent 归属标识（阶段 5，ADR-045）：语义同
+	// ApprovalRequest.AgentID；空 = 主会话。
+	AgentID string
 }
 
 // AskOption 是 Ask 的一个选项（opencode Option{label, description} 对位）。
@@ -77,6 +80,10 @@ type ApprovalRequest struct {
 	Summary string
 	// Mode 是当前审批模式（readonly/acceptedit/bypass，展示用）。
 	Mode string
+	// AgentID 是子 agent 归属标识（阶段 5，ADR-045）：非空 = 子 agent 发起
+	// 的审批，渲染前缀【子 agent <id>】；空 = 主会话（ApprovalMiddleware
+	// 构造时不填，subagentApprover 转发时填）。
+	AgentID string
 }
 
 // Decision 是审批决策。

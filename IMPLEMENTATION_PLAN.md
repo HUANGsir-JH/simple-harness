@@ -27,7 +27,7 @@
 | 配置 | YAML（~/.harness/config.yaml + 项目级 config.local.yaml），加载/校验统一在 **internal/config** 包；`app.Load()` 惰性单例（ADR-026，2026-08-09 配置层独立） |
 | thinking | **默认开启**（ADR-034，2026-08-10 删 enabled 配置项）；模型配置只留 efforts（档位集）+ CLI `--effort/--thinking/--no-thinking` 覆盖 + TUI `/thinking` 会话切换（持久化 AgentState，nil = 默认开启）；按 anthropic 标准参数传递 |
 | 内置工具 | 12 个：read_file / list_dir / glob / write_file / shell_command / apply_patch / update_todo + ask_user（ADR-036）+ plan 3 个（plan_enter / write_plan / plan_done，ADR-036）+ skill（ADR-044，`Builtins(skillsDir)` 统一注册） |
-| 压缩 / 子 agent / AGENTS.md / TUI / Hooks | **TUI ✅ 2026-08-09（ADR-030，bubbletea 全屏替代 REPL）**；**压缩 ✅ 2026-08-12（ADR-037 第三段）**；**AGENTS.md 注入 ✅ 2026-08-15（ADR-043）**；**全局 Skill ✅ 2026-08-15（ADR-044）**；子 agent 规划中，见"待办阶段" |
+| 压缩 / 子 agent / AGENTS.md / TUI / Hooks | **TUI ✅ 2026-08-09（ADR-030，bubbletea 全屏替代 REPL）**；**压缩 ✅ 2026-08-12（ADR-037 第三段）**；**AGENTS.md 注入 ✅ 2026-08-15（ADR-043）**；**全局 Skill ✅ 2026-08-15（ADR-044）**；**子 agent ✅ 2026-08-16（ADR-045，阶段 5）** |
 | 全局 Skill（ADR-044） | **SKILL.md 目录包/平铺 + frontmatter（name/description/whenToUse）+ 目录注入 onSystemPrompt + `skill` 工具渐进式披露**（`~/.harness/skills/`，200KB 加载预算，读失败非致命，classRead 放行 + 截断豁免；`agent.Build` 签名重构为 BuildOptions，见 DECISIONS.md ADR-044） |
 
 ## 架构总览（当前实际目录）
@@ -162,12 +162,13 @@ type Tool interface {
 - 摘要失败/Esc：**跳过 + 终止 run**，绝不重写 conversation。
 - 不做 overflow 安全网（eviction 撑宽度，ADR-009/028）。
 
-### 8. 规划：子 Agent（internal/agent/subagent.go）
+### 8. 子 Agent（internal/subagent/）✅ 2026-08-16（ADR-045，版本 0.13.0）
 
-- 内置几个子 agent（general-purpose 等）+ 并行执行 + 状态跟踪（pending/running/completed）；自定义声明式（subagents/*.md）预留。
-- `spawn_agent` 工具；子 agent = 独立 session + 独立历史（goroutine）；fork 过滤（只继承 user + 最终答案）；`send_message` 单向通信；完成结果注入父上下文。
-- 简化：无 mailbox / wait_agent / 并发上限（semaphore 可选）/ 昵称/路径树。
-- 并行已由无状态 agent + 共享 chain 并发安全支撑（ADR-026）。
+- **spawn 纯异步**：`spawn_agent` 立即返回 agent_id；子 goroutine 跑完 → 完成事件 Append 进父会话 completion 队列（复用 ADR-040 通道）——路径 A 在途采样前注入 / 路径 B TUI 唤醒；无 wait_agent（注入 + 唤醒替代）；嵌套同构逐层归并。
+- **按类型装配**（subagent 包内直接调 agent.Build；BuildOptions +Tools/BaseInstructions/Client 可选字段）：general-purpose（内置 − ask_user + 5 控制 + wait_task）/ explore（只读 4）；同 kind 实例缓存共享；深度硬编码 2。
+- 子会话落盘 `<父会话目录>/subagents/<子id>/` + 血缘字段（ParentID/AgentType/Depth/Status + Name）；fork 过滤 = 仅 spawn message；结果完整注入（最后一条 assistant 文本）；send_message 仅运行中；interrupt 任意后代（中断通知带中断前结果）；权限继承 + 审批归属（AgentID 前缀）；run 模式局限（父 turn 结束未完成子被清理）。
+- TUI `/subagents` 弹窗 + 只读查看（实时滚动，/switch 返回）。
+- 自定义声明式（subagents/*.md）预留扩展点；`wait_task` 子专属（无子唤醒循环）。
 
 ### 9. AGENTS.md 注入（internal/agentsmd/）✅ 2026-08-15（ADR-043）
 
@@ -213,12 +214,10 @@ type Tool interface {
   - **agentsmd ✅ 2026-08-15（ADR-043）**：`internal/agentsmd`（.git 项目根向上搜索 + AGENTS.md/CLAUDE.md 回退 + 全局 persona 拼接 + 200KB 截断 + 读失败非致命）+ `impl.AgentsMdMiddleware`（onSystemPrompt）+ `session.GlobalAgentsMDPath` + `app.buildAgent` 注入；基础提示词同轮增强（中文 + `{{cwd}}`/`{{model}}` 动态上下文）。
   - **全局 Skill ✅ 2026-08-15（ADR-044，版本 0.12.0）**：`internal/skills`（SKILL.md 目录包/平铺发现 + frontmatter 校验 + 200KB 预算 + 渲染）+ `impl.SkillsCatalogMiddleware`（onSystemPrompt 目录注入）+ `tools.SkillTool`（渐进式披露，`Builtins(skillsDir)` 统一注册）+ `session.GlobalSkillsDir` + `agent.Build` 签名重构 BuildOptions + init `skills/` 骨架 + 审批 classRead + 截断豁免 + TUI 分派；e2e `TestSkillToolE2E` 锁定全链路。
   - 注：大工具结果 eviction 已完成（ADR-028），不属于本阶段。
+- **阶段 5：子 agent ✅ 2026-08-16（ADR-045，版本 0.13.0）**：`internal/subagent`（Manager + 5 控制工具 + 按类型装配，装配在包内直接调 agent.Build——无接口无工厂）；spawn 纯异步 + completion 队列复用（子完成 Append 父会话 Queue → 路径 A 注入 / 路径 B TUI 唤醒，无 wait_agent）；子会话落盘 `<父会话目录>/subagents/<子id>/` + 血缘字段（ParentID/AgentType/Depth/Status/Name）；fork 过滤 = 仅 spawn message；结果完整注入（最后一条 assistant 文本）；send_message 仅运行中 / interrupt 任意后代（带中断前结果）/ resume 仅直属子（续接原 jsonl）；权限继承 + 审批归属（ApprovalRequest.AgentID +【子 agent】前缀）；wait_task 子专属（bgProcess 注册表轮询）；agent.BuildOptions +Tools/BaseInstructions/Client；session CreateIn/ResumeAt/NewID；TUI /subagents 只读查看（实时滚动）；e2e `TestSubagentE2E`（mock 内容路由确定性）。
 
 ### ⏳ 待办（未完成）
 
-- **阶段 5：子 agent（内置 + 并行 + 状态 + 单向通信）**
-  - 内置子 agent + `spawn_agent` + 状态跟踪 + fork 过滤 + `send_message` 单向。
-  - 注：Renderer/config/CLI 子命令/docs 已由前述阶段完成，不属于本阶段。
 - **阶段 6（可选）：grep 工具 / 双向通信**（TUI 渲染器、摘要式压缩已随前述阶段完成，剩余仅此两项）
 
 ### 明确不做 / 降级

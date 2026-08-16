@@ -76,7 +76,10 @@ func (m Model) headerView() string {
 
 func (m Model) composerView() string {
 	label := "message"
-	if m.focus == focusTimeline {
+	if m.viewingSubagent {
+		// 子 agent 只读查看（阶段 5，ADR-045）：输入禁用，/switch 返回父会话。
+		label = "viewing sub agent (read-only) · /switch to return"
+	} else if m.focus == focusTimeline {
 		label = "timeline focused"
 	}
 	lineStyle := styleBorder
@@ -280,6 +283,11 @@ func renderApproval(appr *approvalPopup, width int) string {
 	if summary == "" {
 		summary = appr.req.ToolName
 	}
+	// 子 agent 归属（ADR-045）：AgentID 非空时标题带【子 agent <id>】。
+	title := "Permission required"
+	if appr.req.AgentID != "" {
+		title = "Permission required · 子 agent " + appr.req.AgentID
+	}
 	lines := []string{styleText.Render("Tool  ") + styleAssistant.Render(appr.req.ToolName)}
 	for _, line := range strings.Split(summary, "\n") {
 		lines = append(lines, styleMuted.Render(line))
@@ -289,7 +297,7 @@ func renderApproval(appr *approvalPopup, width int) string {
 		styleRunning.Render("  [S] Allow for this session"),
 		styleError.Render("  [N] Deny"),
 	)
-	return renderInlinePanel("Permission required", lines, panelWidth, styleRunning)
+	return renderInlinePanel(title, lines, panelWidth, styleRunning)
 }
 
 // renderAsk 渲染提问弹窗（ADR-036）：header + 问题 + 选项列表（单选 Enter 高亮 /
@@ -300,6 +308,9 @@ func renderAsk(ask *askPopup, width int) string {
 	header := ask.req.Header
 	if header == "" {
 		header = "Question"
+	}
+	if ask.req.AgentID != "" {
+		header += " · 子 agent " + ask.req.AgentID
 	}
 	question := ansi.Hardwrap(ask.req.Question, bodyWidth, true)
 	rows := make([]string, 0, len(ask.req.Options))

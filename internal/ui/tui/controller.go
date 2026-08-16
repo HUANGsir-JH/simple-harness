@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/agent-project/harness/internal/events"
 	"github.com/agent-project/harness/internal/middleware"
 	"github.com/agent-project/harness/internal/session"
+	"github.com/agent-project/harness/internal/subagent"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -35,6 +37,7 @@ type Controller struct {
 	a          *agent.Agent
 	proj       *session.Project
 	cfg        config.Config
+	subagents  *subagent.Manager // 子 agent 管理器（阶段 5，ADR-045；/subagents 查看）
 	active     *session.Session
 	open       map[string]*session.Session
 	newSession func() (*session.Session, error) // 懒加载创建器（repl 传；resume 不触发传 nil）
@@ -49,6 +52,15 @@ type Controller struct {
 
 	mu     sync.Mutex
 	cancel context.CancelFunc // 当前回合 cancel（Esc 中断，跨 goroutine 保护）
+
+	// 子 agent 只读查看模式（阶段 5，ADR-045）：active 切到子会话、输入框禁用；
+	// /switch 退出回 parentSess。viewSubFn 是事件订阅（子 onEvent 已落盘，只转发
+	// 渲染——active 为子会话时 Send，实现实时滚动）。viewOwned = 子会话由
+	// ResumeAt 自建（退出时 Close；Manager 会话由子收尾 Close）。
+	parentSess *session.Session
+	viewSubID  string
+	viewSubFn  func(events.Event)
+	viewOwned  bool
 }
 
 // NewController 构造桥。sess 为已加载会话（resume）或 nil（新入口懒加载）；
@@ -232,6 +244,102 @@ func (c *Controller) ensureActive() error {
 	c.active = s
 	c.registerWake(s) // 完成事件唤起回调（2026-08-13）
 	return nil
+}
+
+// SetSubagents 注入子 agent 管理器（Assemble 装配；测试可省——/subagents 与
+// 查看功能不启用）。
+func (c *Controller) SetSubagents(m *subagent.Manager) { c.subagents = m }
+
+// ListSubagents 列出当前会话的直属子（运行态 + 磁盘历史；/subagents 弹窗）。
+// 无 active（懒加载未触发）或无管理器时返回空。
+func (c *Controller) ListSubagents() []subagent.EntryView {
+	if c.subagents == nil || c.active == nil {
+		return nil
+	}
+	return c.subagents.List(c.active.RuntimeContext())
+}
+
+// ViewSubagent 进入只读查看模式（/subagents 选中）：active 切到子会话 + 订阅
+// 子事件流（实时滚动；子 onEvent 已落盘，订阅者只转发渲染）。parentSess 记录
+// 查看前会话，/switch 退出时切回。
+// 会话来源：Manager 注册表命中（运行中/刚收尾的子）→ 复用其 Session 实例
+// （同一 writer，避免双 writer 写同一 transcript）；未命中（进程重启后的磁盘
+// 历史）→ ResumeAt 加载，退出查看时 Close。
+func (c *Controller) ViewSubagent(id string) error {
+	if c.subagents == nil {
+		return fmt.Errorf("此装配不支持子 agent")
+	}
+	if c.active == nil {
+		return fmt.Errorf("无会话")
+	}
+	var sub *session.Session
+	var owned bool
+	if s, ok := c.subagents.Session(id); ok && s != nil {
+		sub = s
+	} else {
+		dir := filepath.Join(c.active.Dir(), session.DirSubagents, id)
+		s, err := session.ResumeAt(dir)
+		if err != nil {
+			return fmt.Errorf("加载子会话 %s: %w", id, err)
+		}
+		sub = s
+		owned = true
+	}
+	c.ExitSubagentView() // 幂等退出旧查看（换看/重复进入）
+	c.parentSess = c.active
+	c.viewOwned = owned
+	c.mu.Lock()
+	c.viewSubID = id
+	c.mu.Unlock()
+	// 子事件流订阅：落盘由子 onEvent 固定做，订阅者只转发渲染（实时滚动）。
+	// viewSubID 读写经 c.mu（子 goroutine 分发 vs 主线程退出查看的并发安全）；
+	// send 可能 nil（纯 UI 测试）→ 不转发。
+	c.viewSubFn = func(ev events.Event) {
+		c.mu.Lock()
+		still := c.viewSubID == id
+		send := c.send
+		c.mu.Unlock()
+		if still && send != nil {
+			send(agentEventMsg{ev})
+		}
+	}
+	c.subagents.Subscribe(id, c.viewSubFn)
+	c.active = sub
+	c.open[id] = sub
+	c.registerWake(sub)
+	return nil
+}
+
+// ExitSubagentView 退出只读查看（幂等）：退订子事件流 + active 切回查看前会话
+// + Close 自建的磁盘会话（Manager 会话由子收尾 Close）。非查看模式 no-op。
+func (c *Controller) ExitSubagentView() {
+	c.mu.Lock()
+	id := c.viewSubID
+	fn := c.viewSubFn
+	c.viewSubID = ""
+	c.viewSubFn = nil
+	c.mu.Unlock()
+	if id == "" {
+		return
+	}
+	if c.subagents != nil && fn != nil {
+		c.subagents.Unsubscribe(id, fn)
+	}
+	if c.viewOwned && c.active != nil {
+		_ = c.active.Close()
+	}
+	c.viewOwned = false
+	if c.parentSess != nil {
+		c.active = c.parentSess
+	}
+	c.parentSess = nil
+}
+
+// IsViewingSubagent 报告当前是否处于子 agent 只读查看模式（Model 输入禁用）。
+func (c *Controller) IsViewingSubagent() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.viewSubID != ""
 }
 
 // ActiveID 返回当前会话 id（懒加载未创建时空）。

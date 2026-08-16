@@ -36,7 +36,7 @@ type AgentState struct {
 	mu sync.Mutex `json:"-"` // 不序列化；New/LoadFile 反序列化后零值即可用
 
 	SessionID         string           `json:"session_id"`
-	Name              string           `json:"name,omitempty"`             // 会话名（首消息自动命名或 /rename；空 = 未命名）
+	Name              string           `json:"name,omitempty"`             // 会话名（首消息自动命名或 /rename；子 agent name 复用；空 = 未命名）
 	Model             string           `json:"model,omitempty"`            // 会话使用的模型（resume 恢复）
 	ThinkingEnabled   *bool            `json:"thinking_enabled,omitempty"` // nil = 默认开启（/thinking 切换后显式 true/false）
 	ThinkingEffort    string           `json:"thinking_effort,omitempty"`  // 推理档位；空 = 继承 client 默认
@@ -49,6 +49,12 @@ type AgentState struct {
 	Plan              *PlanState       `json:"plan,omitempty"`                // plan 文件指针（ADR-036）
 	Usage             *messages.Usage  `json:"usage,omitempty"`               // 最近一次 API 调用的 token 用量（覆盖语义，/usage 展示；ADR-037）
 	LastContextTokens int64            `json:"last_context_tokens,omitempty"` // 最近一次请求的完整上下文占用（单轮 input+cache+output，footer 与压缩触发，ADR-037）
+
+	// 子 agent 血缘字段（阶段 5，ADR-045）：仅子会话非零，主会话零值。
+	ParentID  string `json:"parent_id,omitempty"`  // 父会话 id
+	AgentType string `json:"agent_type,omitempty"` // general-purpose | explore
+	Depth     int    `json:"depth,omitempty"`      // 嵌套深度（主=0，spawn 时父+1）
+	Status    string `json:"status,omitempty"`     // 子生命周期：pending/running/completed/failed/interrupted
 }
 
 // TodoItem 是单个任务项（AgentScope tasksContext 对位）。对照 codex/opencode
@@ -160,6 +166,22 @@ func (a *AgentState) SetPlanPath(path string) {
 func (a *AgentState) SetName(name string) {
 	a.mu.Lock()
 	a.Name = name
+	a.mu.Unlock()
+}
+
+// SetSubagent 播种子 agent 血缘字段（阶段 5，ADR-045；仅子会话调用）。
+func (a *AgentState) SetSubagent(parentID, agentType string, depth int) {
+	a.mu.Lock()
+	a.ParentID = parentID
+	a.AgentType = agentType
+	a.Depth = depth
+	a.mu.Unlock()
+}
+
+// SetStatus 设置子 agent 生命周期状态（pending/running/completed/failed/interrupted）。
+func (a *AgentState) SetStatus(status string) {
+	a.mu.Lock()
+	a.Status = status
 	a.mu.Unlock()
 }
 

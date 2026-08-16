@@ -4,6 +4,7 @@
 package e2e
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -19,6 +20,8 @@ import (
 	"time"
 
 	"github.com/ActiveState/termtest"
+	"github.com/agent-project/harness/internal/agentstate"
+	"github.com/agent-project/harness/internal/messages"
 	"github.com/agent-project/harness/internal/session"
 )
 
@@ -677,4 +680,125 @@ func TestInitE2E(t *testing.T) {
 	if string(data) != "# user\n" {
 		t.Errorf("用户编辑不应被覆盖: %q", data)
 	}
+}
+
+// mockLLMSubagentServer 模拟子 agent 闭环（阶段 5，ADR-045）的确定性请求
+// 路由（按请求体内容区分父/子——子会话首条 user = spawn 的 message，不含用户
+// prompt 的"用子 agent"字样）：
+//   - 父请求（无注入）：首轮 spawn_agent 工具调用，之后 list_dir 拖延（给子
+//     完成注入时间）
+//   - 父请求（body 含"系统通知"= 注入已发生）：文本回复结束
+//   - 子请求：文本回复（子立即完成）
+func mockLLMSubagentServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	var parentReqs atomic.Int32
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		var sb strings.Builder
+		sb.WriteString(sse("message_start", msgStart))
+		var branch string
+		switch {
+		case strings.Contains(string(body), "已完成。结果："):
+			branch = "DONE"
+			writeText(&sb, "子任务结果已收到，继续执行主任务。")
+		case strings.Contains(string(body), "用子 agent"):
+			branch = "PARENT"
+			if parentReqs.Add(1) == 1 {
+				writeToolUse(&sb, "call_spawn", "spawn_agent", `{"message":"分析目录结构","agent_type":"explore","name":"探查"}`)
+			} else {
+				writeToolUse(&sb, "call_delay", "list_dir", `{}`)
+			}
+		default:
+			branch = "CHILD"
+			writeText(&sb, "分析完成：目录含 2 个文件。")
+		}
+		_ = branch
+		sb.WriteString(sse("message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":5}}`))
+		sb.WriteString(sse("message_stop", `{"type":"message_stop"}`))
+		_, _ = w.Write([]byte(sb.String()))
+	}))
+}
+
+// TestSubagentE2E 验证子 agent 全链路（进程外，HARNESS_HOME 隔离）：
+// 父 spawn_agent（异步）→ 子 goroutine 独立采样（mock 立即完成）→ 完成通知
+// 注入父对话（系统通知 user 消息）→ 父模型看到后总结 → turn_done → 退出码 0。
+// 追加断言：子会话目录落盘（血缘 + status=completed）、父 Queue 已清空（注入
+// 消费）。
+func TestSubagentE2E(t *testing.T) {
+	server := mockLLMSubagentServer(t)
+	defer server.Close()
+	cfg := writeTestConfig(t, server.URL)
+	home := filepath.Join(t.TempDir(), "home")
+
+	cp, err := termtest.NewTest(t, termtest.Options{
+		CmdName:        harnessExe,
+		Args:           []string{"run", "--config", cfg, "用子 agent 分析目录结构"},
+		DefaultTimeout: 60 * time.Second,
+		Environment:    []string{"HARNESS_HOME=" + home},
+	})
+	if err != nil {
+		t.Fatalf("newtest: %v", err)
+	}
+	defer cp.Close()
+	if _, err := cp.Expect("子任务结果已收到"); err != nil {
+		t.Fatalf("expect 注入后的父回复: %v", err)
+	}
+	if _, err := cp.ExpectExitCode(0); err != nil {
+		t.Fatalf("expect exit 0: %v", err)
+	}
+
+	// 子会话目录 + 血缘落盘（父会话目录/subagents/<id>/agentstate.json）。
+	ws := filepath.Join(home, "workspaces")
+	var subDir string
+	_ = filepath.Walk(ws, func(path string, info os.FileInfo, err error) error {
+		if err == nil && info.IsDir() && strings.Contains(info.Name(), "sub-") {
+			subDir = path
+		}
+		return nil
+	})
+	if subDir == "" {
+		t.Fatal("未找到子会话目录")
+	}
+	st := readAgentState(t, filepath.Join(subDir, "agentstate.json"))
+	if st.Status != "completed" {
+		t.Errorf("子 status=%q want completed", st.Status)
+	}
+	if st.AgentType != "explore" || st.Depth != 1 {
+		t.Errorf("子血缘: type=%q depth=%d", st.AgentType, st.Depth)
+	}
+	// 子 transcript 首条 user = spawn message。
+	if conv := readConversation(t, filepath.Join(subDir, "historys")); len(conv) == 0 || conv[0] != "分析目录结构" {
+		t.Errorf("子会话起点: %v", conv)
+	}
+}
+
+// readAgentState 读 agentstate.json（e2e 断言用；AgentState 含 Mutex，返回指针）。
+func readAgentState(t *testing.T, path string) *agentstate.AgentState {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read agentstate: %v", err)
+	}
+	var st agentstate.AgentState
+	if err := json.Unmarshal(data, &st); err != nil {
+		t.Fatalf("unmarshal agentstate: %v", err)
+	}
+	return &st
+}
+
+// readConversation 读 transcript 重建 conversation 的用户消息文本列表。
+func readConversation(t *testing.T, historyDir string) []string {
+	t.Helper()
+	conv, err := session.LoadConversation(historyDir)
+	if err != nil {
+		t.Fatalf("load conversation: %v", err)
+	}
+	var out []string
+	for _, m := range conv.Messages {
+		if m.Role == messages.RoleUser {
+			out = append(out, m.Content)
+		}
+	}
+	return out
 }

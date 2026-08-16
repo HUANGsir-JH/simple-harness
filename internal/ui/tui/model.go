@@ -202,6 +202,10 @@ type Model struct {
 	eventError  bool
 	focus       focusMode
 
+	// viewingSubagent 是子 agent 只读查看模式（阶段 5，ADR-045）：active 已切到
+	// 子会话，输入框禁用（无"用户直连子"通道），/switch 退出回父会话。
+	viewingSubagent bool
+
 	inputHistory []string
 	historyPos   int
 	draft        string
@@ -417,6 +421,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleComposerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// 子 agent 只读查看：忽略全部输入（Esc 由 handleKey 先行处理）。
+	if m.viewingSubagent {
+		return m, nil
+	}
 	if m.completionVisible() {
 		switch msg.String() {
 		case "up":

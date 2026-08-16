@@ -6,9 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 一个参照 OpenAI Codex CLI（`../codex/codex-rs`，Rust 源码）+ AgentScope Java v2 架构、用 Go 构建的**可真实使用**的极简 agent harness（命令行形式）。定位为通用框架，未来可被其它项目（如 resume-agent）引用。
 
-**当前状态**：阶段 1（骨架+统一消息模型+Provider+最小 loop）✅ 2026-08-04；阶段 2（工具系统 + 并发执行 + 终端渲染 + middleware 骨架 + 交互式 CLI）✅ 2026-08-07；阶段 2.5（Workspace + AgentState + 会话落盘/resume）✅ 2026-08-08；**架构重构（ADR-026 无状态 agent + 运行时切换 + 配置统一 init）**✅ 2026-08-08；**todo 工具（update_todo 全量替换 + 跨轮偏离提醒，ADR-027）**✅ 2026-08-08；**工具结果截断中间件 + Esc 用户中断 + shell 长任务缓解 + state.CWD 修正（ADR-028）**✅ 2026-08-09；**工具审批（三档权限 + onActing middleware + 会话级记忆，ADR-029）**✅ 2026-08-09；**TUI（bubbletea 全屏交互 UI 替代 REPL，ADR-030）**🔨 2026-08-09；**用量展示（ADR-037 第一段，footer ctx + /usage）✅ 2026-08-12**；**thinking 完整回传（ADR-025 修订，ADR-037 第二段）✅ 2026-08-12**；**LLM 摘要压缩（ADR-037 第三段，compact 包 + /compact）✅ 2026-08-12（版本 0.8.0）**。**规划文档 `IMPLEMENTATION_PLAN.md` 是权威来源**（含已确认决策表与实施阶段状态，**已完成/待办严格区分**）；架构决策在 `docs/tasks/DECISIONS.md`（ADR-021~044 为核心）；任务跟踪在 `docs/tasks/{TASKS,PROGRESS}.md`。实现前先读 `IMPLEMENTATION_PLAN.md`。
+**当前状态**：阶段 1（骨架+统一消息模型+Provider+最小 loop）✅ 2026-08-04；阶段 2（工具系统 + 并发执行 + 终端渲染 + middleware 骨架 + 交互式 CLI）✅ 2026-08-07；阶段 2.5（Workspace + AgentState + 会话落盘/resume）✅ 2026-08-08；**架构重构（ADR-026 无状态 agent + 运行时切换 + 配置统一 init）**✅ 2026-08-08；**todo 工具（update_todo 全量替换 + 跨轮偏离提醒，ADR-027）**✅ 2026-08-08；**工具结果截断中间件 + Esc 用户中断 + shell 长任务缓解 + state.CWD 修正（ADR-028）**✅ 2026-08-09；**工具审批（三档权限 + onActing middleware + 会话级记忆，ADR-029）**✅ 2026-08-09；**TUI（bubbletea 全屏交互 UI 替代 REPL，ADR-030）**🔨 2026-08-09；**用量展示（ADR-037 第一段，footer ctx + /usage）✅ 2026-08-12**；**thinking 完整回传（ADR-025 修订，ADR-037 第二段）✅ 2026-08-12**；**LLM 摘要压缩（ADR-037 第三段，compact 包 + /compact）✅ 2026-08-12（版本 0.8.0）**；**阶段 5 子 agent（ADR-045，版本 0.13.0，2026-08-16：`internal/subagent` 包 + spawn 纯异步 + completion 队列复用 + 按类型装配）**。**规划文档 `IMPLEMENTATION_PLAN.md` 是权威来源**（含已确认决策表与实施阶段状态，**已完成/待办严格区分**）；架构决策在 `docs/tasks/DECISIONS.md`（ADR-021~045 为核心）；任务跟踪在 `docs/tasks/{TASKS,PROGRESS}.md`。实现前先读 `IMPLEMENTATION_PLAN.md`。
 
-**实施顺序**：~~阶段 3 审批~~ → **todo 工具**（挂 state，已完）→ **工具结果落盘/中断/shell 缓解**（ADR-028，已完）→ **工具审批（ADR-029，已完）**→ **TUI（bubbletea 替代 REPL，ADR-030，进行中）**→ **用量展示 + thinking 回传 + LLM 摘要压缩（ADR-037，已完 0.8.0）**→ **阶段 4 剩余（AGENTS.md 注入 + 基础提示词增强，ADR-043，已完 2026-08-15）** → **全局 Skill 支持（ADR-044，已完 0.12.0 2026-08-15：`~/.harness/skills/` SKILL.md 目录 + 系统提示目录注入 + `skill` 工具渐进式披露；`agent.Build` 签名重构为 BuildOptions）** → 阶段 5（子 agent，并行已由无状态 agent 架构支撑）→ 阶段 6 剩余（grep/双向通信）。
+**实施顺序**：~~阶段 3 审批~~ → **todo 工具**（挂 state，已完）→ **工具结果落盘/中断/shell 缓解**（ADR-028，已完）→ **工具审批（ADR-029，已完）**→ **TUI（bubbletea 替代 REPL，ADR-030，进行中）**→ **用量展示 + thinking 回传 + LLM 摘要压缩（ADR-037，已完 0.8.0）**→ **阶段 4 剩余（AGENTS.md 注入 + 基础提示词增强，ADR-043，已完 2026-08-15）** → **全局 Skill 支持（ADR-044，已完 0.12.0 2026-08-15：`~/.harness/skills/` SKILL.md 目录 + 系统提示目录注入 + `skill` 工具渐进式披露；`agent.Build` 签名重构为 BuildOptions）** → **阶段 5 子 agent（ADR-045，已完 0.13.0 2026-08-16：spawn_agent 纯异步 + completion 队列复用 + 嵌套深度 2 + 按类型装配 + /subagents 只读查看）** → 阶段 6 剩余（grep/双向通信）。
 
 ## 常用命令
 
@@ -31,7 +31,7 @@ go test ./internal/messages/ -run TestMessageJSONL
 go test ./internal/e2e/ -count=1
 ```
 
-交互模式（`harness` 无子命令进 TUI，bubbletea 全屏）命令：`/switch` `/model` `/effort` `/thinking` `/permission` 弹窗选择器（选项实时从配置获取，右侧显示说明）、`/rename <名称>`（会话改名）、`/help`、`/exit`（退出仅此命令）。**会话懒加载**（2026-08-11）：进入不创建 session，首条消息/状态命令才建（避免 /exit 或 /switch 残留空会话）；**首消息自动命名**（codex first_user_message 同款，前 40 字，/switch 弹窗与 header 展示 name）。**Esc 中断当前回合**（中断提示落盘，resume 可见，ADR-028）；**Ctrl+C 复制**（非中断非退出）；run 期间输入进**队列**（输入框上方队列条，回合完成逐条连跑）。`run`（单轮流式非交互）保留。**thinking 默认开启**（ADR-034，2026-08-10 删配置 enabled 项）：开关是会话级偏好，`/thinking` 或 `--thinking/--no-thinking` 切换，持久化 AgentState，resume 恢复。**工具审批**（ADR-029）：config `approval.mode` 为默认权限（会话创建时播种进 AgentState.Permission.Mode）；危险操作按模式询问，`y` 允许本次 / `s` 本会话记住（落盘 AgentState）/ `n` 拒绝（回填模型换思路）；非 TTY 自动拒绝。
+交互模式（`harness` 无子命令进 TUI，bubbletea 全屏）命令：`/switch` `/model` `/effort` `/thinking` `/permission` 弹窗选择器（选项实时从配置获取，右侧显示说明）、`/rename <名称>`（会话改名）、`/subagents`（子 agent 列表 → 只读查看，/switch 返回）、`/help`、`/exit`（退出仅此命令）。**会话懒加载**（2026-08-11）：进入不创建 session，首条消息/状态命令才建（避免 /exit 或 /switch 残留空会话）；**首消息自动命名**（codex first_user_message 同款，前 40 字，/switch 弹窗与 header 展示 name）。**Esc 中断当前回合**（中断提示落盘，resume 可见，ADR-028）；**Ctrl+C 复制**（非中断非退出）；run 期间输入进**队列**（输入框上方队列条，回合完成逐条连跑）。`run`（单轮流式非交互）保留。**thinking 默认开启**（ADR-034，2026-08-10 删配置 enabled 项）：开关是会话级偏好，`/thinking` 或 `--thinking/--no-thinking` 切换，持久化 AgentState，resume 恢复。**工具审批**（ADR-029）：config `approval.mode` 为默认权限（会话创建时播种进 AgentState.Permission.Mode）；危险操作按模式询问，`y` 允许本次 / `s` 本会话记住（落盘 AgentState）/ `n` 拒绝（回填模型换思路）；非 TTY 自动拒绝。
 
 ## 代码架构
 
@@ -52,6 +52,7 @@ internal/
   agentsmd/           # ★ AGENTS.md/CLAUDE.md 发现与拼接（ADR-043）：.git 项目根向上搜索 + 200KB 截断 + 读失败非致命
   skills/             # ★ 全局技能（ADR-044）：SKILL.md 目录包/平铺发现 + frontmatter 校验 + 200KB 预算 + <skill_content> 渲染（叶子包，只依赖 stdlib+yaml）
   session/            # workspace 项目分桶 + 块级 transcript 异步 writer + resume
+  subagent/           # ★ 子 agent（阶段 5，ADR-045）：Manager 注册表 + 5 控制工具（spawn/send/interrupt/resume/list）+ 按类型装配（直接调 agent.Build，无接口无工厂）+ 完成通知复用 completion 队列
   e2e/                # 进程外端到端测试（termtest）
   # 规划中（未实现）：hooks（子进程，远期）
 ```
@@ -79,9 +80,10 @@ internal/
 - 时间戳统一 `YYYY-MM-DD`；状态变更必须带日期。
 - **测试隔离**：涉及 workspace 的测试/进程用 `HARNESS_HOME=<临时目录>`，避免污染 `~/.harness/`。
 - 真实 API key 只在 `config.local.yaml`（gitignored），**永不写入对话/记忆/提交明文**。
+- 当用户需要对方案设计进行讨论的时候，对具体功能了解参考源实现，并且针对歧义点或者实现思路等不停地和用户讨论，直到达成一致，形成最终的方案设计。
 
 
-## 三个参考源
+## 五个参考源
 1. D:\agent-project\harness\codex：codex开源仓库
 2. D:\agent-project\harness\opencode：opencode开源仓库
 3. D:\agent-project\harness\simple-harness\agent-scope-llms.txt：AgentScope LLMs 相关信息

@@ -65,7 +65,7 @@
 
 - **目标**：**内置几个子 agent**（general-purpose 等）+ **并行执行** + **状态跟踪**（pending/running/completed）+ `send_message` 单向（fork 过滤保留）；自定义声明式（subagents/*.md）预留扩展点；Renderer 接口完成（simple 渲染器 + --json 模式）、config 包（YAML 加载）、CLI 子命令完善、docs/ 设计文档
 - **成功标准**：`harness run "用子 agent 分析这个目录结构"` 端到端跑通；并行子 agent 状态可查；`--json` 输出结构化事件；config 文件可配置
-- **状态**：未开始（2026-08-07 确认子 agent 形态：内置 + 并行 + 状态，细节阶段五探讨；**2026-08-09 TUI 阶段优先，本阶段后置**）
+- **状态**：✅ **已完成（2026-08-16，ADR-045，版本 0.13.0）**——`internal/subagent`（Manager + 5 控制工具 + 按类型装配，无接口无工厂）；spawn 纯异步 + completion 队列复用（完成自动注入父对话 + TUI 唤醒，无 wait_agent）；子会话落盘 `<父会话目录>/subagents/<子id>/` + 血缘字段；fork 过滤 = 仅 spawn message；结果完整注入；send_message 仅运行中 / interrupt 任意后代 / resume 仅直属子；权限继承 + 审批归属；wait_task 子专属；TUI /subagents 只读查看；e2e `TestSubagentE2E`。
 
 ## 阶段 TUI：bubbletea 全屏交互 UI（提前自阶段 6，子 agent 之前）
 

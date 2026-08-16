@@ -1,3 +1,19 @@
+## 2026-08-16
+
+### 阶段 5：子 agent ✅ 版本 0.13.0（ADR-045）
+
+- **背景**：阶段 5 落地（功能规划 `docs/plans/subagent.md` 14 条 + 实现讨论 12 条新增；参考 codex/opencode/AgentScope Java/dsh 四个实现）。核心机制：**复用 completion 队列**（ADR-040）——子完成事件 Append 进父会话 Queue → 路径 A 在途采样前注入 / 路径 B TUI 唤醒，主 agent 无需 wait_agent。
+- **交付**：
+  - **`internal/subagent` 包（新）**：`Manager`（进程内注册表 {id/name/type/status/parentID/depth/dir/queue/cancel/done} + 按 kind 缓存共享 agent 实例 + 子事件订阅/退订 + Shutdown 清理）+ **5 控制工具**（spawn_agent 纯异步 / send_message 仅运行中 / interrupt_agent 任意后代 / resume_agent 仅直属子 / list_agents 运行态+磁盘合并）+ 子装配（`buildAgent(kind)` 直接调 `agent.Build`——BuildOptions 加 `Tools`/`BaseInstructions`/`Client` 可选字段，agent 保持通用不感知 subagent；无接口无工厂，依赖 subagent→agent→tools 无环）+ 通知三分支（完成/失败/中断，含 name 与已产出文本）+ `subagentApprover`（审批转发父 + AgentID 归属）。
+  - **会话落盘**：`session.CreateIn(dir, st)`（Create 重构委托）+ `ResumeAt(dir)`（resume 续接原 jsonl 段）+ `NewID(prefix)`（sub- 前缀）；子会话目录 `<父会话目录>/subagents/<子id>/`；agentstate 新增血缘字段（ParentID/AgentType/Depth/Status，omitempty 兼容旧会话）。
+  - **工具集**：general-purpose = 内置 − ask_user + 5 控制 + `wait_task`（tools 包新工具：bgProcess 注册表轮询后台 shell，done/exitCode 完成信号）；explore = 只读 4；主 agent = 内置 + 5 控制。深度硬编码 2。
+  - **审批**：`ApprovalRequest`/`AskRequest` +AgentID（TUI 弹窗标题与 run 打印【子 agent <id>】前缀）；控制工具 classControl 全放行；子权限继承父 Mode+Approved 快照。
+  - **TUI**：`/subagents` 弹窗（id/name/type/status/depth）→ 只读查看（输入禁用 + 子事件订阅实时滚动 + /switch 返回；运行中的子复用 Manager 会话实例避免双 writer）。
+  - **app**：`buildAgent` 返回 (agent, Manager)；Teardown 幂等 `Manager.Shutdown()`（cancel all + 等收尾 + 通知 Append——父 resume 补注入）；run 模式局限记录（父 turn 结束未完成子被清理）。
+- **测试**：subagent 包 11 项（生命周期/深度/通知三分支/实例缓存/退订/审批包装，-race）；session CreateIn/ResumeAt；wait_task 4 项；TUI 查看/输入禁用；policy classControl；**`TestSubagentE2E`**（进程外 mock 内容路由确定性：spawn → 子采样完成 → 注入父（"已完成。结果："判定）→ 父回复 → 子目录血缘 completed 断言，连跑稳定）。
+- **验证**：`go build/vet/test ./... -count=1` 全绿（19 包含 e2e + -race）。
+- **影响 ADR**：ADR-040（Event.SessionID 预留落地）；ADR-026（共享无状态 agent 并发 Run）；ADR-029（+AgentID + classControl）；ADR-025（CreateIn/ResumeAt/NewID）；ADR-033（buildAgent 返回三元组）。
+
 ## 2026-08-15
 
 ### 全局 Skill 支持 ✅ 版本 0.12.0（ADR-044）
