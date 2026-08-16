@@ -127,3 +127,32 @@ func TestShellCommandUnicode(t *testing.T) {
 		t.Errorf("content: got %q", r.Content)
 	}
 }
+
+// TestShellCommandReadonly 验证只读模式强制判定（explore 装配，2026-08-16）：
+// 白名单命令放行执行；白名单外命令与 kill_pid 拒绝回填（RespondToModel）。
+func TestShellCommandReadonly(t *testing.T) {
+	tool := ShellCommandTool{Readonly: true}
+
+	// 白名单命令执行（pwd 跨平台）。
+	r, err := call(tool, map[string]any{"command": "pwd"})
+	if err != nil || !r.Success {
+		t.Fatalf("白名单命令应执行: %v %v", r, err)
+	}
+
+	// 白名单外命令拒绝回填（不执行）。
+	_, err = call(tool, map[string]any{"command": "rm -rf x"})
+	te, ok := err.(*ToolError)
+	if !ok || !te.RespondToModel {
+		t.Fatalf("白名单外应回填拒绝: %v", err)
+	}
+	if !strings.Contains(te.Message, "只读") {
+		t.Errorf("拒绝文案: %q", te.Message)
+	}
+
+	// kill_pid 拒绝（终止操作非只读）。
+	_, err = call(tool, map[string]any{"kill_pid": 123})
+	te2, ok := err.(*ToolError)
+	if !ok || !te2.RespondToModel || !strings.Contains(te2.Message, "kill_pid") {
+		t.Fatalf("kill_pid 应拒绝: %v", err)
+	}
+}

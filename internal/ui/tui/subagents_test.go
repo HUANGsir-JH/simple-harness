@@ -140,3 +140,34 @@ func TestModelViewingSubagentDisablesInput(t *testing.T) {
 		t.Errorf("查看模式回车不应提交: %q", got)
 	}
 }
+
+// TestModelViewingSubagentEscExits 验证 Esc 退出查看（2026-08-16 修复：输入框
+// 禁用导致 /switch 无法输入、查看模式困死——Esc 是唯一不依赖输入的退出路径）：
+// Esc → 退出查看 + active 回父会话 + controller 查看状态清除；c == nil 时安全
+// 清 flag 不 panic。
+func TestModelViewingSubagentEscExits(t *testing.T) {
+	c, id, _ := subagentTestHarness(t)
+	parentID := c.ActiveID()
+	m := New(c)
+	if err := c.ViewSubagent(id); err != nil {
+		t.Fatalf("ViewSubagent: %v", err)
+	}
+	m.viewingSubagent = true
+
+	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = nm.(Model)
+	if m.viewingSubagent || c.IsViewingSubagent() {
+		t.Error("Esc 应退出查看模式")
+	}
+	if c.ActiveID() != parentID {
+		t.Errorf("active 应回父会话: %s", c.ActiveID())
+	}
+
+	// c == nil（无 controller 的纯模型）：安全清 flag 不 panic。
+	m2 := New(nil)
+	m2.viewingSubagent = true
+	nm2, _ := m2.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if nm2.(Model).viewingSubagent {
+		t.Error("c==nil 时 Esc 也应清查看标志")
+	}
+}

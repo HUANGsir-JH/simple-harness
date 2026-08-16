@@ -165,7 +165,7 @@ type Tool interface {
 ### 8. 子 Agent（internal/subagent/）✅ 2026-08-16（ADR-045，版本 0.13.0）
 
 - **spawn 纯异步**：`spawn_agent` 立即返回 agent_id；子 goroutine 跑完 → 完成事件 Append 进父会话 completion 队列（复用 ADR-040 通道）——路径 A 在途采样前注入 / 路径 B TUI 唤醒；无 wait_agent（注入 + 唤醒替代）；嵌套同构逐层归并。
-- **按类型装配**（subagent 包内直接调 agent.Build；BuildOptions +Tools/BaseInstructions/Client 可选字段）：general-purpose（内置 − ask_user + 5 控制 + wait_task）/ explore（只读 4）；同 kind 实例缓存共享；深度硬编码 2。
+- **按类型装配**（subagent 包内 `buildSubagent(kind)` 独立装配，不复用 agent.Build——2026-08-16 修订；general-purpose = uniform 主 persona + DelegationInstructionsMiddleware 委托段 / explore = 专属简短提示词）：general-purpose（内置 − ask_user + 5 控制 + wait_task）/ explore（只读 4）；同 kind 实例缓存共享；深度硬编码 2。
 - 子会话落盘 `<父会话目录>/subagents/<子id>/` + 血缘字段（ParentID/AgentType/Depth/Status + Name）；fork 过滤 = 仅 spawn message；结果完整注入（最后一条 assistant 文本）；send_message 仅运行中；interrupt 任意后代（中断通知带中断前结果）；权限继承 + 审批归属（AgentID 前缀）；run 模式局限（父 turn 结束未完成子被清理）。
 - TUI `/subagents` 弹窗 + 只读查看（实时滚动，/switch 返回）。
 - 自定义声明式（subagents/*.md）预留扩展点；`wait_task` 子专属（无子唤醒循环）。

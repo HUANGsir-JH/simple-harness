@@ -380,6 +380,19 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "esc":
+		// 子 agent 只读查看：Esc = 退出查看回父会话（查看模式下 Esc 不中断
+		// 子 agent——"离开当前上下文"语义，与运行中中断区分；输入框禁用
+		// 无法输入 /switch，Esc 是唯一不依赖输入的退出路径）。
+		if m.viewingSubagent {
+			if m.c == nil {
+				m.viewingSubagent = false
+				return m, nil
+			}
+			m.c.ExitSubagentView()
+			m.viewingSubagent = false
+			m.reloadSession()
+			return m.sysOK("Back to " + shortSession(m.c.active.ID)), nil
+		}
 		if m.running && m.c != nil {
 			m.requestInterrupt()
 		}

@@ -108,8 +108,9 @@ func (m Model) runCommand(cmd command) (tea.Model, tea.Cmd) {
 
 	switch cmd.name {
 	case "switch":
-		// 子 agent 只读查看模式：/switch 即退出查看回父会话（无参直接回，
-		// 带参继续原切会话逻辑）。
+		// 子 agent 只读查看模式：Esc 是主退出键（handleKey，输入框禁用无法
+		// 输入命令），/switch 命令同样可退（无参直接回父，带参继续原切
+		// 会话逻辑）。
 		if m.viewingSubagent {
 			m.c.ExitSubagentView()
 			m.viewingSubagent = false

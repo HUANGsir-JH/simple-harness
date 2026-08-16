@@ -16,7 +16,7 @@ package impl
 //     （纯 Deny 失败模式：unknown 由 Decide 归 Deny，理由回填模型换思路）
 //
 // 纯函数（无 I/O），与 Decide 解耦；policy_test.go 锁定的非 plan 判定
-// （isSafe/isDangerous/findIsDangerous/hasShellMeta）完全不受影响。
+// （IsSafeCommand/isDangerous——白名单已下沉 tools 包，2026-08-16）不受影响。
 
 import (
 	"regexp"

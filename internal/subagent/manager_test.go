@@ -238,14 +238,14 @@ func TestInterruptNotifiesWithPartial(t *testing.T) {
 	}
 }
 
-// TestSameKindAgentCached 验证同 kind 装配实例缓存共享（buildAgent 只装配一次）。
+// TestSameKindAgentCached 验证同 kind 装配实例缓存共享（buildSubagent 只装配一次）。
 func TestSameKindAgentCached(t *testing.T) {
 	m, _, _ := testHarness(t, immediateStream("ok"))
-	a1, err := m.buildAgent(KindGeneralPurpose)
+	a1, err := m.buildSubagent(KindGeneralPurpose)
 	if err != nil {
 		t.Fatal(err)
 	}
-	a2, err := m.buildAgent(KindGeneralPurpose)
+	a2, err := m.buildSubagent(KindGeneralPurpose)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,18 +253,31 @@ func TestSameKindAgentCached(t *testing.T) {
 		t.Error("同 kind 应共享同一实例")
 	}
 	// explore 与 general-purpose 不同实例；工具集不同。
-	e1, _ := m.buildAgent(KindExplore)
+	e1, _ := m.buildSubagent(KindExplore)
 	if e1 == a1 {
 		t.Error("不同 kind 应不同实例")
 	}
-	if len(m.toolset(KindExplore)) != 4 {
-		t.Errorf("explore 应只读 4 工具: %d", len(m.toolset(KindExplore)))
+	if len(m.toolset(KindExplore)) != 5 {
+		t.Errorf("explore 应只读 5 工具: %d", len(m.toolset(KindExplore)))
 	}
 	for _, t2 := range m.toolset(KindExplore) {
 		n := t2.Name()
-		if n != "read_file" && n != "list_dir" && n != "glob" && n != "skill" {
+		if n != "read_file" && n != "list_dir" && n != "glob" && n != "skill" && n != "shell_command" {
 			t.Errorf("explore 含非只读工具: %s", n)
 		}
+	}
+	// explore 的 shell_command 必须为只读实例（2026-08-16）。
+	roFound := false
+	for _, t2 := range m.toolset(KindExplore) {
+		if st, ok := t2.(tools.ShellCommandTool); ok {
+			if !st.Readonly {
+				t.Error("explore 的 shell_command 应为只读实例")
+			}
+			roFound = true
+		}
+	}
+	if !roFound {
+		t.Error("explore 应含 shell_command")
 	}
 	for _, t2 := range m.toolset(KindGeneralPurpose) {
 		if t2.Name() == "ask_user" {

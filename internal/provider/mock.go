@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"errors"
+	"sync"
 )
 
 // FakeStream 是测试用的脚本化 EventStream（包括 agent 包测试）。
@@ -35,14 +36,18 @@ func (f *FakeStream) Err() error   { return f.err }
 func (f *FakeStream) Close() error { return nil }
 
 // FakeClient 是测试用的脚本化 Client。它记录最后一次请求以供断言，
-// 并返回配置好的流。
+// 并返回配置好的流。并发安全（并行子 agent/工具测试共享同一实例，
+// 2026-08-16：LastReq 写加锁，修复 -race 下并发采样数据竞争）。
 type FakeClient struct {
+	mu       sync.Mutex
 	StreamFn func(ctx context.Context, req Request) (EventStream, error)
 	LastReq  *Request
 }
 
 func (f *FakeClient) Stream(ctx context.Context, req Request) (EventStream, error) {
+	f.mu.Lock()
 	f.LastReq = &req
+	f.mu.Unlock()
 	if f.StreamFn == nil {
 		return NewFakeStream(nil), nil
 	}

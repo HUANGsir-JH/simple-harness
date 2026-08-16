@@ -4,7 +4,7 @@
 
 - **背景**：阶段 5 落地（功能规划 `docs/plans/subagent.md` 14 条 + 实现讨论 12 条新增；参考 codex/opencode/AgentScope Java/dsh 四个实现）。核心机制：**复用 completion 队列**（ADR-040）——子完成事件 Append 进父会话 Queue → 路径 A 在途采样前注入 / 路径 B TUI 唤醒，主 agent 无需 wait_agent。
 - **交付**：
-  - **`internal/subagent` 包（新）**：`Manager`（进程内注册表 {id/name/type/status/parentID/depth/dir/queue/cancel/done} + 按 kind 缓存共享 agent 实例 + 子事件订阅/退订 + Shutdown 清理）+ **5 控制工具**（spawn_agent 纯异步 / send_message 仅运行中 / interrupt_agent 任意后代 / resume_agent 仅直属子 / list_agents 运行态+磁盘合并）+ 子装配（`buildAgent(kind)` 直接调 `agent.Build`——BuildOptions 加 `Tools`/`BaseInstructions`/`Client` 可选字段，agent 保持通用不感知 subagent；无接口无工厂，依赖 subagent→agent→tools 无环）+ 通知三分支（完成/失败/中断，含 name 与已产出文本）+ `subagentApprover`（审批转发父 + AgentID 归属）。
+  - **`internal/subagent` 包（新）**：`Manager`（进程内注册表 {id/name/type/status/parentID/depth/dir/queue/cancel/done} + 按 kind 缓存共享 agent 实例 + 子事件订阅/退订 + Shutdown 清理）+ **5 控制工具**（spawn_agent 纯异步 / send_message 仅运行中 / interrupt_agent 任意后代 / resume_agent 仅直属子 / list_agents 运行态+磁盘合并）+ 子装配（`buildSubagent(kind)` 独立装配——不复用 agent.Build，见下方修订；无接口无工厂，依赖 subagent→agent→tools 无环）+ 通知三分支（完成/失败/中断，含 name 与已产出文本）+ `subagentApprover`（审批转发父 + AgentID 归属）。
   - **会话落盘**：`session.CreateIn(dir, st)`（Create 重构委托）+ `ResumeAt(dir)`（resume 续接原 jsonl 段）+ `NewID(prefix)`（sub- 前缀）；子会话目录 `<父会话目录>/subagents/<子id>/`；agentstate 新增血缘字段（ParentID/AgentType/Depth/Status，omitempty 兼容旧会话）。
   - **工具集**：general-purpose = 内置 − ask_user + 5 控制 + `wait_task`（tools 包新工具：bgProcess 注册表轮询后台 shell，done/exitCode 完成信号）；explore = 只读 4；主 agent = 内置 + 5 控制。深度硬编码 2。
   - **审批**：`ApprovalRequest`/`AskRequest` +AgentID（TUI 弹窗标题与 run 打印【子 agent <id>】前缀）；控制工具 classControl 全放行；子权限继承父 Mode+Approved 快照。
@@ -13,6 +13,8 @@
 - **测试**：subagent 包 11 项（生命周期/深度/通知三分支/实例缓存/退订/审批包装，-race）；session CreateIn/ResumeAt；wait_task 4 项；TUI 查看/输入禁用；policy classControl；**`TestSubagentE2E`**（进程外 mock 内容路由确定性：spawn → 子采样完成 → 注入父（"已完成。结果："判定）→ 父回复 → 子目录血缘 completed 断言，连跑稳定）。
 - **验证**：`go build/vet/test ./... -count=1` 全绿（19 包含 e2e + -race）。
 - **影响 ADR**：ADR-040（Event.SessionID 预留落地）；ADR-026（共享无状态 agent 并发 Run）；ADR-029（+AgentID + classControl）；ADR-025（CreateIn/ResumeAt/NewID）；ADR-033（buildAgent 返回三元组）。
+- **修订（2026-08-16，同日）**：**子装配独立化 + 提示词精准化**——`buildSubagent(kind)` 完全独立（不复用 `agent.Build`：client/registry/compactor/中间件链在 subagent 包自由组合；`agent.Build` 回归纯主装配，`BuildOptions.BaseInstructions` 字段删除）；提示词调研 opencode/deepseek 后定稿：general-purpose = **uniform 主 persona**（`impl.DefaultBaseInstructions` 跨主/子一致）+ **独立 `DelegationInstructionsMiddleware` 追加委托段**（deepseek SUBAGENT_DELEGATION_CONTEXT 同款：权限固定/不重试被拒/任务范围/结论回父/不能问用户/可嵌套/wait_task）；explore = **专属简短提示词**（opencode explore.txt 风格）；`FakeClient.Stream` 加锁修复 -race 并发采样数据竞争；新增 `TestBuildSubagentPrompts`（FakeClient 捕获 Instructions 断言 uniform+委托段 / explore 专属）与 `TestDelegationMiddleware`。**TUI 查看退出修复**：查看模式输入框禁用导致 `/switch` 无法输入、Esc 又只做中断——困死；改为查看模式 **Esc = 退出查看回父会话**（主退出键，/switch 保留；提示行改 "Esc to return"；新增 `TestModelViewingSubagentEscExits` 覆盖真实 controller 退出 + c==nil 安全）。
+- **修订（2026-08-16，同日）**：**explore 只读 shell**——`ShellCommandTool{Readonly: bool}` 装配字段（explore 工具集 4→5，Spec 描述按字段区分明示能力边界；Handle 强制 `IsSafeCommand` 判定，白名单外命令与 kill_pid 拒绝回填——与审批模式无关的硬边界，bypass 也拦得住）；只读白名单判定从 impl/policy.go 下沉 tools 包（`tools.IsSafeCommand`，impl 审批豁免/plan 判定改引用，无环）并**扩充**（git grep/show/ls-files、wc/stat/du/sort/uniq）+ **顺带修复两个白名单漏洞**：`--flag=value` 形式绕过（sort --output=file）、前缀非词边界绕过（findx 借 find 放行）；explore 提示词补只读 shell 场景引导。测试：`TestIsSafeCommand`（放行/拒绝全用例）、`TestShellCommandReadonly`（执行/拒绝/kill_pid）、`TestSameKindAgentCached` 断言只读实例。
 
 ## 2026-08-15
 

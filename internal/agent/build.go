@@ -27,14 +27,11 @@ type BuildOptions struct {
 	// GlobalSkillsDir 是全局技能目录（~/.harness/skills，$HARNESS_HOME
 	// 覆盖，经 session.GlobalSkillsDir 解析；空 = 技能不可用，ADR-044）。
 	GlobalSkillsDir string
-	// Tools 是自定义工具集（阶段 5 子 agent 按类型装配，ADR-045）。
+	// Tools 是自定义工具集（主装配注入子 agent 控制工具用，ADR-045）。
 	// 非空时跳过默认内置工具注册（tools.Builtins）；空 = 默认内置 12 工具。
-	// agent 保持通用不感知 subagent——装配方负责组合（app 拼主装配、
-	// subagent 包拼子装配）。
+	// agent 保持通用不感知 subagent——装配方负责组合（app 层拼主装配；
+	// 子装配已移入 subagent 包 buildSubagent，2026-08-16 独立于本函数）。
 	Tools []tools.Tool
-	// BaseInstructions 覆盖基础提示词（阶段 5：explore 等子 agent 换链首
-	// Text，ADR-045）。空 = impl.DefaultBaseInstructions。
-	BaseInstructions string
 	// Client 覆盖 provider client（测试注入 FakeClient 用；空 = 经
 	// provider.NewClient(o.Provider) 创建）。
 	Client provider.Client
@@ -46,8 +43,8 @@ type BuildOptions struct {
 // （rc.Messages/rc.Model/rc.ThinkingEffort/rc.ThinkingEnabled）。因此一个 agent
 // 可被多个 goroutine 并发 Run（并行 agent 架构可扩展，阶段五落地）。
 //
-// 未来 subagent = 在此之外构造自定义装配（不同工具集/中间件/提示词，本质同样
-// 无状态可共享），buildAgent 从 cmd 下沉到此（2026-08-09）。
+// 未来 subagent 装配已独立（subagent 包 buildSubagent，不复用本函数，
+// 2026-08-16）；buildAgent 从 cmd 下沉到此（2026-08-09）。
 func Build(o BuildOptions) (*Agent, error) {
 	client := o.Client
 	if client == nil {
@@ -102,12 +99,8 @@ func Build(o BuildOptions) (*Agent, error) {
 	}
 	compactor := compact.NewRunner(compact.NewSummarizer(client, opts), opts)
 
-	base := impl.DefaultBaseInstructions
-	if o.BaseInstructions != "" {
-		base = o.BaseInstructions
-	}
 	mw := middleware.NewChain(
-		impl.BaseInstructionsMiddleware{Text: base},
+		impl.BaseInstructionsMiddleware{Text: impl.DefaultBaseInstructions},
 		impl.AgentsMdMiddleware{Options: agentsmd.Options{GlobalPath: o.GlobalAgentsMD}},
 		impl.SkillsCatalogMiddleware{SkillsDir: o.GlobalSkillsDir},
 		impl.ToolInstructionsMiddleware{Tools: reg.Specs()},

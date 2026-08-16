@@ -171,16 +171,7 @@ func patchPaths(patch string) []string {
 	return out
 }
 
-// shell 只读安全命令白名单（前缀匹配）：这类命令无需审批直接放行。
-// 对应 codex is_known_safe_command / opencode untrusted 模式白名单。
-var safeCommandPrefixes = []string{
-	"ls", "dir", "cat", "type", "pwd", "echo", "printenv", "env", "which",
-	"whoami", "git status", "git log", "git diff", "git branch",
-	"grep", "find", "head", "tail", "get-content", "select-string",
-}
-
-// shell 危险命令黑名单（子串匹配，小写比较）：这类命令触发审批，
-// 即使 acceptedit 模式（用户编辑授权不等于信任破坏性命令）。
+// isDangerous 判定命令是否命中危险黑名单（任何非 bypass 模式都应询问）。
 var dangerousSubstrings = []string{
 	"rm -rf", "rm -fr", "rm -r ", "sudo ", "chmod -R", "chmod 777", "chown -R",
 	"mkfs", "dd if=", "del /s", "rmdir /s", "format ", "diskpart",
@@ -215,62 +206,6 @@ func isDangerous(cmd string) bool {
 		}
 	}
 	return dangerousPipe.MatchString(cmd)
-}
-
-// isSafe 判定命令是否命中只读安全白名单（前缀匹配）。
-//
-// 只对"单一简单命令"放行：含 shell 元字符（; | & > < $( ` 等）的命令行可能
-// 是管道/重定向/命令组合，前缀匹配会误放行破坏性命令（如 echo pwned > key、
-// ls && curl ... | sh，Bug02）；find 携带 -delete/-exec 等危险参数也排除
-// （find / -delete 无元字符，元字符过滤堵不住）。
-func isSafe(cmd string) bool {
-	if hasShellMeta(cmd) {
-		return false
-	}
-	if findIsDangerous(cmd) {
-		return false
-	}
-	lc := strings.ToLower(strings.TrimSpace(cmd))
-	for _, p := range safeCommandPrefixes {
-		if strings.HasPrefix(lc, p) {
-			return true
-		}
-	}
-	return false
-}
-
-// shellMetaChars 是白名单禁用的 shell 元字符/组合符：白名单只放行单一简单
-// 命令，含这些符号说明有管道/重定向/命令组合/命令替换，前缀匹配不可信。
-var shellMetaChars = []string{"&&", "||", ";", "|", "&", ">", "<", "$(", "`"}
-
-// hasShellMeta 判定命令行是否含 shell 元字符。
-func hasShellMeta(cmd string) bool {
-	for _, m := range shellMetaChars {
-		if strings.Contains(cmd, m) {
-			return true
-		}
-	}
-	return false
-}
-
-// findDangerArgs 是 find 命令的危险参数（删除/执行/交互确认）。find 在白名单
-// 里按前缀放行，但 -delete / -exec / -ok 可破坏或执行任意内容，必须排除
-// （Bug02：find / -delete 无元字符，元字符过滤堵不住）。
-var findDangerArgs = map[string]bool{"-delete": true, "-exec": true, "-execdir": true, "-ok": true}
-
-// findIsDangerous 判定 find 命令是否携带危险参数。仅当命令首 token 是 find 时
-// 检查（白名单语义），词边界匹配避免误命中 -executive 之类。
-func findIsDangerous(cmd string) bool {
-	fields := strings.Fields(strings.ToLower(strings.TrimSpace(cmd)))
-	if len(fields) == 0 || fields[0] != "find" {
-		return false
-	}
-	for _, f := range fields[1:] {
-		if findDangerArgs[f] {
-			return true
-		}
-	}
-	return false
 }
 
 // cmdOf 从 shell_command 参数提取 command 字段（空串表示解析失败/无命令）。
@@ -465,8 +400,8 @@ func Decide(call *messages.ToolCall, mode string, approved []string, ws string, 
 		switch {
 		case isDangerous(cmd):
 			return OutcomeAsk, "" // 危险命令 → 询问（即使 acceptedit）
-		case isSafe(cmd):
-			return OutcomeAllow, "" // 只读安全命令 → 放行
+		case tools.IsSafeCommand(cmd):
+			return OutcomeAllow, "" // 只读安全命令 → 放行（判定在 tools 包，2026-08-16 下沉）
 		default:
 			return OutcomeAsk, "" // 其它命令 → 询问
 		}

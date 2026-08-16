@@ -77,8 +77,8 @@ func (m Model) headerView() string {
 func (m Model) composerView() string {
 	label := "message"
 	if m.viewingSubagent {
-		// 子 agent 只读查看（阶段 5，ADR-045）：输入禁用，/switch 返回父会话。
-		label = "viewing sub agent (read-only) · /switch to return"
+		// 子 agent 只读查看（阶段 5，ADR-045）：输入禁用，Esc 返回父会话。
+		label = "viewing sub agent (read-only) · Esc to return"
 	} else if m.focus == focusTimeline {
 		label = "timeline focused"
 	}

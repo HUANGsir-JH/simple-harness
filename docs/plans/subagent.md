@@ -35,5 +35,5 @@
 8. **run 模式记录局限**（父 turn 结束未完成的子被清理）；e2e 走 mock 内容路由。
 9. **/subagents 只读查看 + 实时滚动**（输入禁用，/switch 返回；运行中的子复用 Manager 会话实例）。
 10. **子 agent 带 name**（可选，默认 `<type>-<短id>`；通知/TUI/list 显示）。
-11. **按 kind 装配 + 实例缓存共享**：装配逻辑在 subagent 包内（BuildOptions +Tools/BaseInstructions 可选字段，agent 保持通用）；控制工具实现在 subagent 包（无接口无工厂，依赖无环）。
+11. **按 kind 装配 + 实例缓存共享**：装配逻辑在 subagent 包内——初版经 BuildOptions 调 agent.Build；**2026-08-16 修订为 `buildSubagent` 完全独立**（不复用 agent.Build，agent.Build 回归纯主装配）；提示词 = general-purpose uniform 主 persona + 独立 `DelegationInstructionsMiddleware` 委托段（deepseek 同款）/ explore 专属简短提示词（opencode 同款）；控制工具实现在 subagent 包（无接口无工厂，依赖无环）。
 12. **审批**：控制工具归 classControl 放行；子审批转发用户带【子 agent <id>】归属标识。

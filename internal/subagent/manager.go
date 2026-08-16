@@ -3,8 +3,9 @@
 // Queue，父 BackgroundCompletionMiddleware 路径 A 注入（在途采样前）/ TUI 路径 B
 // 唤醒（空闲），主 agent 无需 wait_agent 工具。
 //
-// 依赖方向（无环）：subagent → agent/tools/session（装配与工具实现都在本包）；
-// agent 保持通用（BuildOptions.Tools/BaseInstructions 可选字段），不感知 subagent；
+// 依赖方向（无环）：subagent → agent/tools/session（装配与工具实现都在本包；
+// 子装配 buildSubagent 独立于 agent.Build，见 build.go）；
+// agent 保持通用（仅主装配经 BuildOptions.Tools），不感知 subagent；
 // app/tui → subagent。
 package subagent
 
@@ -208,7 +209,7 @@ func (m *Manager) runChild(entry *Entry, parentRC *middleware.RuntimeContext) {
 	m.setStatus(entry, StatusRunning)
 	defer close(entry.done)
 
-	a, err := m.buildAgent(entry.Type)
+	a, err := m.buildSubagent(entry.Type)
 	if err != nil {
 		m.finish(entry, StatusFailed, "子 agent 装配失败："+err.Error(), "")
 		return
@@ -570,46 +571,18 @@ func (m *Manager) Shutdown() {
 	}
 }
 
-// buildAgent 子装配（按 kind，同 kind 实例缓存共享——无状态 ADR-026，多个子
-// agent 并发 Run 同一实例安全；model/effort 覆盖经子会话 rc per-call 生效）。
-func (m *Manager) buildAgent(kind string) (*agent.Agent, error) {
-	m.mu.Lock()
-	if a, ok := m.agents[kind]; ok {
-		m.mu.Unlock()
-		return a, nil
-	}
-	m.mu.Unlock()
-	a, err := agent.Build(agent.BuildOptions{
-		Provider:         m.opts.Provider,
-		DefaultMode:      m.opts.DefaultMode,
-		GlobalAgentsMD:   m.opts.GlobalAgentsMD,
-		GlobalSkillsDir:  m.opts.GlobalSkillsDir,
-		Tools:            m.toolset(kind),
-		BaseInstructions: BaseInstruction(kind),
-		Client:           m.opts.Client,
-	})
-	if err != nil {
-		return nil, err
-	}
-	m.mu.Lock()
-	if prev, ok := m.agents[kind]; ok { // 竞态：并发装配同 kind
-		m.mu.Unlock()
-		return prev, nil
-	}
-	m.agents[kind] = a
-	m.mu.Unlock()
-	return a, nil
-}
-
 // toolset 按类型返回工具集（定案第 8 条）：
 //   - general-purpose：内置 12 − ask_user + 5 控制工具 + wait_task
-//   - explore：只读 4（read_file/list_dir/glob/skill）
+//   - explore：只读 5（read_file/list_dir/glob/skill + 只读 shell，2026-08-16）
 func (m *Manager) toolset(kind string) []tools.Tool {
 	switch kind {
 	case KindExplore:
 		return []tools.Tool{
 			tools.ReadFileTool{}, tools.ListDirTool{}, tools.GlobTool{},
 			tools.SkillTool{SkillsDir: m.opts.GlobalSkillsDir},
+			// 只读 shell（2026-08-16）：白名单命令强制只读（tools.IsSafeCommand），
+			// explore 可跑 git 查询/文件查看等；写操作与 kill_pid 一律拒绝。
+			tools.ShellCommandTool{Readonly: true},
 		}
 	default:
 		var out []tools.Tool

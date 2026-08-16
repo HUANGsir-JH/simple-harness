@@ -19,14 +19,14 @@
 7. run 模式局限（父 turn 结束未完成子被清理）；e2e 走 mock 内容路由
 8. /subagents 只读查看 + 实时滚动（输入禁用，/switch 返回）
 9. 子 agent 带 name（可选，默认 `<type>-<短id>`）
-10. 按 kind 装配 + 实例缓存共享：装配逻辑在 subagent 包内（BuildOptions +Tools/BaseInstructions/Client 可选字段），控制工具实现在 subagent 包——无接口无工厂，依赖 subagent→agent→tools 无环
+10. 按 kind 装配 + 实例缓存共享：装配逻辑在 subagent 包内（**2026-08-16 修订：`buildSubagent` 独立装配，不复用 agent.Build**；general-purpose = uniform 主 persona + DelegationInstructionsMiddleware 委托段 / explore = 专属简短提示词；agent.BuildOptions 仅主装配用 Tools/Client），控制工具实现在 subagent 包——无接口无工厂，依赖 subagent→agent→tools 无环
 11. 审批：控制工具 classControl 放行；子审批转发用户带【子 agent <id>】归属
 12. 持久化分层：子会话内容（transcript）/ 血缘状态（agentstate.json）/ 完成通知（父 completions.json）全落盘；Manager 只存运行态（进程退出即清，无需持久化）
 
 ## 组件改动
 
-- **`internal/subagent`（新包）**：`Manager`（entries/bySess/agents 缓存/subs 订阅/opts）+ `buildAgent(kind)`（agent.Build + toolset + BaseInstruction）+ 子 goroutine 生命周期（runChild/finish 三分支 + formatNotice + extractAnswer）+ `subagentApprover` + 5 控制工具（SpawnAgentTool/SendMessageTool/InterruptAgentTool/ResumeAgentTool/ListAgentsTool）。
-- **`internal/agent`**：BuildOptions +`Tools`/`BaseInstructions`/`Client`（空 = 默认；agent 不感知 subagent）。
+- **`internal/subagent`（新包）**：`Manager`（entries/bySess/agents 缓存/subs 订阅/opts）+ `buildSubagent(kind)`（独立装配：client/registry/compactor/中间件链 + toolset + uniform persona/委托段/explore 专属提示词）+ 子 goroutine 生命周期（runChild/finish 三分支 + formatNotice + extractAnswer）+ `subagentApprover` + 5 控制工具（SpawnAgentTool/SendMessageTool/InterruptAgentTool/ResumeAgentTool/ListAgentsTool）。
+- **`internal/agent`**：BuildOptions 保留 `Tools`/`Client`（主装配拼控制工具/测试注入），`BaseInstructions` 字段删除（子装配独立后无使用者）。
 - **`internal/tools`**：`WaitTaskTool`（bgProcess 注册表轮询，done/exitCode 完成信号）；bgProcess +done/exitCode + markDone（notifyCompletion/handleKill/CleanupBackground 置位）。
 - **`internal/session`**：`CreateIn(dir, st)`（Create 重构委托）+ `ResumeAt(dir)`（resume 续接原 jsonl 段）+ `NewID(prefix)`（sub- 前缀）。
 - **`internal/agentstate`**：血缘字段 `ParentID/AgentType/Depth/Status`（omitempty 兼容）+ SetSubagent/SetStatus。

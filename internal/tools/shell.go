@@ -32,7 +32,12 @@ const powershellUTF8Prefix = "try { [Console]::OutputEncoding=[System.Text.Encod
 //     进程不绑定回合（Esc 不杀），用 read_file/grep 轮询日志，配套 kill_pid
 //     终止；harness 退出时自动清理。
 //   - kill_pid：终止 background 启动的进程（仅注册表内 PID，防误杀系统进程）。
-type ShellCommandTool struct{}
+//
+// Readonly 是只读模式（explore 子 agent 装配，2026-08-16）：Handle 强制白名单
+// 判定（tools.IsSafeCommand），白名单外命令与 kill_pid 拒绝回填——与审批模式
+// 无关的硬边界（bypass 也拦得住；审批层做不了强制只读）。同名字段不同实例
+// 分属不同装配（per-agent registry），模型经 Spec 描述感知只读限制。
+type ShellCommandTool struct{ Readonly bool }
 
 func (ShellCommandTool) Name() string { return "shell_command" }
 
@@ -47,20 +52,39 @@ type shellCommandArgs struct {
 	KillPID    int    `json:"kill_pid,omitempty" jsonschema:"description=终止指定后台进程（background 启动返回的 PID；提供时忽略 command）"`
 }
 
-func (ShellCommandTool) Spec() provider.ToolSpec {
+func (t ShellCommandTool) Spec() provider.ToolSpec {
+	desc := "在 shell 中执行命令并返回输出（stdout+stderr 合并）。Windows 用 PowerShell，POSIX 用 sh -c。" +
+		"Esc 中断会终止整个进程树；超时自动转入后台（返回 PID+日志路径，完成会自动通知，也可轮询日志、kill_pid 终止，不要重试）。" +
+		"长任务/服务启动用 background: true 后台运行（完成会自动通知）。命令非零退出返回错误文本（输出超长时完整版会保存到 evictions/ 目录并用 read_file 提示，错误信息含路径）。"
+	if t.Readonly {
+		// 只读模式（explore 装配）：描述明示能力边界，模型据此避免调用被拒命令。
+		desc = "只读 shell（read-only）：仅允许执行只读安全命令——ls/dir/cat/type/pwd/echo/printenv/env/which/whoami、" +
+			"git status/log/diff/branch/grep/show/ls-files、grep/find/head/tail/get-content/select-string、wc/stat/du/sort/uniq（禁止管道/重定向/命令组合/写参数，如 -delete/-exec/-o/--output）。" +
+			"白名单外命令会被拒绝回填。用于代码库调研：git 查询、文件查看、目录统计等。Windows 用 PowerShell，POSIX 用 sh -c。"
+	}
 	return provider.ToolSpec{
-		Name: "shell_command",
-		Description: "在 shell 中执行命令并返回输出（stdout+stderr 合并）。Windows 用 PowerShell，POSIX 用 sh -c。" +
-			"Esc 中断会终止整个进程树；超时自动转入后台（返回 PID+日志路径，完成会自动通知，也可轮询日志、kill_pid 终止，不要重试）。" +
-			"长任务/服务启动用 background: true 后台运行（完成会自动通知）。命令非零退出返回错误文本（输出超长时完整版会保存到 evictions/ 目录并用 read_file 提示，错误信息含路径）。",
-		Parameters: schemaOf[shellCommandArgs](),
+		Name:        "shell_command",
+		Description: desc,
+		Parameters:  schemaOf[shellCommandArgs](),
 	}
 }
 
-func (ShellCommandTool) Handle(ctx context.Context, rc *middleware.RuntimeContext, _ string, args json.RawMessage) (messages.ToolResult, error) {
+func (t ShellCommandTool) Handle(ctx context.Context, rc *middleware.RuntimeContext, _ string, args json.RawMessage) (messages.ToolResult, error) {
 	p, err := parseArgs[shellCommandArgs]("shell_command", args)
 	if err != nil {
 		return messages.ToolResult{}, err
+	}
+
+	// 只读模式强制判定（explore 装配，2026-08-16）：kill_pid 与白名单外命令
+	// 一律拒绝回填（RespondToModel 引导模型换命令），不经过审批/执行。
+	if t.Readonly {
+		if p.KillPID > 0 {
+			return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: "shell_command: 只读 shell 禁止 kill_pid（终止操作非只读）"}
+		}
+		if !IsSafeCommand(p.Command) {
+			return messages.ToolResult{}, &ToolError{RespondToModel: true, Message: fmt.Sprintf(
+				"shell_command: 只读 shell 仅允许只读安全命令（ls/dir/cat/type/pwd/git status/log/diff/branch/grep/show/ls-files、grep/find/head/tail、wc/stat/du/sort/uniq 等；禁止管道/重定向/组合/写参数），已拒绝：%s", p.Command)}
+		}
 	}
 
 	// kill_pid 模式优先：终止后台进程（仅注册表内 PID，防误杀系统进程）。
