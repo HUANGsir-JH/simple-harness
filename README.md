@@ -1,5 +1,9 @@
 # simple-harness
 
+![架构图](https://github.com/HUANGsir-JH/simple-harness/blob/main/simple-harness-architecture.png)
+
+![tui截图](https://github.com/HUANGsir-JH/simple-harness/blob/main/tui%E6%88%AA%E5%9B%BE.png)
+
 用 Go 编写的**极简、可真实使用**的 agent harness（命令行工具），参照 [OpenAI Codex CLI](https://github.com/openai/codex)（Rust）与 [AgentScope Java v2](https://github.com/agentscope-ai/agentscope-java) 的架构思路，定位为通用框架。当前版本 **0.13.0**（阶段 5 子 agent 已落地）。
 
 ## 功能特性
