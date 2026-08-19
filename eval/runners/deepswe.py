@@ -38,14 +38,20 @@ except ImportError:  # TODO(env): pier 未安装时的降级占位（仅编排�
 class HarnessAgent(BaseInstalledAgent):  # type: ignore[misc]
     """在 DeepSWE 沙箱内执行 `harness run <instruction>` 的 Pier agent。
 
-    沙箱 no-network（LLM API 域名经 Pier 网络 allowlist 放行）；agent 超时
+    沙箱 no-network（LLM API 域名经 network_allowlist 放行）；agent 超时
     5400s；最终答案靠 git commit 采集（instruction 约定）。
     """
 
     name = "simple-harness"
 
+    def network_allowlist(self):
+        """沙箱 no-network：放行 LLM API 域名（DeepSeek 端点，可被配置覆盖）。"""
+        # TODO(env): 从 Pier 配置/env 读 base_url 的 host；骨架按 DeepSeek
+        #   官方端点写死，实机验证时按实际端点调整。
+        return ["api.deepseek.com"]
+
     def install_spec(self):
-        """把 harness Linux 二进制打进沙箱镜像（Dockerfile 内联）。"""
+        """把 harness Linux 二进制打进沙箱镜像（Dockerfile 内联，官方机制）。"""
         # TODO(env): 按 Pier 实际 API（install_spec/install）调整：
         #   二进制路径经 Pier 配置（kwargs）传入，或在此从 cfg 读取。
         return super().install_spec()
@@ -102,15 +108,16 @@ def run_task(task: dict, cfg: dict, harness_bin: str, home: str, workdir: str,
         return {"status": "error", "failure": "env_error",
                 "detail": "pier 未安装（pip install datacurve-pier，需 ≥0.3.1）"}
     checkout = cfg.get("benchmarks", {}).get("deepswe", {}).get("extra", {}).get("checkout", "")
-    tasks_path = str(Path(checkout) / "tasks")
-    # 单任务：--task <id>？TODO(env)：确认 pier 单任务 flag（--task/--tasks/--n-tasks）
-    # 骨架先按官方示例 `pier run -p <tasks> --agent ... --n-tasks 1 --sample-seed 0`
-    # 不可行时改为 `--task <id>`（Pier 0.3.x 支持按任务过滤）。
+    # 单任务调用（调研确认）：`pier run -p deep-swe/tasks/<task-id> --agent ...`
+    tasks_path = str(Path(checkout) / "tasks" / str(task["id"]))
+    if not Path(tasks_path).is_dir():
+        return {"status": "error", "failure": "env_error",
+                "detail": f"任务目录不存在: {tasks_path}"}
     started = time.time()
     try:
         proc = subprocess.run(
             [pier, "run", "-p", tasks_path, "--agent", "runners.deepswe:HarnessAgent",
-             "--task", str(task["id"]), "--env", "docker"],
+             "--env", "docker"],
             capture_output=True, text=True, timeout=5400 + 600,
         )
     except subprocess.TimeoutExpired:
