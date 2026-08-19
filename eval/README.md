@@ -72,3 +72,9 @@ python eval/orchestrator/report.py --run-id 2026-08-19-pilot
 - **协议对齐**：`--effort max`；`top_p=0.95` + `temperature=1.0`（harness
   改造后经配置注入）；模型固定 `deepseek-v4-flash`。
 - **版本锁定**：runner pip 版本与任务子集记入 `meta.json`，可复现。
+
+## 已知问题
+
+Windows 宿主跑评测遇到的全部问题、修复与临时方案见
+`eval/KNOWN_ISSUES.md`（pier CRLF 补丁、verifier 镜像预构建、git 身份等）。
+重装环境/换机器时先读它。

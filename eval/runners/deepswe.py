@@ -54,11 +54,13 @@ class HarnessAgent(BaseInstalledAgent):  # type: ignore[misc]
       max_turns     harness --max-turns（防死循环；默认 100）
     """
 
-    def __init__(self, logs_dir, model_name=None, logger=None, mcp_servers=None,
-                 skills_dir=None, harness_bin="", harness_config="",
+    def __init__(self, logs_dir, harness_bin="", harness_config="",
                  api_host="api.deepseek.com", max_turns=100, *args, **kwargs):
-        super().__init__(logs_dir, model_name, logger, mcp_servers, skills_dir,
-                         *args, **kwargs)
+        # 只消费自身 kwargs，其余（model_name/extra_env/version/prompt_template_path
+        # 等）经 *args/**kwargs 透传给基类——基类签名
+        # (logs_dir, prompt_template_path, version, extra_env, *args, **kwargs)，
+        # 位置传参会错位（TypeError: multiple values for extra_env）。
+        super().__init__(logs_dir, *args, **kwargs)
         self.harness_bin = harness_bin
         self.harness_config = harness_config
         self.api_host = api_host
@@ -94,22 +96,68 @@ class HarnessAgent(BaseInstalledAgent):  # type: ignore[misc]
             await environment.upload_file(Path(self.harness_config), "/harness-home/config.yaml")
 
     async def run(self, instruction: str, environment: BaseEnvironment, context) -> None:
-        """沙箱内 headless 执行：harness run → 补 git commit（答案契约）。"""
+        """沙箱内 headless 执行：harness run → 保存轨迹 → 补 git commit（答案契约）。"""
         cmd = (
             f"cd /app && HARNESS_HOME=/harness-home "
             f"harness run --json --effort max --max-turns {self.max_turns} "
             f"{shlex.quote(instruction)}"
         )
-        await self.exec_as_agent(environment, command=cmd)
+        result = await self.exec_as_agent(environment, command=cmd)
+        # 保存 harness --json 事件流（populate_context_post_run 解析用量/步数）。
+        try:
+            traj = self.logs_dir / "harness-trajectory.jsonl"
+            traj.parent.mkdir(parents=True, exist_ok=True)
+            traj.write_text(result.stdout or "", encoding="utf-8")
+        except Exception:
+            pass
         # git commit 契约：harness 不自动 commit，adapter 补（只提交目标改动；
         # 无改动/已提交时 git 报错由外层 try 兜底，不影响评分）。
+        # 显式身份参数：容器内 git 无 user.name/email 时 commit 失败
+        # （"Please tell me who you are"）→ 改动未提交 → collect 的
+        # git diff base..HEAD 为空 patch（2026-08-19 实测修复）。
         try:
             await self.exec_as_agent(
                 environment,
-                command="cd /app && git add -A && git commit -m 'harness: done'",
+                command=(
+                    "cd /app && git -c user.name='simple-harness' "
+                    "-c user.email='harness@eval.local' add -A && "
+                    "git -c user.name='simple-harness' "
+                    "-c user.email='harness@eval.local' commit -m 'harness: done'"
+                ),
             )
         except Exception:
             pass
+
+    def populate_context_post_run(self, context) -> None:
+        """从 harness-trajectory.jsonl 解析 token 用量/agent 步数填入 context
+        （pier 轨迹统计用；解析失败 no-op）。"""
+        traj = self.logs_dir / "harness-trajectory.jsonl"
+        if not traj.is_file():
+            return
+        inp = out = cache = steps = peak = 0
+        for line in traj.read_text(encoding="utf-8", errors="replace").splitlines():
+            try:
+                ev = json.loads(line)
+            except Exception:
+                continue
+            t = ev.get("type")
+            if t == "usage":
+                u = ev.get("usage") or {}
+                i = u.get("input_tokens") or 0
+                o = u.get("output_tokens") or 0
+                c = (u.get("cache_read_input_tokens") or 0) + (u.get("cache_creation_input_tokens") or 0)
+                inp += i
+                out += o
+                cache += c
+                if i + o + c > peak:
+                    peak = i + o + c
+            elif t == "tool_call":
+                steps += 1
+        context.n_input_tokens = inp
+        context.n_output_tokens = out
+        context.n_cache_tokens = cache
+        context.n_agent_steps = steps
+        context.peak_context_tokens = peak
 
 
 # --- 角色 2：编排器接口 -------------------------------------------------------
@@ -169,6 +217,7 @@ def run_task(task: dict, cfg: dict, harness_bin: str, home: str, workdir: str,
         "--ak", f"api_host={extra.get('api_host', 'api.deepseek.com')}",
         "--ak", f"max_turns={max_turns}",
         "--env", extra.get("env", "docker"),
+        "-o", str(Path(workdir) / "jobs"),
         "--quiet",
     ]
     env = dict(os.environ)
@@ -176,20 +225,42 @@ def run_task(task: dict, cfg: dict, harness_bin: str, home: str, workdir: str,
 
     started = time.time()
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True,
+        proc = subprocess.run(cmd, capture_output=True, text=True, env=env,
                               timeout=int(extra.get("timeout_s", 5400 + 600)))
     except subprocess.TimeoutExpired:
         return {"status": "error", "failure": "timeout", "score": 0.0,
                 "wall_seconds": round(time.time() - started, 2)}
     out = proc.stdout + proc.stderr
-    # TODO(env): 从 pier jobs 目录的 reward.json 读权威分数（binary reward +
-    # pass fractions）；骨架先以退出码 + 关键字粗判。
-    ok = proc.returncode == 0 and ("reward" in out.lower() or "pass" in out.lower())
+    # 权威结果：解析 pier job result.json（stats.evals.<agent>.metrics[0].mean =
+    # pass 率；exception_stats = trial 异常）。
+    score, n_errors, exceptions = _pier_job_result(Path(workdir) / "jobs")
+    status = "pass" if score is not None and n_errors == 0 and score >= 1.0 else "error"
     return {
-        "status": "pass" if ok else "error",
-        "score": 1.0 if ok else 0.0,
-        "failure": "" if ok else f"pier exit {proc.returncode}",
+        "status": status,
+        "score": score if score is not None else 0.0,
+        "failure": "" if status == "pass" else (exceptions or f"pier exit {proc.returncode}"),
         "exit_code": proc.returncode,
         "detail": out[-2000:],
         "wall_seconds": round(time.time() - started, 2),
     }
+
+
+def _pier_job_result(jobs_dir: Path) -> tuple[float | None, int, str]:
+    """解析 pier --jobs-dir 下最新 job 的 result.json，返回 (mean, n_errors, exceptions)。"""
+    jobs = sorted(jobs_dir.glob("*/result.json"), key=lambda p: p.stat().st_mtime) if jobs_dir.is_dir() else []
+    if not jobs:
+        return None, 0, ""
+    try:
+        rj = json.loads(jobs[-1].read_text(encoding="utf-8"))
+        evals = (rj.get("stats") or {}).get("evals") or {}
+        for e in evals.values():
+            metrics = (e.get("metrics") or [{}])
+            mean = metrics[0].get("mean") if metrics else None
+            n_err = e.get("n_errors", 0)
+            exc = ""
+            for k, v in (e.get("exception_stats") or {}).items():
+                exc = f"{k}: {v[0] if isinstance(v, list) and v else v}"
+            return mean, n_err, exc
+    except Exception:
+        pass
+    return None, 0, ""
