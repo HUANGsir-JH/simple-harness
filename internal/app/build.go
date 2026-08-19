@@ -3,6 +3,7 @@ package app
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/agent-project/harness/internal/agent"
 	"github.com/agent-project/harness/internal/config"
@@ -37,6 +38,9 @@ type Options struct {
 	Thinking   bool   // run --thinking
 	NoThinking bool   // run --no-thinking
 	MaxTurns   int    // run --max-turns（回合上限，0 = 不限；评测用）
+	// SubagentWait 是 run 模式回合末等子超时（--subagent-wait；0 = 不等待，
+	// 旧行为）。仅 run 模式：TUI 子跨回合存活由完成注入 + 唤醒承担。
+	SubagentWait time.Duration
 
 	// 展示（TUI/run 共用）。
 	NoThinkingDisplay bool
@@ -141,6 +145,7 @@ func buildRun(o Options) (*HarnessAgent, error) {
 		prompt:       o.Prompt,
 		jsonOut:      o.JSONOut,
 		showThinking: !o.NoThinkingDisplay,
+		subagentWait: o.SubagentWait,
 	}
 	// flags → 会话 state（随 SessionMiddleware 落盘，resume 可恢复）；失败先
 	// 拆除（关会话）再返回。

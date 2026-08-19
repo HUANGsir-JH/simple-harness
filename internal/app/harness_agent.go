@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/agent-project/harness/internal/agent"
 	"github.com/agent-project/harness/internal/events"
@@ -55,6 +56,9 @@ type HarnessAgent struct {
 	prompt       string
 	jsonOut      bool
 	showThinking bool
+	// subagentWait 是 run 模式回合末等子超时（--subagent-wait；0 = 不等待，
+	// 保持旧行为）。仅 run 模式生效：TUI 子跨回合存活由完成注入 + 唤醒承担。
+	subagentWait time.Duration
 
 	closed bool // Teardown 幂等守卫
 }
@@ -212,9 +216,60 @@ func (h *HarnessAgent) runOnce(ctx context.Context) error {
 				fmt.Println("\n（已中断）")
 				return nil
 			}
+			if err != nil {
+				return err
+			}
+			// run 模式回合末等子（2026-08-19 用户拍板 A+D，仅 run 模式）：
+			// 父回合正常结束但子 agent 仍在运行 → 等待（有界）→ 注入完成通知
+			// → 再跑一轮让父整合结果收尾；超时取消剩余子后同样收尾。
+			// 修复"异步 spawn + 完成注入"机制在单轮 run 下的结构性缺口：
+			// 此前父结束回合 = 进程退出 = Manager.Shutdown 取消子，结果丢失。
+			return h.runDrainSubagents(runCtx, onEvent)
+		}
+	}
+}
+
+// drainRounds 是回合末等子的最大收尾轮数（防模型在收尾轮继续 spawn 造成的
+// 病态循环；正常场景：等子完成 → 一轮收尾即结束）。
+const drainRounds = 3
+
+// runDrainSubagents 实现 run 模式回合末"等子"（A 方案，2026-08-19）：
+//
+//	父回合结束后，若子 agent 仍在运行：
+//	  1. WaitAll(h.subagentWait) 等待全部完成（ctx 取消/信号可中断）；
+//	     超时 → CancelRunning 取消剩余（finish 落"已中断"+部分结果通知）
+//	  2. 用新 rc 再跑一轮（SessionMiddleware 重新 load/save，无状态 agent
+//	     ADR-026）：BackgroundCompletionMiddleware 在采样前 drain 队列，
+//	     完成通知作为 user 消息注入 → 父整合结果产出最终答案
+//	  3. 最多 drainRounds 轮（收尾轮若再 spawn，继续等）
+//
+// 注意：drain 轮不挂 Approver（自动拒绝回填）——事件循环已退出，channelApprover
+// 无读方会死锁；bypass（评测）无影响，交互 run 的 drain 轮审批自动拒绝。
+// TUI 不经过本函数（runTUI 独立路径，子跨回合存活由注入 + 唤醒承担）。
+func (h *HarnessAgent) runDrainSubagents(ctx context.Context, onEvent events.OnEvent) error {
+	for round := 0; round < drainRounds; round++ {
+		if h.subagents.RunningCount() == 0 {
+			return nil
+		}
+		if h.subagentWait <= 0 {
+			return nil // --subagent-wait 0：不等待（保持旧行为）
+		}
+		fmt.Fprintln(os.Stderr, "（等待子 agent 完成…）")
+		if n := h.subagents.WaitAll(ctx, h.subagentWait); n > 0 {
+			// 超时：取消剩余子（finish 三分支 Append 中断通知带部分结果），
+			// 再跑一轮让父基于部分结果收尾。
+			h.subagents.CancelRunning()
+			h.subagents.WaitAll(ctx, 30*time.Second)
+		}
+		rc := h.sess.RuntimeContext()
+		if err := h.reactAgent.Run(ctx, rc, onEvent); err != nil {
+			if errors.Is(err, context.Canceled) {
+				return nil
+			}
 			return err
 		}
 	}
+	return nil
 }
 
 // Teardown 拆除装配产物（幂等；Run 内已调用，外部 defer 兜底）。run：关会话

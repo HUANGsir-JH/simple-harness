@@ -10,7 +10,7 @@ import (
 
 // version 是 harness 版本号。每次有用户可见变更（功能 → minor、修复 → patch）
 // 随提交 bump，`harness version` 输出。
-const version = "0.14.0"
+const version = "0.14.1"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -94,6 +94,7 @@ func usage() {
 	fmt.Println("  --no-thinking                force disable thinking (default: model config)")
 	fmt.Println("  --no-thinking-display        do not show thinking text")
 	fmt.Println("  --max-turns <n>              max sampling rounds per turn (0 = unlimited; eval use)")
+	fmt.Println("  --subagent-wait <d>          wait for running subagents at turn end (default 5m; 0 = don't wait)")
 	fmt.Println()
 	fmt.Println("TUI commands:")
 	fmt.Println("  /switch /model /effort /permission /thinking    popup pickers (real-time config lists)")

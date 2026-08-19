@@ -773,6 +773,99 @@ func TestSubagentE2E(t *testing.T) {
 	}
 }
 
+// mockLLMDrainServer 模拟"父回合结束但子仍在运行"的确定性场景（回合末等子，
+// 2026-08-19 A 方案）：
+//   - 父请求 1（含"用子 agent"）：spawn_agent 工具调用
+//   - 父请求 2（含"用子 agent"）：纯文本回复（父回合结束，子仍在运行）+
+//     延迟 1s 放行子完成（保证父回合先于子完成结束——否则通知会注入父第 2 轮，
+//     测试断言 parentReqs==3 会失败，暴露时序回退）
+//   - 子请求：阻塞到放行 → 文本回复（子完成）
+//   - 父请求 3（含"已完成。结果："= drain 轮注入）：收尾文本回复
+func mockLLMDrainServer(t *testing.T) (*httptest.Server, *atomic.Int32) {
+	t.Helper()
+	var parentReqs atomic.Int32 // "用子 agent" 分支计数（spawn/回合结束路由）
+	var parentAll atomic.Int32  // 全部父请求计数（含 drain 收尾轮；子请求不含这两个标记）
+	releaseChild := make(chan struct{})
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		var sb strings.Builder
+		sb.WriteString(sse("message_start", msgStart))
+		switch {
+		case strings.Contains(string(body), "已完成。结果："):
+			// drain 轮：父看到子完成通知 → 整合收尾。
+			parentAll.Add(1)
+			writeText(&sb, "子任务结果已收到，主任务完成。")
+		case strings.Contains(string(body), "用子 agent"):
+			parentAll.Add(1)
+			if parentReqs.Add(1) == 1 {
+				writeToolUse(&sb, "call_spawn", "spawn_agent", `{"message":"分析目录结构","agent_type":"explore","name":"探查"}`)
+			} else {
+				writeText(&sb, "主任务已结束，不再执行其他操作。")
+				// 父回合结束信号：延迟放行子完成（保证父回合先结束）。
+				go func() {
+					time.Sleep(1 * time.Second)
+					close(releaseChild)
+				}()
+			}
+		default:
+			// 子请求：阻塞到父回合结束才完成。
+			<-releaseChild
+			writeText(&sb, "分析完成：目录含 2 个文件。")
+		}
+		sb.WriteString(sse("message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":5}}`))
+		sb.WriteString(sse("message_stop", `{"type":"message_stop"}`))
+		_, _ = w.Write([]byte(sb.String()))
+	})), &parentAll
+}
+
+// TestRunModeDrainsSubagentsE2E 验证 run 模式回合末等子（2026-08-19 A 方案，
+// 用户拍板：仅影响 runOnce，TUI 不适用）：父回合结束但子 agent 仍在运行 →
+// run 等待子完成 → 完成通知注入 → 收尾轮父整合结果 → 退出码 0。
+// 关键断言 parentAll==3：证明第三轮（drain 收尾轮）真实发生——若等子缺失，
+// 父在 2 轮后退出、子结果丢失（修复前行为），测试失败。
+func TestRunModeDrainsSubagentsE2E(t *testing.T) {
+	server, parentAll := mockLLMDrainServer(t)
+	defer server.Close()
+	cfg := writeTestConfig(t, server.URL)
+	home := filepath.Join(t.TempDir(), "home")
+
+	cp, err := termtest.NewTest(t, termtest.Options{
+		CmdName:        harnessExe,
+		Args:           []string{"run", "--config", cfg, "用子 agent 分析目录结构"},
+		DefaultTimeout: 60 * time.Second,
+		Environment:    []string{"HARNESS_HOME=" + home},
+	})
+	if err != nil {
+		t.Fatalf("newtest: %v", err)
+	}
+	defer cp.Close()
+	if _, err := cp.Expect("子任务结果已收到"); err != nil {
+		t.Fatalf("expect drain 轮父回复（子结果已整合）: %v", err)
+	}
+	if _, err := cp.ExpectExitCode(0); err != nil {
+		t.Fatalf("expect exit 0: %v", err)
+	}
+	if n := parentAll.Load(); n != 3 {
+		t.Fatalf("父采样轮数 = %d, want 3（spawn 轮 + 回合结束轮 + drain 收尾轮）", n)
+	}
+	// 子最终 completed（未被 Shutdown 取消）。
+	ws := filepath.Join(home, "workspaces")
+	var subDir string
+	_ = filepath.Walk(ws, func(path string, info os.FileInfo, err error) error {
+		if err == nil && info.IsDir() && strings.Contains(info.Name(), "sub-") {
+			subDir = path
+		}
+		return nil
+	})
+	if subDir == "" {
+		t.Fatal("未找到子会话目录")
+	}
+	if st := readAgentState(t, filepath.Join(subDir, "agentstate.json")); st.Status != "completed" {
+		t.Errorf("子 status=%q want completed（未被回合末取消）", st.Status)
+	}
+}
+
 // readAgentState 读 agentstate.json（e2e 断言用；AgentState 含 Mutex，返回指针）。
 func readAgentState(t *testing.T, path string) *agentstate.AgentState {
 	t.Helper()

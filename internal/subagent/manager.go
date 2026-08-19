@@ -571,6 +571,84 @@ func (m *Manager) Shutdown() {
 	}
 }
 
+// RunningCount 返回仍在运行（done 未关闭）的子 agent 数。
+// run 模式回合末等子（2026-08-19，A 方案）：父回合结束后据此决定是否等待。
+func (m *Manager) RunningCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := 0
+	for _, e := range m.entries {
+		select {
+		case <-e.done:
+		default:
+			n++
+		}
+	}
+	return n
+}
+
+// WaitAll 等待全部运行中的子 agent 完成（有界超时；ctx 取消/超时提前返回）。
+// 返回超时/取消时仍处于运行中的子数（0 = 全部完成）。
+// 只用于 run 模式回合末等子：TUI 的子跨回合存活由完成注入 + 唤醒承担，
+// 不调用本函数（2026-08-19 用户拍板：仅影响 runOnce）。
+func (m *Manager) WaitAll(ctx context.Context, timeout time.Duration) int {
+	deadline := time.Now().Add(timeout)
+	for {
+		if err := ctx.Err(); err != nil {
+			return m.RunningCount()
+		}
+		m.mu.Lock()
+		var first <-chan struct{}
+		for _, e := range m.entries {
+			select {
+			case <-e.done:
+			default:
+				if first == nil {
+					first = e.done
+				}
+			}
+		}
+		m.mu.Unlock()
+		if first == nil {
+			return 0
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return m.RunningCount()
+		}
+		timer := time.NewTimer(remaining)
+		select {
+		case <-first:
+			timer.Stop() // 有子完成 → 重查（其余可能仍运行）
+		case <-timer.C:
+			return m.RunningCount()
+		case <-ctx.Done():
+			timer.Stop()
+			return m.RunningCount()
+		}
+	}
+}
+
+// CancelRunning 取消全部运行中的子 agent（区别于 Shutdown：不置 closed，
+// Manager 仍可 spawn/resume——run 模式回合末等子超时后取消剩余、再跑一轮
+// 收尾时模型仍可能创建新子）。
+func (m *Manager) CancelRunning() {
+	m.mu.Lock()
+	entries := make([]*Entry, 0, len(m.entries))
+	for _, e := range m.entries {
+		entries = append(entries, e)
+	}
+	m.mu.Unlock()
+	for _, e := range entries {
+		m.mu.Lock()
+		c := e.cancel
+		m.mu.Unlock()
+		if c != nil {
+			c()
+		}
+	}
+}
+
 // toolset 按类型返回工具集（定案第 8 条）：
 //   - general-purpose：内置 12 − ask_user + 5 控制工具 + wait_task
 //   - explore：只读 5（read_file/list_dir/glob/skill + 只读 shell，2026-08-16）

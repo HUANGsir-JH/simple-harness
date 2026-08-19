@@ -30,6 +30,32 @@
 - **影响**：ADR 无新增（评测为开发期工具，不进产品架构）；CLI 新增 `--max-turns`
   flag；config 新增模型级 `top_p/temperature`。
 
+### run 模式回合末等子（修复异步 spawn 结构性缺口）✅ 版本 0.14.1
+
+- **背景**：用户发现 run 模式结构性缺口——spawn_agent 纯异步 + 完成通知只在下一轮
+  采样前注入，而 run 模式"回合结束 = 进程退出 = Manager.Shutdown 取消子"：父按
+  提示词提前结束回合时，子 agent 结果丢失（finish 的中断通知只进内存队列，进程
+  退出即弃）。工具描述"期间可以停下等待"在 TUI 成立、在 run 模式误导。
+- **方案（用户拍板 A+D，仅影响 runOnce，TUI 不受影响）**：
+  - **A 回合末等子**：runOnce 在父回合正常结束后调用 `runDrainSubagents`——有
+    running 子则 WaitAll（`--subagent-wait` 有界，默认 5m，0 = 旧行为）→ 超时
+    CancelRunning（中断通知带部分结果）→ 用新 rc 再跑一轮收尾（SessionMiddleware
+    重新 load/save，BackgroundCompletionMiddleware 采样前 drain 队列注入完成
+    通知）→ 最多 drainRounds=3 轮防病态循环；ctx 取消/信号可中断；drain 轮不挂
+    Approver（事件循环已退出，channelApprover 无读方会死锁；bypass 无影响）。
+  - **D 文案**：spawn_agent 工具描述去掉"停下等待"、补"回合结束前若有子 agent
+    仍在运行，harness 会等待其完成并注入结果后再收尾（单轮 run 模式）"。
+- **交付**：`Manager.RunningCount/WaitAll(ctx,timeout)/CancelRunning`（CancelRunning
+  区别于 Shutdown：不置 closed，收尾轮仍可 spawn）；app.Options.SubagentWait +
+  `--subagent-wait` flag（默认 5m）；`runDrainSubagents`（stderr 提示防 --json 污染）。
+- **测试**：Manager 单测 5 项（RunningCount/WaitAll 完成/超时/ctx 取消/CancelRunning
+  保持可用 + 中断通知）；**`TestRunModeDrainsSubagentsE2E`**（进程外确定性时序：
+  父第 2 轮结束回合时子仍在运行 → 1s 后放行子完成 → drain 收尾轮父整合结果 →
+  断言父采样 3 轮 + 子状态 completed 未被取消）；全量 19 包 build/vet/test 全绿 +
+  subagent/app -race 通过。
+- **验证**：`go build/vet/test ./... -count=1` 全绿；`go test -race ./internal/subagent/
+  ./internal/app/` 通过。
+
 ## 2026-08-16
 
 ### 阶段 5：子 agent ✅ 版本 0.13.0（ADR-045）

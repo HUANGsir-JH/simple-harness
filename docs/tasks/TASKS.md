@@ -371,3 +371,4 @@
 | E7 | Pilot 实机：每 bench 10 任务子集冒烟 → 全量出分 → report.md 对比 | ⏳ 待办 |
 | E8 | 阶段 2 适配器骨架：cybergym.py + ale.py + toolathlon.py（decoupled 四步驱动；**MCP-SSE 客户端能力未实现**，标注 TODO(mcp) 接入点） | ✅ 2026-08-19（骨架，待实机验证） |
 | E9 | 回归机制：compare.py（多 run 趋势报告 trend.md/trend.json，--runs/--latest） | ✅ 2026-08-19（工具完成，实机数据待环境） |
+| E10 | **run 模式回合末等子**（0.14.1）：修复"异步 spawn + 回合结束=进程退出"丢子结果缺口——`Manager.RunningCount/WaitAll/CancelRunning` + `runDrainSubagents`（runOnce 专属，TUI 不受影响）+ `--subagent-wait`（默认 5m）+ spawn 描述修正；单测 5 + e2e `TestRunModeDrainsSubagentsE2E` | ✅ 2026-08-19 |

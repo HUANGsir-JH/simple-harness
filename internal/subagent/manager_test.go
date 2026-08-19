@@ -482,3 +482,95 @@ func TestResumeAfterRestart(t *testing.T) {
 		t.Errorf("重启后状态: %s", st)
 	}
 }
+
+// --- 回合末等子 API（2026-08-19，A 方案：run 模式 runOnce 用） --------------
+
+// TestRunningCount 验证 RunningCount：初始 0；spawn 后 1；完成后 0。
+func TestRunningCount(t *testing.T) {
+	m, rc, q := testHarness(t, immediateStream("完成"))
+	if n := m.RunningCount(); n != 0 {
+		t.Fatalf("初始 RunningCount = %d, want 0", n)
+	}
+	id, err := m.Spawn(rc, SpawnRequest{Message: "x"})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	waitRunning(t, m, id)
+	if n := m.RunningCount(); n != 1 {
+		t.Fatalf("spawn 后 RunningCount = %d, want 1", n)
+	}
+	waitEvent(t, q, 5*time.Second)
+	deadline := time.Now().Add(3 * time.Second)
+	for m.RunningCount() != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("完成后 RunningCount 未归零: %d", m.RunningCount())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestWaitAllCompletes 验证 WaitAll：子全部完成后返回 0（不超时）。
+func TestWaitAllCompletes(t *testing.T) {
+	m, rc, _ := testHarness(t, immediateStream("完成"))
+	for i := 0; i < 2; i++ {
+		if _, err := m.Spawn(rc, SpawnRequest{Message: "x"}); err != nil {
+			t.Fatalf("Spawn: %v", err)
+		}
+	}
+	if n := m.WaitAll(context.Background(), 10*time.Second); n != 0 {
+		t.Fatalf("WaitAll = %d, want 0（应等全部完成）", n)
+	}
+}
+
+// TestWaitAllTimeout 验证 WaitAll 超时：挂起的子返回运行中计数。
+func TestWaitAllTimeout(t *testing.T) {
+	m, rc, _ := testHarness(t, hangingStream())
+	id, err := m.Spawn(rc, SpawnRequest{Message: "x"})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	waitRunning(t, m, id)
+	if n := m.WaitAll(context.Background(), 100*time.Millisecond); n != 1 {
+		t.Fatalf("WaitAll(100ms) = %d, want 1（挂起子仍在运行）", n)
+	}
+}
+
+// TestWaitAllCtxCancel 验证 WaitAll 响应 ctx 取消（信号中断路径）。
+func TestWaitAllCtxCancel(t *testing.T) {
+	m, rc, _ := testHarness(t, hangingStream())
+	id, err := m.Spawn(rc, SpawnRequest{Message: "x"})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	waitRunning(t, m, id)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if n := m.WaitAll(ctx, 10*time.Second); n != 1 {
+		t.Fatalf("ctx 取消后 WaitAll = %d, want 1", n)
+	}
+}
+
+// TestCancelRunning 验证 CancelRunning：取消运行中的子（保持 Manager 可用），
+// 子状态落盘为 interrupted，通知（带部分结果）注入父 Queue。
+func TestCancelRunning(t *testing.T) {
+	m, rc, q := testHarness(t, hangingStream())
+	id, err := m.Spawn(rc, SpawnRequest{Message: "x"})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	waitRunning(t, m, id)
+	m.CancelRunning()
+	ev := waitEvent(t, q, 5*time.Second) // 中断通知 Append（finish 三分支）
+	if !strings.Contains(ev[0].Result, "已中断") {
+		t.Errorf("中断通知: %q", ev[0].Result)
+	}
+	if st := m.statusOf(id); st != StatusInterrupted {
+		t.Errorf("CancelRunning 后状态: %s, want interrupted", st)
+	}
+	// Manager 仍可用（区别于 Shutdown）：可再 spawn。
+	id2, err := m.Spawn(rc, SpawnRequest{Message: "y"})
+	if err != nil {
+		t.Fatalf("CancelRunning 后 Spawn 应可用: %v", err)
+	}
+	waitRunning(t, m, id2)
+}
