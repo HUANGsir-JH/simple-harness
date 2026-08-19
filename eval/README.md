@@ -12,14 +12,15 @@ eval/
 ├── orchestrator/          # 编排器（Python，薄）
 │   ├── run.py             # 入口：跑选定 benchmark 的任务子集
 │   ├── report.py          # 汇总 results/<run-id>/ → report.md + report.json
+│   ├── compare.py         # 回归对比：多 run 趋势 → results/trend.md + trend.json
 │   └── util.py            # harness --json 事件流解析 / 失败归因 / 用量统计
 ├── runners/               # 每 benchmark 一个适配器（封装官方 runner）
-│   ├── terminal_bench.py  # ⏳
-│   ├── nl2repo.py         # ⏳
-│   ├── cybergym.py        # ⏳
-│   ├── deepswe.py         # ⏳
-│   ├── toolathlon.py      # ⏳
-│   └── ale.py             # ⏳
+│   ├── terminal_bench.py  # Harbor agent 类（骨架，TODO(env)）
+│   ├── nl2repo.py         # 自研驱动 + 官方 pytest 评分（骨架，TODO(env)）
+│   ├── cybergym.py        # 官方示例包装器模式（骨架，TODO(env)）
+│   ├── deepswe.py         # Pier InstalledAgent（骨架，TODO(env)）
+│   ├── ale.py             # 官方 Deployer 类（骨架，TODO(env)）
+│   └── generic.py         # 通用驱动（run_harness：隔离环境跑 harness + 超时 + 事件流）
 └── results/               # 评测产物（gitignore）
     └── <run-id>/          # 一次评测 = 一个 run-id（时间戳）
         ├── meta.json      # 模型/版本/日期/API/采样参数/bench 列表

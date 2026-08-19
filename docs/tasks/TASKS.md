@@ -370,4 +370,4 @@
 | E6 | 阶段 0 环境：Docker Desktop 启动 + Linux 交叉编译（已验证 ✅）+ 安装 harbor/pier/nl2repo 依赖 | ⏳ 进行中 |
 | E7 | Pilot 实机：每 bench 10 任务子集冒烟 → 全量出分 → report.md 对比 | ⏳ 待办 |
 | E8 | 阶段 2 适配器骨架：cybergym.py（官方示例包装器模式）+ ale.py（官方 Deployer 类，sandbox-CLI 形态）（Toolathlon 需先做 MCP-SSE 能力） | ✅ 2026-08-19（骨架，待实机验证） |
-| E9 | 回归机制：固定子集一键重跑 + 趋势报告 + TASKS/PROGRESS 更新 | ⏳ 待办 |
+| E9 | 回归机制：compare.py（多 run 趋势报告 trend.md/trend.json，--runs/--latest） | ✅ 2026-08-19（工具完成，实机数据待环境） |
