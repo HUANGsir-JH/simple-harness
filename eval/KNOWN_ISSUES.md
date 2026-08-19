@@ -81,22 +81,31 @@ pier run -p <tasks>/<task-id> \
   egress 代理（deep-swe 全量任务都触发）。
 - **上游建议**：向 datacurve-ai/pier 提 issue（Windows 宿主 CRLF）。
 
-### 3.2 verifier 镜像构建失败 / 缺失（🟡 临时方案，⏳ 待查根因）
+### 3.2 verifier 报 `/tests/test.sh: cannot execute` → RewardFileNotFoundError（✅ 已修复，根因 = CRLF）
 - **现象**：trial 完成 agent 阶段后 verifier 报
   `RewardFileNotFoundError`；verifier/test-stdout.txt：
   `bash: line 1: /tests/test.sh: cannot execute: required file not found`；
-  trial.log：`Skipping image OS validation for hb__<task>: docker inspect returned 1`。
-- **原因**：verifier 镜像 `hb__<environment_name>` 不存在（pier 构建未产出该
-  命名镜像；separate 模式的 verifier 把测试烘焙进镜像 + `skip_tests_upload=True`，
-  镜像缺失 → 容器跑的是基础镜像 → 无 /tests/test.sh）。**构建失败根因未定**
-  （手动构建同一 Dockerfile 成功；层缓存存在说明构建曾执行过但未正确命名）。
-- **临时方案**：手动预构建（绝对路径！）：
-  ```
-  docker build -t hb__datacurve-abs-module-cache-flags \
-    -f <deep-swe>/tasks/<task>/tests/Dockerfile <deep-swe>/tasks/<task>/tests
-  ```
-- **注意**：docker build 的**相对路径 context 在本机报 "path not found"**
-  （docker client 解析问题），必须用绝对路径。
+  trial.log：`Skipping image OS validation for hb__<task>__agent-<fp>: docker inspect returned 1`。
+- **根因（2026-08-20 实机定位，推翻"镜像缺失"旧结论）**：Windows 宿主
+  `git core.autocrlf=true` 使 checkout 出的 `tests/test.sh` 为 **CRLF** →
+  容器内 shebang 变成 `#!/bin/bash\r` → bash 报 `cannot execute: required file
+  not found` → 测试根本没跑 → 无 reward.txt/reward.json。
+  **与 verifier 镜像无关**：pier 的 verifier（separate 模式）是
+  `upload_dir` 把宿主 tests/ 目录**原字节**上传进环境再执行，预构建镜像
+  无法修复（镜像里烘焙的 test.sh 也是从宿主 COPY 的 CRLF，或 verifier 根本
+  不用镜像里的 tests）。
+- **修复**：
+  1. `git -C <deep-swe> config core.autocrlf false` + `git config core.eol lf`
+     + `git rm --cached -r .` + `git reset --hard <原HEAD>`（工作区全部转 LF，
+     **不要提交 .gitattributes**——会让 main 前进、污染 collect 钩子的
+     base commit diff）。
+  2. 防御层：`eval/runners/deepswe.py` 新增 `_normalize_tests_lf()`——
+     run_task 上传前把 tests/ 目录文本文件 CRLF→LF（幂等；未来重新 clone
+     再带 CRLF 也不怕）。
+- **验证**：修复后 test.sh/grader.py/test.patch CRLF 计数均为 0。
+- **注意**：trial.log 中 `git commit` 报 `Command failed` 是**无害的**——
+  instruction 要求模型自己 commit（模型已提交），adapter 兜底 commit 因
+  nothing-to-commit 失败，collect 钩子 diff 仍正常产出 patch。
 
 ### 3.3 agent 环境镜像名含 install fingerprint
 - 主环境镜像名 = `hb__<env>__agent-<fingerprint>`（随 install_spec 变化）；
@@ -125,6 +134,20 @@ pier run -p <tasks>/<task-id> \
 - agent 全 shell 工具工作正常（120 次工具调用、真实求解任务）；子 agent/
   等子未在本次任务触发。
 
+### 4.3 pier result.json metrics 无 `mean` 字段（✅ 已修复，2026-08-20）
+- **现象**：首个通过任务（reward=1.0, f2p 20/20, p2p 3/3）被编排器标成
+  `[error] score=0.0`。
+- **原因**：pier 0.3.1 的 `stats.evals.<agent>.metrics[0]` 字段是
+  `reward/f2p/p2p/partial`（**没有 `mean`**）；`_pier_job_result` 取
+  `metrics[0].get("mean")` 恒为 None → score=None → 判 error。
+- **修复**：score 改取 `reward`（缺省 f2p）；DeepSWE 官方 pass 标准 =
+  reward 1.0。回放真实 result.json 验证 `(1.0, 0, '')`。
+
+### 4.4 成本恒为 $0.000（⏳ 待补）
+- pier result.json 的 `cost_usd` 为 null（pier 不知道我们的定价）；runner
+  未从 trajectory 的 usage 事件估算成本。后续在 `deepswe.py` 按 pricing
+  表（input/output/cache_read）补估算。
+
 ---
 
 ## 5. 环境状态备忘（ℹ️）
@@ -142,9 +165,8 @@ pier run -p <tasks>/<task-id> \
 
 ## 6. 待办调查项（⏳）
 
-1. **pier verifier 镜像构建失败根因**（3.2）——观察本次预构建镜像后重跑是否
-   稳定；若 pier 构建仍失败，需读 verifier env 的 compose build 输出定位
-   （可能又是 Windows 路径/命名问题）。
+1. ~~**pier verifier 镜像构建失败根因**（3.2）~~ ✅ **已定位**：不是镜像问题，
+   是 tests/test.sh CRLF（见 3.2）。重跑验证中。
 2. **NL2Repo 评分链路**：post_processor.py 在 `openhands/` 下、无 argparse 入口
    （import 式调用），需按官方 main.py 流程梳理评分调用方式后再接。
 3. **Terminal-Bench（Harbor）**：harbor 包已装，CLI 用法待验证。
