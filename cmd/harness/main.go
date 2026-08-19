@@ -94,7 +94,7 @@ func usage() {
 	fmt.Println("  --no-thinking                force disable thinking (default: model config)")
 	fmt.Println("  --no-thinking-display        do not show thinking text")
 	fmt.Println("  --max-turns <n>              max sampling rounds per turn (0 = unlimited; eval use)")
-	fmt.Println("  --subagent-wait <d>          wait for running subagents at turn end (default 5m; 0 = don't wait)")
+	fmt.Println("  --subagent-wait <d>          wait for running subagents at turn end (default 20m; 0 = don't wait)")
 	fmt.Println()
 	fmt.Println("TUI commands:")
 	fmt.Println("  /switch /model /effort /permission /thinking    popup pickers (real-time config lists)")

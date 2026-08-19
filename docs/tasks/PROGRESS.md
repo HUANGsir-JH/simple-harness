@@ -38,7 +38,7 @@
   退出即弃）。工具描述"期间可以停下等待"在 TUI 成立、在 run 模式误导。
 - **方案（用户拍板 A+D，仅影响 runOnce，TUI 不受影响）**：
   - **A 回合末等子**：runOnce 在父回合正常结束后调用 `runDrainSubagents`——有
-    running 子则 WaitAll（`--subagent-wait` 有界，默认 5m，0 = 旧行为）→ 超时
+    running 子则 WaitAll（`--subagent-wait` 有界，0 = 旧行为）→ 超时
     CancelRunning（中断通知带部分结果）→ 用新 rc 再跑一轮收尾（SessionMiddleware
     重新 load/save，BackgroundCompletionMiddleware 采样前 drain 队列注入完成
     通知）→ 最多 drainRounds=3 轮防病态循环；ctx 取消/信号可中断；drain 轮不挂
@@ -47,12 +47,19 @@
     仍在运行，harness 会等待其完成并注入结果后再收尾（单轮 run 模式）"。
 - **交付**：`Manager.RunningCount/WaitAll(ctx,timeout)/CancelRunning`（CancelRunning
   区别于 Shutdown：不置 closed，收尾轮仍可 spawn）；app.Options.SubagentWait +
-  `--subagent-wait` flag（默认 5m）；`runDrainSubagents`（stderr 提示防 --json 污染）。
+  `--subagent-wait` flag；`runDrainSubagents`（stderr 提示防 --json 污染）。
+- **修订（2026-08-19 用户反馈，同日）**：① 等待放宽——`--subagent-wait` 默认
+  **5m→20m**（覆盖跑十几分钟的子任务），取消后收尾等待 **30s→5m**（已取消子的
+  流可能被慢网络卡住，30s 不够落"已中断"通知）；② **spawn 描述覆盖移到 run
+  装配层**（`internal/app/runmode_tools.go`：`specOverrideTool` 装饰器 +
+  `withRunModeSpawnDescription`，buildAgent 增 runMode 参数），**不改
+  subagent/tools.go 默认描述**（TUI"可以停下等待"语义成立）；新增
+  `TestWithRunModeSpawnDescription`。
 - **测试**：Manager 单测 5 项（RunningCount/WaitAll 完成/超时/ctx 取消/CancelRunning
-  保持可用 + 中断通知）；**`TestRunModeDrainsSubagentsE2E`**（进程外确定性时序：
-  父第 2 轮结束回合时子仍在运行 → 1s 后放行子完成 → drain 收尾轮父整合结果 →
-  断言父采样 3 轮 + 子状态 completed 未被取消）；全量 19 包 build/vet/test 全绿 +
-  subagent/app -race 通过。
+  保持可用 + 中断通知）；`TestWithRunModeSpawnDescription`；**`TestRunModeDrainsSubagentsE2E`**
+  （进程外确定性时序：父第 2 轮结束回合时子仍在运行 → 1s 后放行子完成 → drain
+  收尾轮父整合结果 → 断言父采样 3 轮 + 子状态 completed 未被取消）；全量 19 包
+  build/vet/test 全绿 + subagent/app -race 通过。
 - **验证**：`go build/vet/test ./... -count=1` 全绿；`go test -race ./internal/subagent/
   ./internal/app/` 通过。
 

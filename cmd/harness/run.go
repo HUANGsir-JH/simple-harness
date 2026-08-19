@@ -23,7 +23,7 @@ func runCmd(args []string, jsonOut bool) error {
 	fs.BoolVar(&noThinkingFlag, "no-thinking", false, "force disable thinking (default: model config)")
 	fs.BoolVar(&noThinkingDisplay, "no-thinking-display", false, "do not show thinking text")
 	fs.IntVar(&maxTurns, "max-turns", 0, "max sampling rounds per turn (0 = unlimited; eval use)")
-	fs.DurationVar(&subagentWait, "subagent-wait", 5*time.Minute, "wait for running subagents at turn end (0 = don't wait; run mode)")
+	fs.DurationVar(&subagentWait, "subagent-wait", 20*time.Minute, "wait for running subagents at turn end (0 = don't wait; run mode; default 20m covers long-running subagents)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}

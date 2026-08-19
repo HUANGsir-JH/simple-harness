@@ -76,7 +76,9 @@ func Build(o Options) (*HarnessAgent, error) {
 // 注入 agent.Build，保持"session 知中间件、反之不成立"的防环约定（impl 不
 // 反向依赖 session）。主装配 = 内置工具 + 控制工具（不含 wait_task）。
 // maxTurns 仅 run 模式传入（评测 --max-turns）；TUI/resume 传 0（不限）。
-func buildAgent(res *config.ProviderConfig, defaultMode string, maxTurns int) (*agent.Agent, *subagent.Manager, error) {
+// runMode 控制 spawn_agent 工具描述覆盖（回合末等子语义仅对 run 模式表述，
+// 用户拍板 2026-08-19：不改 subagent/tools.go 默认描述，run 装配单独覆盖）。
+func buildAgent(res *config.ProviderConfig, defaultMode string, maxTurns int, runMode bool) (*agent.Agent, *subagent.Manager, error) {
 	agentsPath, err := session.GlobalAgentsMDPath()
 	if err != nil {
 		return nil, nil, err
@@ -91,12 +93,16 @@ func buildAgent(res *config.ProviderConfig, defaultMode string, maxTurns int) (*
 		GlobalAgentsMD:  agentsPath,
 		GlobalSkillsDir: skillsDir,
 	})
+	ctl := subagent.ControlTools(m)
+	if runMode {
+		ctl = withRunModeSpawnDescription(ctl)
+	}
 	a, err := agent.Build(agent.BuildOptions{
 		Provider:        res,
 		DefaultMode:     defaultMode,
 		GlobalAgentsMD:  agentsPath,
 		GlobalSkillsDir: skillsDir,
-		Tools:           append(tools.Builtins(skillsDir), subagent.ControlTools(m)...),
+		Tools:           append(tools.Builtins(skillsDir), ctl...),
 		MaxTurns:        maxTurns,
 	})
 	if err != nil {
@@ -128,7 +134,7 @@ func buildRun(o Options) (*HarnessAgent, error) {
 	if err != nil {
 		return nil, err
 	}
-	a, subMgr, err := buildAgent(res, rt.DefaultApprovalMode(), o.MaxTurns)
+	a, subMgr, err := buildAgent(res, rt.DefaultApprovalMode(), o.MaxTurns, true)
 	if err != nil {
 		return nil, err
 	}
@@ -183,7 +189,7 @@ func buildTUI(o Options) (*HarnessAgent, error) {
 	if err != nil {
 		return nil, err
 	}
-	a, subMgr, err := buildAgent(rt.Provider, rt.DefaultApprovalMode(), 0)
+	a, subMgr, err := buildAgent(rt.Provider, rt.DefaultApprovalMode(), 0, false)
 	if err != nil {
 		return nil, err
 	}
@@ -250,7 +256,7 @@ func buildResume(o Options) (*HarnessAgent, error) {
 	if err != nil {
 		return nil, err
 	}
-	a, subMgr, err := buildAgent(rt.Provider, rt.DefaultApprovalMode(), 0)
+	a, subMgr, err := buildAgent(rt.Provider, rt.DefaultApprovalMode(), 0, false)
 	if err != nil {
 		return nil, err
 	}

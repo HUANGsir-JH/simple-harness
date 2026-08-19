@@ -257,9 +257,11 @@ func (h *HarnessAgent) runDrainSubagents(ctx context.Context, onEvent events.OnE
 		fmt.Fprintln(os.Stderr, "（等待子 agent 完成…）")
 		if n := h.subagents.WaitAll(ctx, h.subagentWait); n > 0 {
 			// 超时：取消剩余子（finish 三分支 Append 中断通知带部分结果），
-			// 再跑一轮让父基于部分结果收尾。
+			// 再跑一轮让父基于部分结果收尾。取消后收尾等待放宽到 5m——
+			// 已取消子的流可能被慢网络卡住，30s 不够落"已中断"通知
+			// （2026-08-19 用户反馈）。
 			h.subagents.CancelRunning()
-			h.subagents.WaitAll(ctx, 30*time.Second)
+			h.subagents.WaitAll(ctx, 5*time.Minute)
 		}
 		rc := h.sess.RuntimeContext()
 		if err := h.reactAgent.Run(ctx, rc, onEvent); err != nil {
