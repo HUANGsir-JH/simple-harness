@@ -219,6 +219,14 @@ type Tool interface {
 ### ⏳ 待办（未完成）
 
 - **阶段 6（可选）：grep 工具 / 双向通信**（TUI 渲染器、摘要式压缩已随前述阶段完成，剩余仅此两项）
+- **阶段 7：评测套件 🔄 进行中（2026-08-19）**：7 个业界 benchmark 端到端评测，
+  与官方基线（deepseek-v4-flash @ DeepSeek Harness 极简模式）对比。权威方案
+  `docs/plans/eval-suite.md`，调研矩阵 `docs/eval/BENCHMARKS.md`。已交付：设计 +
+  harness 评测改造（`--max-turns` / `top_p`/`temperature` 配置）+ eval/ 编排器
+  骨架 + 三个 Pilot 适配器（terminal_bench/deepswe/nl2repo，待实机验证）。待办：
+  阶段 0 环境（Docker）、Pilot 出分、阶段 2（Cybergym/ALE/Toolathlon）、回归机制。
+  注意：评测为开发期工具（eval/ 目录），不进产品架构；Automation Bench 因无 CLI
+  接入路径排除。
 
 ### 明确不做 / 降级
 

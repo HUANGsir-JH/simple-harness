@@ -56,6 +56,10 @@ type ProviderConfig struct {
 	ContextWindow   int
 	ThinkingEffort  string
 	ThinkingEfforts []string
+	// TopP / Temperature 是模型级采样参数（0 = 未配置，请求不携带）。
+	// 官方评测协议对齐（top_p=0.95 / temperature=1.0，2026-08-19）。
+	TopP        float64
+	Temperature float64
 }
 
 // Model 是单个模型定义。
@@ -66,6 +70,11 @@ type Model struct {
 	// Thinking 是该模型的 thinking（推理模式）配置；thinking 默认开启，
 	// 未配置时档位 high（见 DefaultThinkingEffort）。
 	Thinking *Thinking `yaml:"thinking,omitempty"`
+	// TopP / Temperature 是采样参数（0 = 未配置，请求不携带；注意 0 无法
+	// 表达"显式传 0"，如需 temperature=0 请用极小值）。官方评测协议
+	// top_p=0.95 / temperature=1.0（2026-08-19）。
+	TopP        float64 `yaml:"top_p,omitempty"`
+	Temperature float64 `yaml:"temperature,omitempty"`
 }
 
 // Thinking 是模型级 thinking（推理模式）配置。传递按 anthropic Messages

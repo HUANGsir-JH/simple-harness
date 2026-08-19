@@ -12,6 +12,8 @@
 #   context_window  token 数（不配则默认 128000）
 #   thinking        推理模式：thinking 默认开启，无 enabled 配置项
 #     efforts: [low, high, max]  # 模型支持的档位集（默认三档）
+#   top_p / temperature  采样参数（0 = 不携带；官方评测协议 top_p=0.95、
+#     temperature=1.0，评测对齐用——注意 0 无法表达"显式传 0"）
 #
 # thinking 开关是会话级偏好（默认开启，2026-08-10 删 enabled 配置项）：
 # 运行时用 TUI /thinking（on/off）或 run --thinking / --no-thinking 切换，

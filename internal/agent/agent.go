@@ -33,6 +33,10 @@ type Agent struct {
 	// compactor 是上下文压缩执行器（ADR-037）：装配时挂载（Build），
 	// CompactMiddleware 自动触发（onReasoning）+ Controller 手动 /compact 复用。
 	compactor *compact.Runner
+	// maxTurns 是单回合最大采样轮数上限（0 = 不限，默认）。
+	// 评测用 --max-turns 设置：达到上限且模型仍请求工具时停止（emit
+	// EventMaxTurns 后结束），防死循环烧钱（评测改造 2026-08-19）。
+	maxTurns int
 }
 
 // New 创建绑定到 provider 客户端与模型的 Agent。
@@ -61,6 +65,10 @@ func (a *Agent) SetMiddleware(c *middleware.Chain) {
 
 // SetCompactor 设置上下文压缩执行器（ADR-037；Build 装配，Controller /compact 复用）。
 func (a *Agent) SetCompactor(r *compact.Runner) { a.compactor = r }
+
+// SetMaxTurns 设置单回合最大采样轮数上限（0 = 不限）。达到上限且模型仍请求
+// 工具时停止回合（emit EventMaxTurns 后结束，评测归因 max_turns）。
+func (a *Agent) SetMaxTurns(n int) { a.maxTurns = n }
 
 // Compactor 返回上下文压缩执行器（nil = 未装配；手动 /compact 用）。
 func (a *Agent) Compactor() *compact.Runner { return a.compactor }
@@ -108,12 +116,22 @@ func (a *Agent) Run(ctx context.Context, rc *middleware.RuntimeContext, onEvent 
 			return nil
 		})
 
+		turns := 0
 		for {
 			// 采样前自愈（Bug10 兜底）：存量会话或异常路径可能残留未配对的
 			// tool_use（assistant 带 tool_calls 而无紧跟的 tool_result），直接
 			// 采样违反 anthropic 邻接约束 400。runToolBatch 已防新增残留，
 			// 这里兜底旧数据（如 resume 修复前中断产生的会话）。
 			repairDanglingToolUse(conversation, emit)
+			// 回合上限（评测 --max-turns）：达到上限即停（不再采样/执行工具），
+			// 发出 EventMaxTurns 供渲染/评测归因。停在"采样前"保证采样轮数
+			// ≤ maxTurns；模型上轮残留的 tool_calls 由 repairDanglingToolUse
+			// 在下次 Run（resume）时自愈，单轮评测直接结束。
+			if a.maxTurns > 0 && turns >= a.maxTurns {
+				emit(events.Event{Type: events.EventMaxTurns, Text: fmt.Sprintf("已达最大回合数 %d，回合结束", a.maxTurns)})
+				break
+			}
+			turns++
 			result = sampleResult{}
 			err := reasoning(ctx, rc, middleware.ReasoningInput{Messages: conversation.Messages, Tools: a.tools.Specs()})
 			// 压缩完成标记（ADR-037）：CompactMiddleware（onReasoning before）压缩

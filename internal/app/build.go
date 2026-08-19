@@ -36,6 +36,7 @@ type Options struct {
 	Effort     string // run --effort
 	Thinking   bool   // run --thinking
 	NoThinking bool   // run --no-thinking
+	MaxTurns   int    // run --max-turns（回合上限，0 = 不限；评测用）
 
 	// 展示（TUI/run 共用）。
 	NoThinkingDisplay bool
@@ -70,7 +71,8 @@ func Build(o Options) (*HarnessAgent, error) {
 // 控制工具 ADR-045）。三模式共用：路径由 app 层解析后经 agent.BuildOptions
 // 注入 agent.Build，保持"session 知中间件、反之不成立"的防环约定（impl 不
 // 反向依赖 session）。主装配 = 内置工具 + 控制工具（不含 wait_task）。
-func buildAgent(res *config.ProviderConfig, defaultMode string) (*agent.Agent, *subagent.Manager, error) {
+// maxTurns 仅 run 模式传入（评测 --max-turns）；TUI/resume 传 0（不限）。
+func buildAgent(res *config.ProviderConfig, defaultMode string, maxTurns int) (*agent.Agent, *subagent.Manager, error) {
 	agentsPath, err := session.GlobalAgentsMDPath()
 	if err != nil {
 		return nil, nil, err
@@ -91,6 +93,7 @@ func buildAgent(res *config.ProviderConfig, defaultMode string) (*agent.Agent, *
 		GlobalAgentsMD:  agentsPath,
 		GlobalSkillsDir: skillsDir,
 		Tools:           append(tools.Builtins(skillsDir), subagent.ControlTools(m)...),
+		MaxTurns:        maxTurns,
 	})
 	if err != nil {
 		return nil, nil, err
@@ -121,7 +124,7 @@ func buildRun(o Options) (*HarnessAgent, error) {
 	if err != nil {
 		return nil, err
 	}
-	a, subMgr, err := buildAgent(res, rt.DefaultApprovalMode())
+	a, subMgr, err := buildAgent(res, rt.DefaultApprovalMode(), o.MaxTurns)
 	if err != nil {
 		return nil, err
 	}
@@ -175,7 +178,7 @@ func buildTUI(o Options) (*HarnessAgent, error) {
 	if err != nil {
 		return nil, err
 	}
-	a, subMgr, err := buildAgent(rt.Provider, rt.DefaultApprovalMode())
+	a, subMgr, err := buildAgent(rt.Provider, rt.DefaultApprovalMode(), 0)
 	if err != nil {
 		return nil, err
 	}
@@ -242,7 +245,7 @@ func buildResume(o Options) (*HarnessAgent, error) {
 	if err != nil {
 		return nil, err
 	}
-	a, subMgr, err := buildAgent(rt.Provider, rt.DefaultApprovalMode())
+	a, subMgr, err := buildAgent(rt.Provider, rt.DefaultApprovalMode(), 0)
 	if err != nil {
 		return nil, err
 	}

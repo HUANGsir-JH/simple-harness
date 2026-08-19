@@ -1032,3 +1032,82 @@ func TestRunAutoCompact(t *testing.T) {
 		t.Errorf("未压缩 conversation 应保留原样 + assistant: %+v", conv2.Messages)
 	}
 }
+
+// TestRunMaxTurns 验证回合上限（评测 --max-turns，2026-08-19）：模型持续请求
+// 工具时，采样轮数 ≤ maxTurns；达上限 emit EventMaxTurns 后结束（不再采样/
+// 执行工具），回合仍正常 turn_done、无错误。conversation 与工具执行对数 =
+// maxTurns 轮。
+func TestRunMaxTurns(t *testing.T) {
+	calls := 0
+	fc := &provider.FakeClient{StreamFn: func(ctx context.Context, req provider.Request) (provider.EventStream, error) {
+		calls++
+		if calls < 10 {
+			return toolCallStream("fake_tool", `{}`), nil
+		}
+		return textStream("done"), nil
+	}}
+	reg := tools.NewRegistry()
+	if err := reg.Register(&fakeTool{name: "fake_tool", handle: func(ctx context.Context, args json.RawMessage) (messages.ToolResult, error) {
+		return messages.ToolResult{Success: true, Content: "ok"}, nil
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	a := New(fc, "m")
+	a.SetTools(reg)
+	a.SetMaxTurns(3)
+	conv := newConversation()
+	rec := &eventRecorder{}
+	if err := a.Run(context.Background(), rcFor(conv), rec.on); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if calls != 3 {
+		t.Errorf("采样轮数 = %d, want 3（maxTurns 上限）", calls)
+	}
+	if !rec.has(events.EventMaxTurns) {
+		t.Errorf("应 emit EventMaxTurns: %v", rec.types())
+	}
+	if !rec.has(events.EventTurnDone) {
+		t.Errorf("达上限也应正常 turn_done: %v", rec.types())
+	}
+	if i, j := rec.indexOf(events.EventMaxTurns), rec.indexOf(events.EventTurnDone); i < 0 || j < 0 || i >= j {
+		t.Errorf("EventMaxTurns 应早于 EventTurnDone: %v", rec.types())
+	}
+	// conversation：user + 3×(assistant + tool 结果消息)。
+	if got := len(conv.Messages); got != 7 {
+		t.Errorf("conversation 消息数 = %d, want 7（user+3×(assistant+tool)）", got)
+	}
+}
+
+// TestRunMaxTurnsNotHit 验证上限内自然结束：不 emit EventMaxTurns。
+func TestRunMaxTurnsNotHit(t *testing.T) {
+	calls := 0
+	fc := &provider.FakeClient{StreamFn: func(ctx context.Context, req provider.Request) (provider.EventStream, error) {
+		calls++
+		if calls == 1 {
+			return toolCallStream("fake_tool", `{}`), nil
+		}
+		return textStream("done"), nil
+	}}
+	reg := tools.NewRegistry()
+	if err := reg.Register(&fakeTool{name: "fake_tool", handle: func(ctx context.Context, args json.RawMessage) (messages.ToolResult, error) {
+		return messages.ToolResult{Success: true, Content: "ok"}, nil
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	a := New(fc, "m")
+	a.SetTools(reg)
+	a.SetMaxTurns(5)
+	conv := newConversation()
+	rec := &eventRecorder{}
+	if err := a.Run(context.Background(), rcFor(conv), rec.on); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if rec.has(events.EventMaxTurns) {
+		t.Errorf("上限内完成不应 emit EventMaxTurns: %v", rec.types())
+	}
+	if calls != 2 {
+		t.Errorf("采样轮数 = %d, want 2", calls)
+	}
+}

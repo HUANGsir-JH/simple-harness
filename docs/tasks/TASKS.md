@@ -340,3 +340,34 @@
 | S6 | 装配接线（Build 注册/链顺序）+ ToolOutput 豁免 + policy classRead + TUI 分派 + 单测 | ✅ 2026-08-15 |
 | S7 | e2e `TestSkillToolE2E`（进程外全链路：目录行 → skill 调用 → `<skill_content` 回填）+ `TestInitE2E` 扩展 | ✅ 2026-08-15 |
 | S8 | 文档（ADR-044/TASKS/PROGRESS/IMPLEMENTATION_PLAN/CLAUDE.md）+ 全量 build/vet/test | ✅ 2026-08-15 |
+
+## 阶段 7：评测套件（2026-08-19）🔄 进行中
+
+- **目标**：用 7 个业界标准 benchmark 量化 simple-harness 端到端能力，与官方基线
+  （**deepseek-v4-flash @ DeepSeek Harness 极简模式**，DeepSeek 官方更新日志
+  2026-07-31：TB2.1 82.7 / NL2Repo 54.2 / Cybergym 76.7 / DeepSWE 54.4 /
+  Toolathlon 70.3 / ALE 25.2 / AutomationBench 25.1）对比。控制变量：同模型
+  `deepseek-v4-flash`；协议对齐 max effort + top_p=0.95 + temperature=1.0；
+  每任务独立 HARNESS_HOME/工作区；全自动 bypass。
+- **权威方案**：`docs/plans/eval-suite.md`；调研矩阵：`docs/eval/BENCHMARKS.md`
+  （7/7 调研完成）。
+- **决策（用户拍板）**：① Pilot = Terminal-Bench 2.1 + DeepSWE + NL2Repo；
+  ② Automation Bench 排除（官方仅 API 驱动、进程内模拟环境，无 CLI 接入路径）；
+  ③ 只跑默认装配（不做极简模式消融）；④ harness 改造支持 top_p/temperature；
+  ⑤ Toolathlon 放第二阶段（需先做 MCP-SSE 客户端能力）。
+- **状态**：🔄 进行中（2026-08-19：设计 + 骨架 + harness 改造已完成；Pilot 待
+  环境（Docker）就绪后实机验证）。
+
+### 任务单元
+
+| # | 单元 | 状态 |
+|---|---|---|
+| E1 | 7 benchmark 接入调研（子代理 web 调研，矩阵入 BENCHMARKS.md） | ✅ 2026-08-19 |
+| E2 | 评测设计文档（docs/plans/eval-suite.md：口径/指标/架构/分阶段/风险） | ✅ 2026-08-19 |
+| E3 | harness 评测改造：`--max-turns N`（agent loop 上限 + `max_turns` 事件）+ `top_p/temperature` 模型配置（provider 请求注入）+ 单测（agent 2 / config 1 / provider 1） | ✅ 2026-08-19 |
+| E4 | eval/ 编排器骨架：run.py（隔离/熔断/并发）+ report.py（对比基线报告）+ util.py（事件流/归因）+ generic.py 通用驱动 + config.example.yaml + README | ✅ 2026-08-19 |
+| E5 | Pilot 适配器骨架：terminal_bench.py（Harbor 类）+ deepswe.py（Pier InstalledAgent）+ nl2repo.py（自研驱动 + 官方评分复用） | ✅ 2026-08-19（骨架，待实机验证） |
+| E6 | 阶段 0 环境：Docker Desktop 启动 + Linux 交叉编译（已验证 ✅）+ 安装 harbor/pier/nl2repo 依赖 | ⏳ 进行中 |
+| E7 | Pilot 实机：每 bench 10 任务子集冒烟 → 全量出分 → report.md 对比 | ⏳ 待办 |
+| E8 | 阶段 2：Cybergym + ALE（+ Toolathlon 需先做 MCP-SSE 能力） | ⏳ 待办 |
+| E9 | 回归机制：固定子集一键重跑 + 趋势报告 + TASKS/PROGRESS 更新 | ⏳ 待办 |

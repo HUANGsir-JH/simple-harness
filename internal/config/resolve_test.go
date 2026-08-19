@@ -264,6 +264,37 @@ func TestResolveThinkingEffortsContainHigh(t *testing.T) {
 	}
 }
 
+// TestResolveSamplingParams 验证模型级采样参数 top_p/temperature 解析进
+// ProviderConfig（评测协议对齐 top_p=0.95 / temperature=1.0，2026-08-19）；
+// 未配置 = 0（请求不携带）。
+func TestResolveSamplingParams(t *testing.T) {
+	cfg := Config{
+		Providers: map[string]ProviderSpec{
+			"p": {APIKey: "k", Models: map[string]Model{
+				"m1": {TopP: 0.95, Temperature: 1.0},
+				"m2": {},
+			}},
+		},
+	}
+	r, err := Resolve(cfg, "m1")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if r.TopP != 0.95 {
+		t.Errorf("top_p: got %v want 0.95", r.TopP)
+	}
+	if r.Temperature != 1.0 {
+		t.Errorf("temperature: got %v want 1.0", r.Temperature)
+	}
+	r2, err := Resolve(cfg, "m2")
+	if err != nil {
+		t.Fatalf("Resolve(m2): %v", err)
+	}
+	if r2.TopP != 0 || r2.Temperature != 0 {
+		t.Errorf("未配置采样参数应为 0: got top_p=%v temperature=%v", r2.TopP, r2.Temperature)
+	}
+}
+
 // TestProviderModels 验证只列当前 provider（default_provider）的模型（Bug05：
 // /model 弹窗列跨 provider 模型会选不中，Resolve 只在该 provider 内查找）。
 func TestProviderModels(t *testing.T) {

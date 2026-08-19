@@ -33,6 +33,8 @@ func newAnthropicClient(res *config.ProviderConfig) *anthropicClient {
 			contextWindow:   res.ContextWindow,
 			thinkingEnabled: true, // thinking 默认开启（2026-08-10 删 enabled 配置项）
 			thinkingEffort:  res.ThinkingEffort,
+			topP:            res.TopP,
+			temperature:     res.Temperature,
 		},
 		client: c.Messages,
 	}
@@ -82,6 +84,15 @@ func (a *anthropicClient) Stream(ctx context.Context, req Request) (EventStream,
 	}
 	if req.MaxOutputTokens > 0 {
 		params.MaxTokens = int64(req.MaxOutputTokens)
+	}
+	// 采样参数（模型级配置，0 = 不携带）：官方评测协议 top_p=0.95 /
+	// temperature=1.0 经 config 模型定义注入（2026-08-19）。DeepSeek 等
+	// 兼容端点忽略未知/不支持参数属端点行为，不影响请求。
+	if a.topP != 0 {
+		params.TopP = anthropic.Float(a.topP)
+	}
+	if a.temperature != 0 {
+		params.Temperature = anthropic.Float(a.temperature)
 	}
 	if len(req.Tools) > 0 {
 		tools, err := toAnthropicTools(req.Tools)

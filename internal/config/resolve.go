@@ -54,6 +54,8 @@ func Resolve(cfg Config, modelFlag string) (*ProviderConfig, error) {
 		ContextWindow:   cw,
 		ThinkingEffort:  thinkingEffort,
 		ThinkingEfforts: thinkingEfforts,
+		TopP:            m.TopP,
+		Temperature:     m.Temperature,
 	}, nil
 }
 

@@ -35,6 +35,9 @@ type BuildOptions struct {
 	// Client 覆盖 provider client（测试注入 FakeClient 用；空 = 经
 	// provider.NewClient(o.Provider) 创建）。
 	Client provider.Client
+	// MaxTurns 是单回合最大采样轮数上限（0 = 不限，默认）。评测用
+	// --max-turns 设置（app.Options → BuildOptions），防死循环。
+	MaxTurns int
 }
 
 // Build 装配 CLI 标准 agent：共享 client + 内置工具 + 标准中间件链。
@@ -121,5 +124,6 @@ func Build(o BuildOptions) (*Agent, error) {
 	a.SetTools(reg)
 	a.SetMiddleware(mw)
 	a.SetCompactor(compactor)
+	a.SetMaxTurns(o.MaxTurns)
 	return a, nil
 }

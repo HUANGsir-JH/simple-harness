@@ -1,3 +1,35 @@
+## 2026-08-19
+
+### 阶段 7：评测套件（设计 + 骨架 + harness 评测改造）🔄 版本 0.14.0
+
+- **背景**：框架功能完备（0.13.0），需量化真实能力。官方基线 = DeepSeek 更新日志
+  （2026-07-31）公布的 deepseek-v4-flash @ DeepSeek Harness 极简模式成绩
+  （TB2.1 82.7 / NL2Repo 54.2 / Cybergym 76.7 / DeepSWE 54.4 / Toolathlon 70.3 /
+  ALE 25.2 / AutomationBench 25.1），Note 1 协议 = max effort + top_p=0.95 +
+  temperature=1.0。控制变量：同模型 `deepseek-v4-flash`，变量 = harness。
+- **交付**：
+  - **调研（7 子代理并行）**：`docs/eval/BENCHMARKS.md`——7 benchmark 接入方式
+    全部确认（来源 URL/任务量/评分/成本/坑）。关键结论：TB 2.1 走 Harbor 适配器类、
+    DeepSWE 走 Pier `InstalledAgent`（git commit 契约）、NL2Repo 自研驱动复用官方
+    pytest 评分、Cybergym 官方示例 submit.sh 模式、ALE 官方 Deployer 类（sandbox-CLI）、
+    Toolathlon 需 MCP-SSE 客户端能力（放第二阶段）、Automation Bench 无 CLI 路径（排除）。
+  - **设计**：`docs/plans/eval-suite.md`（权威方案：口径/指标/架构/分阶段/风险），
+    用户拍板 5 项决策（Pilot 范围/排除项/默认装配/采样参数改造/Toolathlon 阶段）。
+  - **harness 评测改造**：`--max-turns N`（agent loop 采样轮上限，达上限 emit
+    `max_turns` 事件后终止，防死循环烧钱；`events.EventMaxTurns` 新类型）+
+    `top_p/temperature` 模型级配置（config → ProviderConfig → providerBase →
+    anthropic 请求体注入，0 = 不携带）；5 个新单测，全量 19 包 build/vet/test 全绿。
+  - **eval/ 骨架**：orchestrator（run.py 任务队列 + HARNESS_HOME 隔离 + 成本熔断 +
+    并发 / report.py 对比基线报告 / util.py 事件流解析 + 失败归因）、generic.py
+    通用驱动、config.example.yaml（评测协议模板）、README；三个 Pilot 适配器骨架
+    （terminal_bench/deepswe/nl2repo，接口按调研文档，待实机验证）。
+- **验证**：`go build/vet/test ./... -count=1` 全绿（19 包含 e2e）；Linux 交叉编译
+  ✅（31.5MB）；eval Python 全部 py_compile 通过。
+- **待办**：阶段 0 环境（本机 Docker Desktop 未运行，需启动）+ Pilot 实机出分
+  （E6/E7，TASKS.md）。
+- **影响**：ADR 无新增（评测为开发期工具，不进产品架构）；CLI 新增 `--max-turns`
+  flag；config 新增模型级 `top_p/temperature`。
+
 ## 2026-08-16
 
 ### 阶段 5：子 agent ✅ 版本 0.13.0（ADR-045）

@@ -27,6 +27,10 @@ type providerBase struct {
 	contextWindow   int
 	thinkingEnabled bool
 	thinkingEffort  string
+	// topP / temperature 是模型级采样参数（0 = 未配置，请求不携带；
+	// 官方评测协议 top_p=0.95 / temperature=1.0，2026-08-19）。
+	topP        float64
+	temperature float64
 }
 
 func (p *providerBase) BaseURL() string    { return p.baseURL }

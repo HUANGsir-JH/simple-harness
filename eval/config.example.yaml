@@ -1,0 +1,63 @@
+# eval 评测配置模板。复制为 eval/config.yaml 使用（gitignore）。
+# 所有路径相对 eval/ 目录。
+
+# 评测元信息（写入 results/<run-id>/meta.json）
+meta:
+  model: deepseek-v4-flash          # 固定模型（与官方基线一致）
+  effort: max                       # 官方协议：max effort
+  top_p: 0.95                       # 官方协议（harness 支持后生效）
+  temperature: 1.0                  # 官方协议（harness 支持后生效）
+  harness_version: 0.13.0           # 被测 harness 版本
+  notes: ""
+
+# harness 可执行文件（Linux 交叉编译版；评测在容器/沙箱内运行）
+harness_bin: ./harness-linux        # 相对 eval/ 目录
+
+# harness 配置（生成到每任务 HARNESS_HOME/config.yaml）
+harness_config:
+  default_provider: deepseek
+  providers:
+    deepseek:
+      base_url: https://api.deepseek.com/anthropic
+      env_key: DEEPSEEK_API_KEY     # 从环境读取，不落盘
+      models:
+        deepseek-v4-flash:
+          context_window: 128000
+          thinking:
+            efforts: [low, high, max]
+  approval:
+    mode: bypass                    # 评测全自动，必须 bypass
+
+# 模型单价（USD / 1M tokens），用于成本估算
+pricing:
+  input: 0.14                       # 官方 V4-Flash 定价（2026-08 起峰谷，先填峰值）
+  output: 0.28
+  cache_read: 0.014                 # 如有缓存折扣价再填
+
+# 预算与超时
+budget:
+  max_turns: 100                    # harness --max-turns（改造后）
+  per_task_timeout_s: 3600          # 单任务墙钟上限
+  max_concurrent: 4                 # 并发任务数（注意 API rate limit）
+  cost_cap_usd: 50.0                # 单次 run 成本上限（超限熔断）
+
+# benchmark 选择与任务子集（默认全量；先用子集冒烟）
+benchmarks:
+  terminal-bench:
+    tasks: [0, 10]                  # 空 = 全量；示例先跑 0-9
+    extra: {}
+  nl2repo:
+    tasks: [0, 10]
+    extra: {}
+  cybergym:
+    tasks: [0, 10]
+    extra: {}
+  deepswe:
+    tasks: [0, 10]
+    extra: {}
+  toolathlon:
+    tasks: [0, 10]
+    extra: {}
+  ale:
+    tasks: [0, 10]
+    extra: {}

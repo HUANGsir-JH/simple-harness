@@ -40,6 +40,10 @@ const (
 	// 2026-08-13）：BackgroundCompletionMiddleware 注入完成后经 rc.Emit 发出，
 	// TUI 渲染为系统行；transcript 不落盘（内容已作为 user 行由 AddUser 写入）。
 	EventNotice EventType = "notice"
+	// EventMaxTurns 是回合达最大轮数上限（agent.maxTurns，评测用 --max-turns）
+	// 的终止信号：循环在发出本事件后结束（不再采样/执行工具）。
+	// 评测器据此归因 max_turns；TUI 渲染为系统行。
+	EventMaxTurns EventType = "max_turns"
 	// EventError 是回合级错误。
 	EventError EventType = "error"
 )

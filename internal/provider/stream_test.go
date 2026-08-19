@@ -493,4 +493,61 @@ func TestAnthropicStreamUsageNilWithoutUsage(t *testing.T) {
 			t.Error("无 usage 时 EventDone.Usage 应为 nil")
 		}
 	}
+
+	if err := es.Err(); err != nil {
+		t.Fatalf("stream err: %v", err)
+	}
+}
+
+// TestAnthropicStreamSamplingParams 验证模型级采样参数 top_p/temperature 注入
+// 请求体（评测协议对齐 top_p=0.95 / temperature=1.0，2026-08-19）；未配置时
+// 请求不携带。
+func TestAnthropicStreamSamplingParams(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &gotBody)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte(anthropicSSE("message_stop", `{"type":"message_stop"}`)))
+	}))
+	defer srv.Close()
+
+	// 配置了 top_p/temperature：请求体应携带。
+	c := newAnthropicClient(&config.ProviderConfig{
+		Model: "m", BaseURL: srv.URL, APIKey: "test-key",
+		TopP: 0.95, Temperature: 1.0,
+	})
+	es, err := c.Stream(context.Background(), Request{Model: "m", Messages: []*messages.Message{NewTestUserMsg("hi")}})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	_ = es.Close()
+	if gotBody["top_p"] != 0.95 {
+		t.Errorf("top_p: got %v want 0.95", gotBody["top_p"])
+	}
+	if gotBody["temperature"] != 1.0 {
+		t.Errorf("temperature: got %v want 1.0", gotBody["temperature"])
+	}
+
+	// 未配置：请求体不应携带。
+	var gotBody2 map[string]any
+	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &gotBody2)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte(anthropicSSE("message_stop", `{"type":"message_stop"}`)))
+	}))
+	defer srv2.Close()
+	c2 := newAnthropicClient(&config.ProviderConfig{Model: "m", BaseURL: srv2.URL, APIKey: "test-key"})
+	es2, err := c2.Stream(context.Background(), Request{Model: "m", Messages: []*messages.Message{NewTestUserMsg("hi")}})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	_ = es2.Close()
+	if _, ok := gotBody2["top_p"]; ok {
+		t.Errorf("未配置 top_p 不应携带: %v", gotBody2["top_p"])
+	}
+	if _, ok := gotBody2["temperature"]; ok {
+		t.Errorf("未配置 temperature 不应携带: %v", gotBody2["temperature"])
+	}
 }
