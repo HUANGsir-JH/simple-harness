@@ -134,12 +134,14 @@ def main() -> int:
     home_root = results_root / "home"
     tasks = load_tasks(bench, spec, cfg)
     if args.tasks:
-        if "-" in args.tasks:
+        if "-" in args.tasks and not any(c.isalpha() for c in args.tasks):
             a, b = args.tasks.split("-")
             tasks = tasks[int(a):int(b)]
         else:
-            ids = [int(x) for x in args.tasks.split(",") if x.strip()]
-            tasks = [t for t in tasks if int(t["id"]) in ids]
+            ids = [x.strip() for x in args.tasks.split(",") if x.strip()]
+            tasks = [t for t in tasks
+                     if t["id"] in ids
+                     or (t["id"].isdigit() and int(t["id"]) in {int(x) for x in ids if x.isdigit()})]
     print(f"[{bench}] run-id={run_id} tasks={len(tasks)}")
 
     meta = {
