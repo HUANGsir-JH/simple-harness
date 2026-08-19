@@ -31,18 +31,32 @@ level, topp=0.95, and temperature=1.0***。
 
 ## 1. Terminal-Bench 2.1 ✅ 已确认
 
-- **官方**：tbench（terminal-bench.org / github.com/tbench-ai）；TB 2.1 官方评测
-  走 **Harbor 框架**：`harbor run -d terminal-bench/terminal-bench-2-1`。
-- **自定义 agent 接入**：**没有 `--agent-command`**；官方方式 = 写一个小 Python
-  适配器类（Harbor `-a path.to.agent:Class`，老 harness `--agent-import-path`），
-  适配器在任务容器内执行 `harness run "<instruction>"`。
+- **官方**：tbench（terminal-bench.org）；pip 包 `terminal-bench`（import
+  terminal_bench）**0.2.18**，Python ≥3.12，CLI `tb`/`terminal-bench`；**TB 2.1
+  官方评测走 Harbor**：`uv tool install "harbor[daytona]"` +
+  `harbor run -d terminal-bench/terminal-bench-2-1 -a <pkg>:<Agent> -k 5`。
+- **自定义 agent 接入**：**没有 `--agent-command`**；官方方式 = 写 Python 适配器
+  类（老 harness `--agent-import-path module:Class` 继承 AbstractInstalledAgent；
+  Harbor `-a path.to.agent:SomeAgent` 继承 **BaseInstalledAgent**），适配器在任务
+  容器内执行 `harness run "<instruction>"`（instruction 经 shlex.quote 传参）。
   **与 DeepSWE 的 Pier 同属 Harbor 框架家族，适配器模式可复用**。
-- **答案采集**：不采集答案文本；由 verifier 测试决定 pass/fail（确定性评分）。
-- **任务集**：89 个任务；确定性评分；不需要 GPU；容器默认开放互联网。
-- **参考分注意**：82.7 = DeepSeek 官方更新日志（V4-Flash @ Harness 极简模式）；
-  另有来源把 TB 2.1 的 82.7 归给 Claude Code + Opus 4.8（tbench.ai 原生 harness，
-  AICoderScope 2026-06 引述；官方榜该组合已更新为 78.88%±1.31）——**同分属巧合，
-  引用需注明出处与日期**。
+- **答案采集**：不采集答案文本；agent 结束后跑 verifier 测试（pytest），
+  全过 = resolved，确定性评分，无结果文件约定；asciinema 轨迹录制。
+- **任务集**：89 个任务（leaderboard n_trials=445 = 89×5 印证）；覆盖 coding/
+  软件工程/数据科学/系统管理/安全/编译/逆向；指标 accuracy±SE、pass@2..5、
+  成本、token、平均时长、reward_hacks%。
+- **环境**：Docker 必需；无 GPU（89 个 task.toml gpus 全 0）；2.1 任务容器默认
+  开放互联网（API key 经 setup-env.sh 进容器）。
+- **成本/耗时**：官方榜（2026-08）单 trial 平均 432–1043s；445 trials 全提交
+  $134–$2059（常见 $200–600，Claude Code+Opus4.8=$286.94）。
+- **参考分注意**：82.7 有两处出处——① DeepSeek 官方更新日志（V4-Flash @
+  Harness 极简模式，我们的基线）；② tbench.ai 榜单 2026-06 时点 Claude Code +
+  Claude Opus 4.8（AICoderScope 2026-06-28 引述）。当前官方榜该组合已更新为
+  **78.88%±1.31**（榜首 Claude Code+Fable5=83.82%、Codex+GPT-5.5=83.15%）——
+  **同分属巧合，引用须注明出处与日期**。
+- **坑**：agent 必须非交互 headless（禁审批弹窗）；CI 禁止显式
+  allow_internet=false/true（默认开放）；leaderboard 要求 ≥5 trials/任务、不改
+  timeout/资源、轨迹公开上传 ATIF（2.1 社区提交已关闭，本地自评即可）。
 
 ## 2. NL2Repo ✅ 已确认
 

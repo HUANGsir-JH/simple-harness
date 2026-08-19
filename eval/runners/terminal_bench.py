@@ -70,17 +70,28 @@ def list_tasks(cfg: dict) -> list[dict]:
 
 def run_task(task: dict, cfg: dict, harness_bin: str, home: str, workdir: str,
              traj_path: str) -> dict:
-    """单任务：`harbor run` 该任务（官方建容器 → HarnessAgent → verifier 评分）。"""
+    """单任务：`harbor run` 该任务（官方建容器 → HarnessAgent → verifier 评分）。
+
+    调研确认（2026-08-19 终版）：
+    - pip 包 `terminal-bench`（import terminal_bench）0.2.18，CLI `tb`；2.1 官方
+      评测走 Harbor：`uv tool install "harbor[daytona]"` +
+      `harbor run -d terminal-bench/terminal-bench-2-1 -a pkg:Agent -k 5`
+    - `-k <trials>`：leaderboard 要求 ≥5 trials/任务（89×5=445）；冒烟期用 1
+    - instruction 经 shlex.quote 作为命令行参数传给 agent；最终答案不采集，
+      verifier（pytest）全过 = resolved（确定性评分）
+    """
     harbor = shutil.which("harbor") or shutil.which("pier")
     if not harbor:
         return {"status": "error", "failure": "env_error",
-                "detail": "harbor/pier 未安装（TB 2.1 官方评测框架）"}
+                "detail": "harbor 未安装（uv tool install \"harbor[daytona]\"）"}
+    extra = cfg.get("benchmarks", {}).get("terminal-bench", {}).get("extra", {})
+    trials = int(extra.get("trials", 1))  # 冒烟 1，正式按 leaderboard 要求 5
     started = time.time()
     try:
         proc = subprocess.run(
             [harbor, "run", "-d", "terminal-bench/terminal-bench-2-1",
              "-a", "runners.terminal_bench:HarnessAgent",
-             "--task", str(task["id"])],
+             "-k", str(trials), "--task", str(task["id"])],
             capture_output=True, text=True, timeout=3600,
         )
     except subprocess.TimeoutExpired:
