@@ -28,7 +28,10 @@ config.local.yaml
 
 # Eval artifacts
 /eval/config.yaml
+/eval/harness-config.yaml
 /eval/results/
+/eval/checkouts/
+/eval/.venv/
 /eval/harness-linux
 /eval/harness-linux.exe
 

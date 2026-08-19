@@ -151,6 +151,7 @@ def main() -> int:
         "budget": cfg.get("budget", {}),
         "python": sys.version.split()[0],
     }
+    os.makedirs(results_root, exist_ok=True)
     (results_root / "meta.json").write_text(
         json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
 
