@@ -20,6 +20,7 @@ eval/
 │   ├── cybergym.py        # 官方示例包装器模式（骨架，TODO(env)）
 │   ├── deepswe.py         # Pier InstalledAgent（骨架，TODO(env)）
 │   ├── ale.py             # 官方 Deployer 类（骨架，TODO(env)）
+│   ├── toolathlon.py      # Decoupled 四步驱动（骨架，需 harness MCP-SSE 能力 TODO(mcp)）
 │   └── generic.py         # 通用驱动（run_harness：隔离环境跑 harness + 超时 + 事件流）
 └── results/               # 评测产物（gitignore）
     └── <run-id>/          # 一次评测 = 一个 run-id（时间戳）

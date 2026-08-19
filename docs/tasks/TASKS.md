@@ -369,5 +369,5 @@
 | E5 | Pilot 适配器骨架：terminal_bench.py（Harbor 类）+ deepswe.py（Pier InstalledAgent）+ nl2repo.py（自研驱动 + 官方评分复用） | ✅ 2026-08-19（骨架，待实机验证） |
 | E6 | 阶段 0 环境：Docker Desktop 启动 + Linux 交叉编译（已验证 ✅）+ 安装 harbor/pier/nl2repo 依赖 | ⏳ 进行中 |
 | E7 | Pilot 实机：每 bench 10 任务子集冒烟 → 全量出分 → report.md 对比 | ⏳ 待办 |
-| E8 | 阶段 2 适配器骨架：cybergym.py（官方示例包装器模式）+ ale.py（官方 Deployer 类，sandbox-CLI 形态）（Toolathlon 需先做 MCP-SSE 能力） | ✅ 2026-08-19（骨架，待实机验证） |
+| E8 | 阶段 2 适配器骨架：cybergym.py + ale.py + toolathlon.py（decoupled 四步驱动；**MCP-SSE 客户端能力未实现**，标注 TODO(mcp) 接入点） | ✅ 2026-08-19（骨架，待实机验证） |
 | E9 | 回归机制：compare.py（多 run 趋势报告 trend.md/trend.json，--runs/--latest） | ✅ 2026-08-19（工具完成，实机数据待环境） |
