@@ -98,6 +98,11 @@ func (JSONRenderer) Event(ev events.Event) {
 		emitJSON(map[string]any{"type": "tool_result", "success": ev.ToolResult.Success, "content": strings.TrimSpace(ev.ToolResult.Content)})
 	case events.EventTurnDone:
 		emitJSON(map[string]any{"type": "turn_done"})
+	case events.EventUsage:
+		// 评测/用量审计需要 usage 进 --json 流（2026-08-20：评测轨迹成本统计）。
+		if ev.Usage != nil && !ev.Usage.IsZero() {
+			emitJSON(map[string]any{"type": "usage", "usage": ev.Usage})
+		}
 	case events.EventError:
 		emitJSON(map[string]any{"type": "error", "message": ev.Err.Error()})
 	}

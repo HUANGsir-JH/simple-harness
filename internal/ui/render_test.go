@@ -3,10 +3,36 @@ package ui
 import (
 	"bytes"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/agent-project/harness/internal/events"
+	"github.com/agent-project/harness/internal/messages"
 )
+
+// TestJSONRendererEmitsUsage 验证 JSON 渲染器透出 EventUsage（评测轨迹
+// 成本统计依赖 usage 进 --json 流；2026-08-20 补）。
+func TestJSONRendererEmitsUsage(t *testing.T) {
+	ev := events.Event{Type: events.EventUsage, Usage: &messages.Usage{
+		InputTokens: 100, OutputTokens: 50,
+		CacheReadInputTokens: 10, CacheCreationInputTokens: 5,
+	}}
+	out := captureStdout(t, func() {
+		JSONRenderer{}.Event(ev)
+	})
+	if !strings.Contains(out, `"type":"usage"`) || !strings.Contains(out, `"input_tokens":100`) {
+		t.Errorf("JSONRenderer 应输出 usage 事件，got %q", out)
+	}
+
+	// 全零 usage 不发（与 agent 层 IsZero 过滤一致）。
+	zero := events.Event{Type: events.EventUsage, Usage: &messages.Usage{}}
+	out = captureStdout(t, func() {
+		JSONRenderer{}.Event(zero)
+	})
+	if out != "" {
+		t.Errorf("全零 usage 不应输出，got %q", out)
+	}
+}
 
 // TestRenderersIgnoreEventNotice 验证审查 06（2026-08-14）：run 单轮模式的
 // 路径 A（BackgroundCompletionMiddleware 经 rc.Emit 推 EventNotice）会经
