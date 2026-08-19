@@ -185,6 +185,31 @@ def list_tasks(cfg: dict) -> list[dict]:
     return tasks
 
 
+def _normalize_tests_lf(task_dir: Path) -> None:
+    """把任务 tests/ 目录文本文件统一为 LF（幂等）。
+
+    根因（2026-08-20 实机定位）：Windows 宿主 git core.autocrlf=true 使
+    checkout 的 tests/test.sh 变成 CRLF → 容器内 shebang 变成 `#!/bin/bash\r`，
+    verifier 执行报 `cannot execute: required file not found` → 无 reward.txt
+    → RewardFileNotFoundError（与 verifier 镜像无关；预构建镜像也无法修复，
+    因为 pier 的 verifier 是 upload_dir 上传宿主 tests 目录的原字节）。
+    deep-swe 任务仓库已设 core.autocrlf=false 并重检为 LF；此处为防御层，
+    即使未来重新 clone 又带 CRLF，上传前也会被归一化。
+    """
+    if not task_dir.is_dir():
+        return
+    text_exts = {".sh", ".py", ".patch", ".json", ".md", ".txt", ".toml",
+                 ".yaml", ".yml", ".go", ".c", ".h", ".rs", ".js", ".ts"}
+    for p in (task_dir / "tests").rglob("*"):
+        if p.is_file() and p.suffix.lower() in text_exts:
+            try:
+                data = p.read_bytes()
+                if b"\r\n" in data:
+                    p.write_bytes(data.replace(b"\r\n", b"\n"))
+            except OSError:
+                pass
+
+
 def run_task(task: dict, cfg: dict, harness_bin: str, home: str, workdir: str,
              traj_path: str) -> dict:
     """单任务：`pier run -p <task-dir>`（官方 runner 建沙箱 → HarnessAgent → verifier 评分）。
@@ -204,6 +229,9 @@ def run_task(task: dict, cfg: dict, harness_bin: str, home: str, workdir: str,
     if not task_dir.is_dir():
         return {"status": "error", "failure": "env_error",
                 "detail": f"任务目录不存在: {task_dir}"}
+    # CRLF 防御：verifier 上传 tests 目录原字节，Windows checkout 的 CRLF
+    # 会让容器内 test.sh 无法执行（2026-08-20 根因定位，见 _normalize_tests_lf）。
+    _normalize_tests_lf(task_dir)
     harness_cfg = extra.get("harness_config_path") or str(Path(home) / "config.yaml")
     budget = cfg.get("budget", {})
     max_turns = int(extra.get("max_turns", budget.get("max_turns", 100)))
@@ -231,8 +259,8 @@ def run_task(task: dict, cfg: dict, harness_bin: str, home: str, workdir: str,
         return {"status": "error", "failure": "timeout", "score": 0.0,
                 "wall_seconds": round(time.time() - started, 2)}
     out = proc.stdout + proc.stderr
-    # 权威结果：解析 pier job result.json（stats.evals.<agent>.metrics[0].mean =
-    # pass 率；exception_stats = trial 异常）。
+    # 权威结果：解析 pier job result.json（stats.evals.<agent>.metrics[0] =
+    # reward/f2p；exception_stats = trial 异常）。
     score, n_errors, exceptions = _pier_job_result(Path(workdir) / "jobs")
     status = "pass" if score is not None and n_errors == 0 and score >= 1.0 else "error"
     return {
@@ -241,12 +269,53 @@ def run_task(task: dict, cfg: dict, harness_bin: str, home: str, workdir: str,
         "failure": "" if status == "pass" else (exceptions or f"pier exit {proc.returncode}"),
         "exit_code": proc.returncode,
         "detail": out[-2000:],
+        "cost_usd": _estimate_cost(Path(workdir) / "jobs", cfg.get("pricing", {})),
         "wall_seconds": round(time.time() - started, 2),
     }
 
 
+def _estimate_cost(jobs_dir: Path, pricing: dict) -> float:
+    """从最新 trial 的 harness-trajectory.jsonl 汇总 usage 事件估算成本 USD。
+
+    pier result.json 的 cost_usd 为 null（pier 不知道定价），改从
+    harness --json 事件流（usage 行）按 pricing 表估算。无轨迹/无 usage 时返回 0。
+    """
+    if not jobs_dir.is_dir():
+        return 0.0
+    try:
+        trials = sorted(jobs_dir.glob("*/[!_]*/agent/harness-trajectory.jsonl"),
+                        key=lambda p: p.stat().st_mtime)
+        if not trials:
+            trials = sorted(jobs_dir.glob("*/agent/harness-trajectory.jsonl"),
+                            key=lambda p: p.stat().st_mtime)
+        if not trials:
+            return 0.0
+        inp = out = cache = 0.0
+        for line in trials[-1].read_text(encoding="utf-8", errors="replace").splitlines():
+            try:
+                ev = json.loads(line)
+            except Exception:
+                continue
+            if ev.get("type") != "usage":
+                continue
+            u = ev.get("usage") or {}
+            inp += u.get("input_tokens") or 0
+            out += u.get("output_tokens") or 0
+            cache += (u.get("cache_read_input_tokens") or 0) + (u.get("cache_creation_input_tokens") or 0)
+        pi = float(pricing.get("input", 0) or 0) / 1e6
+        po = float(pricing.get("output", 0) or 0) / 1e6
+        pc = float(pricing.get("cache_read", 0) or 0) / 1e6
+        return round(inp * pi + out * po + cache * pc, 4)
+    except Exception:
+        return 0.0
+
+
 def _pier_job_result(jobs_dir: Path) -> tuple[float | None, int, str]:
-    """解析 pier --jobs-dir 下最新 job 的 result.json，返回 (mean, n_errors, exceptions)。"""
+    """解析 pier --jobs-dir 下最新 job 的 result.json，返回 (score, n_errors, exceptions)。
+
+    pier 0.3.1 的 metrics[0] 字段：reward/f2p/p2p/partial（无 mean）。
+    score 取 reward（DeepSWE 官方 pass 标准 = reward 1.0）。
+    """
     jobs = sorted(jobs_dir.glob("*/result.json"), key=lambda p: p.stat().st_mtime) if jobs_dir.is_dir() else []
     if not jobs:
         return None, 0, ""
@@ -255,7 +324,8 @@ def _pier_job_result(jobs_dir: Path) -> tuple[float | None, int, str]:
         evals = (rj.get("stats") or {}).get("evals") or {}
         for e in evals.values():
             metrics = (e.get("metrics") or [{}])
-            mean = metrics[0].get("mean") if metrics else None
+            m = metrics[0] if metrics else {}
+            mean = m.get("reward", m.get("f2p"))
             n_err = e.get("n_errors", 0)
             exc = ""
             for k, v in (e.get("exception_stats") or {}).items():
