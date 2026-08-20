@@ -57,8 +57,12 @@ func (m *Manager) buildSubagent(kind string) (*agent.Agent, error) {
 	if kind == KindExplore {
 		head = []middleware.Middleware{impl.BaseInstructionsMiddleware{Text: exploreInstructions}}
 	} else {
+		base := m.opts.BaseInstructions
+		if base == "" {
+			base = impl.DefaultBaseInstructions
+		}
 		head = []middleware.Middleware{
-			impl.BaseInstructionsMiddleware{Text: impl.DefaultBaseInstructions},
+			impl.BaseInstructionsMiddleware{Text: base},
 			DelegationInstructionsMiddleware{},
 		}
 	}

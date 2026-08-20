@@ -54,6 +54,49 @@ func TestBuildSubagentPrompts(t *testing.T) {
 	}
 }
 
+// TestBuildSubagentBaseInstructionsOverride 验证 Options.BaseInstructions 覆盖
+// general-purpose persona（评测 config.base_instructions 透传；空 = 默认，
+// explore 不受影响，2026-08-20）。
+func TestBuildSubagentBaseInstructionsOverride(t *testing.T) {
+	run := func(kind, base string) string {
+		var instructions string
+		m, rc, _ := testHarness(t, func(ctx context.Context, req provider.Request) (provider.EventStream, error) {
+			instructions = req.Instructions
+			return provider.NewFakeStream([]provider.Event{
+				{Type: provider.EventTextDone, Text: "ok"},
+				{Type: provider.EventDone},
+			}), nil
+		})
+		m.opts.BaseInstructions = base
+		a, err := m.buildSubagent(kind)
+		if err != nil {
+			t.Fatalf("buildSubagent(%s): %v", kind, err)
+		}
+		if err := a.Run(context.Background(), rc, nil); err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		return instructions
+	}
+
+	// 覆盖后 general-purpose 用自定义 persona（不再含默认中文 persona）。
+	gp := run(KindGeneralPurpose, "You are a helpful software engineer assistant.")
+	if !strings.Contains(gp, "helpful software engineer assistant") {
+		t.Errorf("general-purpose 应使用覆盖 persona，got: %q", gp[:min(len(gp), 120)])
+	}
+	if strings.Contains(gp, "运行在用户终端") {
+		t.Error("general-purpose 不应再含默认 persona")
+	}
+	if !strings.Contains(gp, "被委派的子代理") {
+		t.Error("覆盖后委托段仍应保留")
+	}
+
+	// explore 固定专属提示词，覆盖不影响。
+	ex := run(KindExplore, "You are a helpful software engineer assistant.")
+	if !strings.Contains(ex, "只读探索子代理") {
+		t.Error("explore 应保持专属提示词")
+	}
+}
+
 // TestDelegationMiddleware 验证委托段注入语义（追加，同 AgentsMdMiddleware）：
 // 空当前内容 → 原样注入；非空 → 拼接在其后（紧随 persona、AgentsMd 之前）。
 func TestDelegationMiddleware(t *testing.T) {

@@ -19,6 +19,10 @@ type Config struct {
 	Providers map[string]ProviderSpec `yaml:"providers"`
 	// Approval 是工具审批配置（阶段三权限，ADR-029）；nil = 默认模式。
 	Approval *ApprovalConfig `yaml:"approval,omitempty"`
+	// BaseInstructions 覆盖链首基础提示词（默认 DefaultBaseInstructions）；
+	// 空 = 用默认。评测对齐官方 minimal preset 用
+	// "You are a helpful software engineer assistant."（2026-08-20）。
+	BaseInstructions string `yaml:"base_instructions,omitempty"`
 }
 
 // ApprovalConfig 是工具审批配置。

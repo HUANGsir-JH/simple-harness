@@ -60,6 +60,10 @@ type Options struct {
 	// Client 覆盖 provider client（测试注入 FakeClient 用；空 = agent.Build
 	// 内部 NewClient）。
 	Client provider.Client
+	// BaseInstructions 覆盖 general-purpose 子 agent 链首 persona（空 =
+	// 默认 DefaultBaseInstructions；评测对齐官方 minimal 用 config 覆盖，
+	// 2026-08-20）。explore 子 agent 固定用专属只读提示词，不受影响。
+	BaseInstructions string
 }
 
 // Entry 是一个子 agent 的运行态注册条目（进程内；持久态在子会话目录）。

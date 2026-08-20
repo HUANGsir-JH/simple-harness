@@ -69,6 +69,44 @@ func TestLoadConfigProjectLocal(t *testing.T) {
 	}
 }
 
+// TestLoadConfigBaseInstructions 验证 base_instructions 覆盖字段加载
+// （评测对齐官方 minimal preset 用，2026-08-20；空 = 默认 persona）。
+func TestLoadConfigBaseInstructions(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := `default_provider: p
+base_instructions: You are a helpful software engineer assistant.
+providers:
+  p:
+    api_key: k
+    models:
+      m: {}
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.BaseInstructions != "You are a helpful software engineer assistant." {
+		t.Errorf("base_instructions: %q", cfg.BaseInstructions)
+	}
+
+	// 未配置时为零值（装配层回退默认 persona）。
+	empty := filepath.Join(dir, "empty.yaml")
+	if err := os.WriteFile(empty, []byte("providers:\n  p:\n    api_key: k\n    models:\n      m: {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg2, err := LoadConfig(empty)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg2.BaseInstructions != "" {
+		t.Errorf("expected empty base_instructions, got %q", cfg2.BaseInstructions)
+	}
+}
+
 // TestLoadConfigMissing 验证缺失配置时报错。
 func TestLoadConfigMissing(t *testing.T) {
 	dir := t.TempDir()

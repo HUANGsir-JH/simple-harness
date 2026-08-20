@@ -38,6 +38,10 @@ type BuildOptions struct {
 	// MaxTurns 是单回合最大采样轮数上限（0 = 不限，默认）。评测用
 	// --max-turns 设置（app.Options → BuildOptions），防死循环。
 	MaxTurns int
+	// BaseInstructions 覆盖链首基础提示词（空 = 默认 DefaultBaseInstructions）。
+	// 评测对齐官方 minimal preset 用一句式提示词（config.base_instructions，
+	// 2026-08-20）。
+	BaseInstructions string
 }
 
 // Build 装配 CLI 标准 agent：共享 client + 内置工具 + 标准中间件链。
@@ -102,8 +106,12 @@ func Build(o BuildOptions) (*Agent, error) {
 	}
 	compactor := compact.NewRunner(compact.NewSummarizer(client, opts), opts)
 
+	base := o.BaseInstructions
+	if base == "" {
+		base = impl.DefaultBaseInstructions
+	}
 	mw := middleware.NewChain(
-		impl.BaseInstructionsMiddleware{Text: impl.DefaultBaseInstructions},
+		impl.BaseInstructionsMiddleware{Text: base},
 		impl.AgentsMdMiddleware{Options: agentsmd.Options{GlobalPath: o.GlobalAgentsMD}},
 		impl.SkillsCatalogMiddleware{SkillsDir: o.GlobalSkillsDir},
 		impl.ToolInstructionsMiddleware{Tools: reg.Specs()},

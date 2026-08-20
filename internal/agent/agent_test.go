@@ -145,6 +145,47 @@ func TestRunSingleTurn(t *testing.T) {
 	}
 }
 
+// TestBuildBaseInstructionsOverride 验证 BuildOptions.BaseInstructions 覆盖链首
+// 基础提示词（评测 config.base_instructions 透传；空 = 默认 persona，
+// 2026-08-20）。
+func TestBuildBaseInstructionsOverride(t *testing.T) {
+	run := func(base string) string {
+		var instructions string
+		fc := &provider.FakeClient{StreamFn: func(ctx context.Context, req provider.Request) (provider.EventStream, error) {
+			instructions = req.Instructions
+			return textStream("ok"), nil
+		}}
+		a, err := Build(BuildOptions{
+			Provider:         &config.ProviderConfig{Model: "m1", ContextWindow: 200_000},
+			Client:           fc,
+			BaseInstructions: base,
+		})
+		if err != nil {
+			t.Fatalf("Build: %v", err)
+		}
+		rc := rcFor(newConversation())
+		if err := a.Run(context.Background(), rc, func(events.Event) {}); err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		return instructions
+	}
+
+	// 覆盖：链首 persona 换成自定义文本（默认中文 persona 不出现）。
+	got := run("You are a helpful software engineer assistant.")
+	if !strings.HasPrefix(got, "You are a helpful software engineer assistant.") {
+		t.Errorf("覆盖 persona 应在系统提示链首，got prefix: %q", got[:min(len(got), 80)])
+	}
+	if strings.Contains(got, "运行在用户终端") {
+		t.Error("覆盖后不应含默认 persona")
+	}
+
+	// 空值：回退默认 persona（含"运行在用户终端"）。
+	def := run("")
+	if !strings.Contains(def, "运行在用户终端") {
+		t.Error("空 BaseInstructions 应回退默认 persona")
+	}
+}
+
 // suffixMiddleware 是测试用 onSystemPrompt 中间件（尾部追加标记，验证正序流水线）。
 type suffixMiddleware struct {
 	middleware.Base

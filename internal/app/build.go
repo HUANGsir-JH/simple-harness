@@ -78,7 +78,9 @@ func Build(o Options) (*HarnessAgent, error) {
 // maxTurns 仅 run 模式传入（评测 --max-turns）；TUI/resume 传 0（不限）。
 // runMode 控制 spawn_agent 工具描述覆盖（回合末等子语义仅对 run 模式表述，
 // 用户拍板 2026-08-19：不改 subagent/tools.go 默认描述，run 装配单独覆盖）。
-func buildAgent(res *config.ProviderConfig, defaultMode string, maxTurns int, runMode bool) (*agent.Agent, *subagent.Manager, error) {
+// baseInstructions 来自 config.base_instructions（评测对齐官方 minimal 的
+// 一句式提示词；空 = 默认 persona，2026-08-20）。
+func buildAgent(res *config.ProviderConfig, defaultMode string, maxTurns int, runMode bool, baseInstructions string) (*agent.Agent, *subagent.Manager, error) {
 	agentsPath, err := session.GlobalAgentsMDPath()
 	if err != nil {
 		return nil, nil, err
@@ -88,22 +90,24 @@ func buildAgent(res *config.ProviderConfig, defaultMode string, maxTurns int, ru
 		return nil, nil, err
 	}
 	m := subagent.NewManager(subagent.Options{
-		Provider:        res,
-		DefaultMode:     defaultMode,
-		GlobalAgentsMD:  agentsPath,
-		GlobalSkillsDir: skillsDir,
+		Provider:         res,
+		DefaultMode:      defaultMode,
+		GlobalAgentsMD:   agentsPath,
+		GlobalSkillsDir:  skillsDir,
+		BaseInstructions: baseInstructions,
 	})
 	ctl := subagent.ControlTools(m)
 	if runMode {
 		ctl = withRunModeSpawnDescription(ctl)
 	}
 	a, err := agent.Build(agent.BuildOptions{
-		Provider:        res,
-		DefaultMode:     defaultMode,
-		GlobalAgentsMD:  agentsPath,
-		GlobalSkillsDir: skillsDir,
-		Tools:           append(tools.Builtins(skillsDir), ctl...),
-		MaxTurns:        maxTurns,
+		Provider:         res,
+		DefaultMode:      defaultMode,
+		GlobalAgentsMD:   agentsPath,
+		GlobalSkillsDir:  skillsDir,
+		Tools:            append(tools.Builtins(skillsDir), ctl...),
+		MaxTurns:         maxTurns,
+		BaseInstructions: baseInstructions,
 	})
 	if err != nil {
 		return nil, nil, err
@@ -134,7 +138,7 @@ func buildRun(o Options) (*HarnessAgent, error) {
 	if err != nil {
 		return nil, err
 	}
-	a, subMgr, err := buildAgent(res, rt.DefaultApprovalMode(), o.MaxTurns, true)
+	a, subMgr, err := buildAgent(res, rt.DefaultApprovalMode(), o.MaxTurns, true, rt.Config.BaseInstructions)
 	if err != nil {
 		return nil, err
 	}
@@ -189,7 +193,7 @@ func buildTUI(o Options) (*HarnessAgent, error) {
 	if err != nil {
 		return nil, err
 	}
-	a, subMgr, err := buildAgent(rt.Provider, rt.DefaultApprovalMode(), 0, false)
+	a, subMgr, err := buildAgent(rt.Provider, rt.DefaultApprovalMode(), 0, false, rt.Config.BaseInstructions)
 	if err != nil {
 		return nil, err
 	}
@@ -256,7 +260,7 @@ func buildResume(o Options) (*HarnessAgent, error) {
 	if err != nil {
 		return nil, err
 	}
-	a, subMgr, err := buildAgent(rt.Provider, rt.DefaultApprovalMode(), 0, false)
+	a, subMgr, err := buildAgent(rt.Provider, rt.DefaultApprovalMode(), 0, false, rt.Config.BaseInstructions)
 	if err != nil {
 		return nil, err
 	}
