@@ -110,6 +110,23 @@ class HarnessAgent(BaseInstalledAgent):  # type: ignore[misc]
             traj.write_text(result.stdout or "", encoding="utf-8")
         except Exception:
             pass
+        # 会话记录回传宿主：harness 会话落在容器内 HARNESS_HOME（/harness-home/
+        # workspaces/<project>/<session>/historys/*.jsonl + agentstate.json），
+        # 容器销毁即丢失。复制到 self.logs_dir（= /logs/agent，与宿主
+        # <jobs>/<trial>/agent/ bind mount，pier 自动回传 Windows）。
+        try:
+            target = shlex.quote(str(self.logs_dir / "session"))
+            await self.exec_as_agent(
+                environment,
+                command=(
+                    "cd /harness-home && mkdir -p " + target + " && "
+                    "find workspaces -type f \\( -name '*.jsonl' -o "
+                    "-name 'agentstate.json' \\) -exec cp --parents {} "
+                    + target + "/ \\; 2>/dev/null || true"
+                ),
+            )
+        except Exception:
+            pass
         # git commit 契约：harness 不自动 commit，adapter 补（只提交目标改动；
         # 无改动/已提交时 git 报错由外层 try 兜底，不影响评分）。
         # 显式身份参数：容器内 git 无 user.name/email 时 commit 失败
