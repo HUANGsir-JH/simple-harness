@@ -52,6 +52,9 @@ def write_harness_config(home: Path, cfg: dict) -> None:
         "providers": hcfg.get("providers", {}),
         "approval": hcfg.get("approval", {"mode": "bypass"}),
     }
+    # base_instructions 透传（官方 minimal 对齐，2026-08-20）：非空才写。
+    if hcfg.get("base_instructions"):
+        doc["base_instructions"] = hcfg["base_instructions"]
     (home / "config.yaml").write_text(
         yaml.safe_dump(doc, allow_unicode=True), encoding="utf-8"
     )
